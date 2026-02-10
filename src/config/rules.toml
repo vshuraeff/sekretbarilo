@@ -2,7 +2,314 @@
 # rules are organized by tier (1 = lowest false positive rate)
 
 # tier 1: prefix-based rules (very low false positives)
+# these tokens have distinctive prefixes that make them highly reliable
+
+[[rules]]
+id = "aws-access-key-id"
+description = "AWS access key ID"
+regex = "(AKIA[A-Z0-9]{16})"
+secret_group = 1
+keywords = ["akia"]
+
+[[rules]]
+id = "github-personal-access-token"
+description = "GitHub personal access token"
+regex = "(ghp_[0-9a-zA-Z]{36,})"
+secret_group = 1
+keywords = ["ghp_"]
+
+[[rules]]
+id = "github-oauth-token"
+description = "GitHub OAuth access token"
+regex = "(gho_[0-9a-zA-Z]{36,})"
+secret_group = 1
+keywords = ["gho_"]
+
+[[rules]]
+id = "github-app-token"
+description = "GitHub app installation token"
+regex = "(ghs_[0-9a-zA-Z]{36,})"
+secret_group = 1
+keywords = ["ghs_"]
+
+[[rules]]
+id = "github-refresh-token"
+description = "GitHub refresh token"
+regex = "(ghr_[0-9a-zA-Z]{36,})"
+secret_group = 1
+keywords = ["ghr_"]
+
+[[rules]]
+id = "github-fine-grained-pat"
+description = "GitHub fine-grained personal access token"
+regex = "(github_pat_[0-9a-zA-Z_]{82,})"
+secret_group = 1
+keywords = ["github_pat_"]
+
+[[rules]]
+id = "gitlab-personal-access-token"
+description = "GitLab personal access token"
+regex = "(glpat-[0-9a-zA-Z_-]{20,})"
+secret_group = 1
+keywords = ["glpat-"]
+
+[[rules]]
+id = "slack-bot-token"
+description = "Slack bot token"
+regex = "(xoxb-[0-9a-zA-Z-]{24,})"
+secret_group = 1
+keywords = ["xoxb-"]
+
+[[rules]]
+id = "slack-user-token"
+description = "Slack user token"
+regex = "(xoxp-[0-9a-zA-Z-]{24,})"
+secret_group = 1
+keywords = ["xoxp-"]
+
+[[rules]]
+id = "slack-app-token"
+description = "Slack app-level token"
+regex = "(xapp-[0-9a-zA-Z-]{24,})"
+secret_group = 1
+keywords = ["xapp-"]
+
+[[rules]]
+id = "stripe-secret-key-live"
+description = "Stripe live secret key"
+regex = "(sk_live_[0-9a-zA-Z]{24,})"
+secret_group = 1
+keywords = ["sk_live_"]
+
+[[rules]]
+id = "stripe-secret-key-test"
+description = "Stripe test secret key"
+regex = "(sk_test_[0-9a-zA-Z]{24,})"
+secret_group = 1
+keywords = ["sk_test_"]
+
+[[rules]]
+id = "stripe-publishable-key-live"
+description = "Stripe live publishable key"
+regex = "(pk_live_[0-9a-zA-Z]{24,})"
+secret_group = 1
+keywords = ["pk_live_"]
+
+[[rules]]
+id = "sendgrid-api-key"
+description = "SendGrid API key"
+regex = "(SG\\.[0-9a-zA-Z_-]{22,}\\.[0-9a-zA-Z_-]{22,})"
+secret_group = 1
+keywords = ["sg."]
+
+[[rules]]
+id = "pem-private-key"
+description = "PEM private key"
+regex = "(-----BEGIN[A-Z ]*PRIVATE KEY-----)"
+secret_group = 1
+keywords = ["-----begin", "private key"]
+
+[[rules]]
+id = "jwt-token"
+description = "JWT token"
+regex = "(eyJ[A-Za-z0-9_-]{10,}\\.eyJ[A-Za-z0-9_-]{10,}\\.[A-Za-z0-9_-]{10,})"
+secret_group = 1
+keywords = ["eyj"]
+
+[[rules]]
+id = "digitalocean-personal-access-token"
+description = "DigitalOcean personal access token"
+regex = "(dop_v1_[0-9a-f]{64})"
+secret_group = 1
+keywords = ["dop_v1_"]
+
+[[rules]]
+id = "digitalocean-oauth-token"
+description = "DigitalOcean OAuth token"
+regex = "(doo_v1_[0-9a-f]{64})"
+secret_group = 1
+keywords = ["doo_v1_"]
+
+[[rules]]
+id = "digitalocean-refresh-token"
+description = "DigitalOcean refresh token"
+regex = "(dor_v1_[0-9a-f]{64})"
+secret_group = 1
+keywords = ["dor_v1_"]
+
+[[rules]]
+id = "npm-access-token"
+description = "npm access token"
+regex = "(npm_[0-9a-zA-Z]{36,})"
+secret_group = 1
+keywords = ["npm_"]
+
+[[rules]]
+id = "pypi-api-token"
+description = "PyPI API token"
+regex = "(pypi-[0-9a-zA-Z_-]{16,})"
+secret_group = 1
+keywords = ["pypi-"]
+
+[[rules]]
+id = "docker-hub-pat"
+description = "Docker Hub personal access token"
+regex = "(dckr_pat_[0-9a-zA-Z_-]{24,})"
+secret_group = 1
+keywords = ["dckr_pat_"]
+
+[[rules]]
+id = "new-relic-api-key"
+description = "New Relic API key"
+regex = "(NRAK-[0-9A-Z]{27})"
+secret_group = 1
+keywords = ["nrak-"]
+
+[[rules]]
+id = "terraform-cloud-token"
+description = "Terraform Cloud/Enterprise API token"
+regex = "([0-9a-zA-Z]{14}\\.atlasv1\\.[0-9a-zA-Z_-]{60,})"
+secret_group = 1
+keywords = [".atlasv1."]
+
+[[rules]]
+id = "anthropic-api-key"
+description = "Anthropic API key"
+regex = "(sk-ant-[0-9a-zA-Z_-]{20,})"
+secret_group = 1
+keywords = ["sk-ant-"]
+
+[[rules]]
+id = "openai-api-key"
+description = "OpenAI API key"
+regex = "(sk-[0-9a-zA-Z]{20,}T3BlbkFJ[0-9a-zA-Z]{20,})"
+secret_group = 1
+keywords = ["t3blbkfj"]
 
 # tier 2: context-needed rules (medium false positives)
+# these need keyword context and/or entropy checks
+
+[[rules]]
+id = "aws-secret-access-key"
+description = "AWS secret access key"
+regex = "(?i)(?:aws_secret_access_key|aws_secret|secret_access_key)\\s*[=:]\\s*['\"]?([A-Za-z0-9/+=]{40})['\"]?"
+secret_group = 1
+keywords = ["aws_secret", "secret_access_key"]
+entropy_threshold = 3.5
+
+[[rules]]
+id = "database-connection-string-postgres"
+description = "PostgreSQL connection string"
+regex = "(postgres(?:ql)?://[^\\s'\"]{10,})"
+secret_group = 1
+keywords = ["postgres://", "postgresql://"]
+
+[[rules]]
+id = "database-connection-string-mysql"
+description = "MySQL connection string"
+regex = "(mysql://[^\\s'\"]{10,})"
+secret_group = 1
+keywords = ["mysql://"]
+
+[[rules]]
+id = "database-connection-string-mongodb"
+description = "MongoDB connection string"
+regex = "(mongodb(?:\\+srv)?://[^\\s'\"]{10,})"
+secret_group = 1
+keywords = ["mongodb://", "mongodb+srv://"]
+
+[[rules]]
+id = "redis-connection-string"
+description = "Redis connection string with password"
+regex = "(redis://:[^@\\s'\"]+@[^\\s'\"]+)"
+secret_group = 1
+keywords = ["redis://"]
+
+[[rules]]
+id = "generic-password-assignment"
+description = "Password assignment in code"
+regex = "(?i)(?:password|passwd|pwd)\\s*[=:]\\s*['\"]([^'\"]{8,})['\"]"
+secret_group = 1
+keywords = ["password", "passwd", "pwd"]
+entropy_threshold = 3.0
+
+[[rules]]
+id = "generic-secret-assignment"
+description = "Secret assignment in code"
+regex = "(?i)(?:secret|secret_key|api_secret)\\s*[=:]\\s*['\"]([^'\"]{8,})['\"]"
+secret_group = 1
+keywords = ["secret", "secret_key", "api_secret"]
+entropy_threshold = 3.5
+
+[[rules]]
+id = "password-in-url"
+description = "Password embedded in URL"
+regex = "(?i)://[^:/?#\\s]+:([^@/?#\\s]{8,})@[^\\s'\"]+"
+secret_group = 1
+keywords = ["://"]
+entropy_threshold = 3.0
+
+[[rules]]
+id = "http-bearer-token"
+description = "HTTP bearer token"
+regex = "(?i)(?:bearer|authorization)\\s+(?:bearer\\s+)?([a-zA-Z0-9_\\-\\.]{20,})"
+secret_group = 1
+keywords = ["bearer", "authorization"]
+entropy_threshold = 3.5
+
+[[rules]]
+id = "http-basic-auth"
+description = "HTTP basic auth header"
+regex = "(?i)(?:basic|authorization)\\s+(?:basic\\s+)?([A-Za-z0-9+/]{20,}={0,2})"
+secret_group = 1
+keywords = ["basic", "authorization"]
+entropy_threshold = 3.0
+
+[[rules]]
+id = "webhook-url-with-token"
+description = "Webhook URL with embedded token"
+regex = "(?i)(https://hooks\\.slack\\.com/services/T[A-Z0-9]+/B[A-Z0-9]+/[a-zA-Z0-9]+)"
+secret_group = 1
+keywords = ["hooks.slack.com"]
+
+[[rules]]
+id = "azure-storage-account-key"
+description = "Azure storage account key"
+regex = "(?i)AccountKey=([A-Za-z0-9+/]{86}==)"
+secret_group = 1
+keywords = ["accountkey"]
+
+[[rules]]
+id = "cloudflare-api-key"
+description = "Cloudflare API key"
+regex = "(?i)(?:cloudflare|cf)[-_]?(?:api)?[-_]?key\\s*[=:]\\s*['\"]?([0-9a-f]{37})['\"]?"
+secret_group = 1
+keywords = ["cloudflare", "cf_api", "cf-api"]
+entropy_threshold = 3.0
+
+[[rules]]
+id = "datadog-api-key"
+description = "Datadog API key"
+regex = "(?i)(?:datadog|dd)[-_]?(?:api)?[-_]?key\\s*[=:]\\s*['\"]?([0-9a-f]{32})['\"]?"
+secret_group = 1
+keywords = ["datadog", "dd_api", "dd-api"]
+entropy_threshold = 3.0
+
+[[rules]]
+id = "heroku-api-key"
+description = "Heroku API key"
+regex = "(?i)heroku[-_]?(?:api)?[-_]?key\\s*[=:]\\s*['\"]?([0-9a-f-]{36})['\"]?"
+secret_group = 1
+keywords = ["heroku"]
+entropy_threshold = 3.0
 
 # tier 3: catch-all rules (highest false positive risk)
+# keyword + assignment pattern + high entropy
+
+[[rules]]
+id = "generic-api-key"
+description = "Generic API key assignment"
+regex = "(?i)(?:api[-_]?key|apikey|api[-_]?token)\\s*[=:]\\s*['\"]([^'\"]{16,})['\"]"
+secret_group = 1
+keywords = ["api_key", "apikey", "api-key", "api_token", "api-token"]
+entropy_threshold = 4.0
