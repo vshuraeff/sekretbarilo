@@ -107,8 +107,8 @@ fn parse_file_block(lines: &[&[u8]], start: usize, total: usize) -> (DiffFile, u
 /// uses the b/path portion.
 fn extract_path_from_diff_header(header: &[u8]) -> String {
     // format: "diff --git a/some/path b/some/path"
-    // we want the part after " b/"
-    if let Some(pos) = header.find(b" b/") {
+    // we want the part after the last " b/" to handle paths containing " b/"
+    if let Some(pos) = header.rfind(b" b/") {
         let path_bytes = &header[pos + 3..];
         if let Ok(s) = std::str::from_utf8(path_bytes) {
             return s.to_string();
@@ -117,7 +117,7 @@ fn extract_path_from_diff_header(header: &[u8]) -> String {
     // fallback: try to parse from a/ portion
     if let Some(pos) = header.find(b" a/") {
         let after_a = &header[pos + 3..];
-        if let Some(space_pos) = after_a.find(b" b/") {
+        if let Some(space_pos) = after_a.rfind(b" b/") {
             let path_bytes = &after_a[..space_pos];
             if let Ok(s) = std::str::from_utf8(path_bytes) {
                 return s.to_string();
@@ -161,10 +161,9 @@ fn parse_hunk(lines: &[&[u8]], start: usize, total: usize) -> (Vec<AddedLine>, u
         } else if line.starts_with(b"\\") {
             // "\ No newline at end of file" - skip
         } else if line.is_empty() {
-            // could be an empty context line or end of diff; treat as context
-            // in --unified=0 this typically means end of this hunk's content
-            // but with context lines, empty line is a context line
-            new_line += 1;
+            // empty line in --unified=0 signals end of hunk content
+            // (typically a trailing newline artifact from splitting on \n)
+            break;
         }
 
         i += 1;

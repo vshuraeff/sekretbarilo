@@ -65,6 +65,7 @@ pub fn load_project_config(repo_root: Option<&Path>) -> Result<ProjectConfig, St
 
 /// load the complete set of rules: defaults merged with optional user overrides
 /// from `.sekretbarilo.toml` in the given directory (typically repo root)
+#[allow(dead_code)]
 pub fn load_rules(repo_root: Option<&Path>) -> Result<Vec<Rule>, String> {
     let defaults = rules::load_default_rules()?;
     let config = load_project_config(repo_root)?;
@@ -74,6 +75,17 @@ pub fn load_rules(repo_root: Option<&Path>) -> Result<Vec<Rule>, String> {
     }
 
     Ok(rules::merge_rules(defaults, config.rules))
+}
+
+/// load rules using an already-loaded project config (avoids parsing config twice)
+pub fn load_rules_with_config(config: &ProjectConfig) -> Result<Vec<Rule>, String> {
+    let defaults = rules::load_default_rules()?;
+
+    if config.rules.is_empty() {
+        return Ok(defaults);
+    }
+
+    Ok(rules::merge_rules(defaults, config.rules.clone()))
 }
 
 /// build a compiled allowlist from project config, incorporating both global

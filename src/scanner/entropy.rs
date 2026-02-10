@@ -29,6 +29,7 @@ pub fn shannon_entropy(data: &[u8]) -> f64 {
 
 /// calculate entropy only over hex charset [0-9a-fA-F]
 /// returns None if the string contains non-hex characters
+#[allow(dead_code)]
 pub fn hex_entropy(data: &[u8]) -> Option<f64> {
     if data.is_empty() {
         return Some(0.0);
@@ -42,6 +43,7 @@ pub fn hex_entropy(data: &[u8]) -> Option<f64> {
 
 /// calculate entropy only over base64 charset [A-Za-z0-9+/=]
 /// returns None if the string contains non-base64 characters
+#[allow(dead_code)]
 pub fn base64_entropy(data: &[u8]) -> Option<f64> {
     if data.is_empty() {
         return Some(0.0);
@@ -56,6 +58,7 @@ pub fn base64_entropy(data: &[u8]) -> Option<f64> {
 
 /// calculate entropy only over alphanumeric charset [A-Za-z0-9]
 /// returns None if the string contains non-alphanumeric characters
+#[allow(dead_code)]
 pub fn alphanumeric_entropy(data: &[u8]) -> Option<f64> {
     if data.is_empty() {
         return Some(0.0);
@@ -69,6 +72,7 @@ pub fn alphanumeric_entropy(data: &[u8]) -> Option<f64> {
 /// calculate entropy relative to a given charset size.
 /// this uses the observed frequency distribution (shannon entropy)
 /// but the result is meaningful in the context of the expected charset.
+#[allow(dead_code)]
 fn charset_entropy(data: &[u8], _charset_size: usize) -> f64 {
     // use standard shannon entropy - the charset_size parameter is kept
     // for potential future normalization but standard entropy is what
@@ -78,10 +82,12 @@ fn charset_entropy(data: &[u8], _charset_size: usize) -> f64 {
 
 /// check if a byte slice passes the entropy threshold for scanning.
 /// returns true if the data has sufficient entropy (is suspicious).
-/// returns false (not suspicious) if data is too short or below threshold.
+/// secrets shorter than MIN_ENTROPY_LENGTH skip the entropy check
+/// (they pass through) since the regex+keyword match already provides
+/// confidence and short strings have inherently lower entropy.
 pub fn passes_entropy_check(data: &[u8], threshold: f64) -> bool {
     if data.len() < MIN_ENTROPY_LENGTH {
-        return false;
+        return true;
     }
     shannon_entropy(data) >= threshold
 }
@@ -167,8 +173,9 @@ mod tests {
     }
 
     #[test]
-    fn passes_entropy_check_too_short() {
-        assert!(!passes_entropy_check(b"short", 3.0));
+    fn passes_entropy_check_short_strings_pass_through() {
+        // short strings skip entropy check (pass through)
+        assert!(passes_entropy_check(b"short", 3.0));
     }
 
     #[test]

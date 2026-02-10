@@ -11,6 +11,9 @@ regex = "(AKIA[A-Z0-9]{16})"
 secret_group = 1
 keywords = ["akia"]
 
+[rules.allowlist]
+regexes = ["AKIAIOSFODNN7EXAMPLE"]
+
 [[rules]]
 id = "github-personal-access-token"
 description = "GitHub personal access token"
@@ -180,11 +183,18 @@ secret_group = 1
 keywords = ["sk-ant-"]
 
 [[rules]]
-id = "openai-api-key"
-description = "OpenAI API key"
+id = "openai-api-key-legacy"
+description = "OpenAI API key (legacy format)"
 regex = "(sk-[0-9a-zA-Z]{20,}T3BlbkFJ[0-9a-zA-Z]{20,})"
 secret_group = 1
 keywords = ["t3blbkfj"]
+
+[[rules]]
+id = "openai-api-key"
+description = "OpenAI API key (project format)"
+regex = "(sk-proj-[0-9a-zA-Z]{20,})"
+secret_group = 1
+keywords = ["sk-proj-"]
 
 # tier 2: context-needed rules (medium false positives)
 # these need keyword context and/or entropy checks
@@ -199,29 +209,29 @@ entropy_threshold = 3.5
 
 [[rules]]
 id = "database-connection-string-postgres"
-description = "PostgreSQL connection string"
-regex = "(postgres(?:ql)?://[^\\s'\"]{10,})"
+description = "PostgreSQL connection string with credentials"
+regex = "postgres(?:ql)?://[^:/?#\\s]+:([^@\\s'\"]{6,})@[^\\s'\"]+"
 secret_group = 1
 keywords = ["postgres://", "postgresql://"]
 
 [[rules]]
 id = "database-connection-string-mysql"
-description = "MySQL connection string"
-regex = "(mysql://[^\\s'\"]{10,})"
+description = "MySQL connection string with credentials"
+regex = "mysql://[^:/?#\\s]+:([^@\\s'\"]{6,})@[^\\s'\"]+"
 secret_group = 1
 keywords = ["mysql://"]
 
 [[rules]]
 id = "database-connection-string-mongodb"
-description = "MongoDB connection string"
-regex = "(mongodb(?:\\+srv)?://[^\\s'\"]{10,})"
+description = "MongoDB connection string with credentials"
+regex = "mongodb(?:\\+srv)?://[^:/?#\\s]+:([^@\\s'\"]{6,})@[^\\s'\"]+"
 secret_group = 1
 keywords = ["mongodb://", "mongodb+srv://"]
 
 [[rules]]
 id = "redis-connection-string"
 description = "Redis connection string with password"
-regex = "(redis://:[^@\\s'\"]+@[^\\s'\"]+)"
+regex = "redis://:([^@\\s'\"]{6,})@[^\\s'\"]+"
 secret_group = 1
 keywords = ["redis://"]
 
@@ -231,7 +241,7 @@ description = "Password assignment in code"
 regex = "(?i)(?:password|passwd|pwd)\\s*[=:]\\s*['\"]([^'\"]{8,})['\"]"
 secret_group = 1
 keywords = ["password", "passwd", "pwd"]
-entropy_threshold = 3.0
+# note: password rules use the password strength heuristic instead of entropy
 
 [[rules]]
 id = "generic-secret-assignment"
@@ -247,7 +257,6 @@ description = "Password embedded in URL"
 regex = "(?i)://[^:/?#\\s]+:([^@/?#\\s]{8,})@[^\\s'\"]+"
 secret_group = 1
 keywords = ["://"]
-entropy_threshold = 3.0
 
 [[rules]]
 id = "http-bearer-token"

@@ -2,7 +2,7 @@ pub mod parser;
 
 use std::process::Command;
 
-pub use parser::{AddedLine, DiffFile};
+pub use parser::DiffFile;
 
 /// errors from git operations
 #[derive(Debug)]
@@ -43,7 +43,15 @@ pub fn get_staged_diff() -> Result<Vec<u8>, GitError> {
     }
 
     let output = Command::new("git")
-        .args(["diff", "--cached", "--unified=0", "--diff-filter=d"])
+        .args([
+            "diff",
+            "--cached",
+            "--unified=0",
+            "--diff-filter=d",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--no-color",
+        ])
         .output()
         .map_err(|e| GitError::CommandFailed(e.to_string()))?;
 
@@ -83,25 +91,27 @@ pub fn check_env_files(files: &[DiffFile]) -> EnvFileCheck {
     }
 }
 
-/// determine if a file path is a blocked .env file
+/// determine if a file path is a blocked .env file (case-insensitive)
 fn is_blocked_env_file(path: &str) -> bool {
     let filename = match path.rsplit('/').next() {
         Some(f) => f,
         None => path,
     };
 
+    let lower = filename.to_ascii_lowercase();
+
     // must start with ".env"
-    if !filename.starts_with(".env") {
+    if !lower.starts_with(".env") {
         return false;
     }
 
     // exact match: ".env"
-    if filename == ".env" {
+    if lower == ".env" {
         return true;
     }
 
     // ".env.something" pattern
-    if let Some(suffix) = filename.strip_prefix(".env.") {
+    if let Some(suffix) = lower.strip_prefix(".env.") {
         // allowed suffixes
         let allowed = ["example", "sample", "template"];
         if allowed.contains(&suffix) {
@@ -139,6 +149,18 @@ mod tests {
         assert!(!is_blocked_env_file(".env.sample"));
         assert!(!is_blocked_env_file(".env.template"));
         assert!(!is_blocked_env_file("path/.env.example"));
+    }
+
+    #[test]
+    fn env_file_case_insensitive() {
+        assert!(is_blocked_env_file(".ENV"));
+        assert!(is_blocked_env_file(".Env"));
+        assert!(is_blocked_env_file(".Env.local"));
+        assert!(is_blocked_env_file(".ENV.PRODUCTION"));
+        assert!(is_blocked_env_file("path/to/.ENV"));
+        // case-insensitive allowed suffixes
+        assert!(!is_blocked_env_file(".ENV.EXAMPLE"));
+        assert!(!is_blocked_env_file(".Env.Sample"));
     }
 
     #[test]

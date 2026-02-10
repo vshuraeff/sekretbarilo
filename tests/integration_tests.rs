@@ -298,7 +298,7 @@ fn integration_sha1_hash_allowed() {
 #[test]
 fn integration_md5_hash_allowed() {
     let diff = make_modified_file_diff("checksums.txt", 1, &[
-        "secret = \"d41d8cd98f00b204e9800998ecf8427e\"",
+        "md5 checksum = \"d41d8cd98f00b204e9800998ecf8427e\"",
     ]);
     let (_, findings) = scan_diff(&diff);
 
@@ -430,11 +430,13 @@ fn integration_variable_reference_process_env_allowed() {
     ]);
     let (_, findings) = scan_diff(&diff);
 
-    // the value "process.env.SECRET_KEY" would need to be captured as the
-    // secret value for variable reference detection to kick in.
-    // since it's in bare code (no quotes), the regex may not capture it.
-    // this is acceptable behavior - the test documents what happens.
-    let _ = findings;
+    // the value "process.env.SECRET_KEY" is bare code (no quotes), so
+    // password/secret regex rules won't capture it. no findings expected.
+    assert!(
+        findings.is_empty(),
+        "bare process.env reference should not be flagged, got: {:?}",
+        findings.iter().map(|f| &f.rule_id).collect::<Vec<_>>()
+    );
 }
 
 #[test]

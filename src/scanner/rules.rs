@@ -1,11 +1,12 @@
 // rule definitions and loading
 
 use aho_corasick::AhoCorasick;
-use regex::bytes::Regex;
+use regex::bytes::{Regex, RegexBuilder};
 use serde::Deserialize;
 
 /// a detection rule definition (before compilation)
 #[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)]
 pub struct Rule {
     pub id: String,
     pub description: String,
@@ -40,19 +41,16 @@ pub struct RulesConfig {
 /// a compiled rule ready for scanning
 pub struct CompiledRule {
     pub id: String,
-    pub description: String,
     pub regex: Regex,
     pub secret_group: usize,
     pub keywords: Vec<String>,
     pub entropy_threshold: Option<f64>,
-    pub allowlist: RuleAllowlist,
 }
 
 impl std::fmt::Debug for CompiledRule {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("CompiledRule")
             .field("id", &self.id)
-            .field("description", &self.description)
             .field("secret_group", &self.secret_group)
             .field("keywords", &self.keywords)
             .field("entropy_threshold", &self.entropy_threshold)
@@ -81,6 +79,7 @@ pub fn load_default_rules() -> Result<Vec<Rule>, String> {
 }
 
 /// load user rules from a TOML string
+#[allow(dead_code)]
 pub fn load_rules_from_str(toml_content: &str) -> Result<Vec<Rule>, String> {
     let config: RulesConfig = toml::from_str(toml_content)
         .map_err(|e| format!("failed to parse rules TOML: {}", e))?;
@@ -105,16 +104,16 @@ pub fn merge_rules(defaults: Vec<Rule>, user_rules: Vec<Rule>) -> Vec<Rule> {
 pub fn compile_rules(rules: &[Rule]) -> Result<CompiledScanner, String> {
     let mut compiled_rules = Vec::with_capacity(rules.len());
     for rule in rules {
-        let regex = Regex::new(&rule.regex_pattern)
+        let regex = RegexBuilder::new(&rule.regex_pattern)
+            .size_limit(1 << 20)
+            .build()
             .map_err(|e| format!("failed to compile regex for rule '{}': {}", rule.id, e))?;
         compiled_rules.push(CompiledRule {
             id: rule.id.clone(),
-            description: rule.description.clone(),
             regex,
             secret_group: rule.secret_group,
             keywords: rule.keywords.clone(),
             entropy_threshold: rule.entropy_threshold,
-            allowlist: rule.allowlist.clone(),
         });
     }
 

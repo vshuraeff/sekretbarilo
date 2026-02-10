@@ -189,20 +189,13 @@ fn tier1_stripe_secret_key_live() {
 }
 
 #[test]
-fn tier1_stripe_secret_key_test_stopword_skips() {
-    // sk_test_ inherently contains "test" which is a default stopword,
-    // so the engine correctly skips this finding.
-    // this is by design: test keys are not real secrets.
-    let (scanner, al) = default_scanner_and_allowlist();
-    let file = make_file(
+fn tier1_stripe_secret_key_test_detected() {
+    // tier 1 rules skip stopword filtering (high confidence prefix-based
+    // rules should not be suppressed by stopwords embedded in the token).
+    assert_detected(
         "config.rb",
-        vec![(1, b"Stripe.api_key = \"sk_test_4eC39HqLyjWDarjtT1zdp7dc\"")],
-    );
-    let findings = scan(&[file], &scanner, &al);
-    assert!(
-        findings.is_empty(),
-        "sk_test_ keys should be skipped by stopword 'test', got: {:?}",
-        findings.iter().map(|f| &f.rule_id).collect::<Vec<_>>()
+        b"Stripe.api_key = \"sk_test_4eC39HqLyjWDarjtT1zdp7dc\"",
+        "stripe-secret-key-test",
     );
 }
 
@@ -364,6 +357,15 @@ fn tier1_openai_api_key() {
     assert_detected(
         "config.py",
         b"OPENAI_KEY = \"sk-abcdefghijklmnopqrstT3BlbkFJuvwxyz0123456789abcd\"",
+        "openai-api-key-legacy",
+    );
+}
+
+#[test]
+fn tier1_openai_api_key_project_format() {
+    assert_detected(
+        "config.py",
+        b"OPENAI_KEY = \"sk-proj-abcdefghijklmnopqrstuvwxyz0123456789\"",
         "openai-api-key",
     );
 }
@@ -394,7 +396,6 @@ fn tier2_aws_secret_low_entropy_not_flagged() {
 
 #[test]
 fn tier2_postgres_connection_string() {
-    // avoid "example" in the URL since it's a stopword and the full URL is the captured group
     assert_detected(
         "config.rs",
         b"let url = \"postgres://admin:s3cur3Pa55w0rd@db.prod-host.com:5432/mydb\"",
@@ -422,7 +423,6 @@ fn tier2_mysql_connection_string() {
 
 #[test]
 fn tier2_mongodb_connection_string() {
-    // avoid "example" in the URL since it's a stopword
     assert_detected(
         "config.py",
         b"mongo_url = \"mongodb://admin:s3cur3Pa55w0rd@mongo.prod-host.com:27017/app\"",
@@ -441,7 +441,6 @@ fn tier2_mongodb_srv_connection_string() {
 
 #[test]
 fn tier2_redis_connection_string() {
-    // avoid "example" in the URL since it's a stopword
     assert_detected(
         "config.py",
         b"redis_url = \"redis://:s3cur3Pa55w0rd@redis.prod-host.com:6379\"",
@@ -553,27 +552,15 @@ fn tier2_cloudflare_api_key() {
 
 #[test]
 fn tier2_datadog_api_key() {
-    // 32 lowercase hex chars look like MD5 and get skipped by hash detection.
-    // to bypass hash detection, use a custom scanner without hash filtering
-    // and verify the regex + keyword matching works.
-    // this is by design: the scanner avoids false positives on hashes.
-    let rules = load_default_rules().unwrap();
-    let scanner = compile_rules(&rules).unwrap();
-    // use a no-stopword allowlist to isolate regex+keyword testing
-    let al = sekretbarilo::config::allowlist::CompiledAllowlist::new(
-        &[], &[], None, &[],
-    ).unwrap();
-
-    // 32 hex chars, high entropy
+    // 32 hex chars should now be detected when there is no hash context.
+    // hash detection requires context keywords (md5, sha, checksum, etc.)
+    // to avoid false negatives on hex-based API keys.
     let key = "a1b2c3d4e5f6a7b8a1b2c3d4e5f6a7b8";
     let line = format!("datadog_api_key = '{}'", key);
-    let file = make_file("config.py", vec![(1, line.as_bytes())]);
-    let findings = scan(&[file], &scanner, &al);
-    // should be skipped by hash detection (32 hex chars = looks like MD5)
-    assert!(
-        findings.is_empty(),
-        "32 hex chars should be skipped by hash detection, but got: {:?}",
-        findings.iter().map(|f| &f.rule_id).collect::<Vec<_>>()
+    assert_detected(
+        "config.py",
+        line.as_bytes(),
+        "datadog-api-key",
     );
 }
 
@@ -743,10 +730,11 @@ fn entropy_alphanumeric_invalid_returns_none() {
 }
 
 #[test]
-fn entropy_passes_check_respects_min_length() {
-    // short strings should always fail regardless of entropy
-    assert!(!entropy::passes_entropy_check(b"aB3dEf7h", 1.0));
-    assert!(!entropy::passes_entropy_check(b"short", 0.0));
+fn entropy_passes_check_short_strings_pass_through() {
+    // short strings skip entropy check (pass through) since regex+keyword
+    // match already provides confidence
+    assert!(entropy::passes_entropy_check(b"aB3dEf7h", 1.0));
+    assert!(entropy::passes_entropy_check(b"short", 0.0));
 }
 
 #[test]
@@ -773,28 +761,28 @@ fn entropy_min_length_constant() {
 
 #[test]
 fn hash_md5_not_flagged_as_secret() {
-    // MD5 hash (32 hex chars) should be skipped
+    // MD5 hash (32 hex chars) with context keyword should be skipped
     assert_not_detected(
         "checksums.txt",
-        b"secret = \"d41d8cd98f00b204e9800998ecf8427e\"",
+        b"md5 secret = \"d41d8cd98f00b204e9800998ecf8427e\"",
     );
 }
 
 #[test]
 fn hash_sha1_not_flagged_as_secret() {
-    // SHA-1 hash (40 hex chars) should be skipped
+    // SHA-1 hash (40 hex chars) with context keyword should be skipped
     assert_not_detected(
         "config.py",
-        b"secret = \"da39a3ee5e6b4b0d3255bfef95601890afd80709\"",
+        b"commit secret = \"da39a3ee5e6b4b0d3255bfef95601890afd80709\"",
     );
 }
 
 #[test]
 fn hash_sha256_not_flagged_as_secret() {
-    // SHA-256 hash (64 hex chars) should be skipped
+    // SHA-256 hash (64 hex chars) with context keyword should be skipped
     assert_not_detected(
         "config.py",
-        b"secret = \"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\"",
+        b"checksum secret = \"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\"",
     );
 }
 
@@ -818,9 +806,12 @@ fn hash_abbreviated_git_in_merge_context() {
         vec![(1, b"merge commit da39a3e into main")],
     );
     let findings = scan(&[file], &scanner, &al);
-    // should not flag anything - either no rule matches or hash detection catches it
-    // this tests the pipeline doesn't false-positive on git merge lines
-    let _ = findings; // no assertion on exact outcome since no rule keyword may match
+    // should not flag anything - no rule keywords match in this line
+    assert!(
+        findings.is_empty(),
+        "git merge line should not be flagged, got: {:?}",
+        findings.iter().map(|f| &f.rule_id).collect::<Vec<_>>()
+    );
 }
 
 #[test]
@@ -880,7 +871,7 @@ fn variable_reference_process_env_not_flagged() {
 #[test]
 fn aws_example_key_allowlisted() {
     // AKIAIOSFODNN7EXAMPLE is the well-known AWS example key
-    // it's in the default rules' allowlist
+    // it's skipped because "EXAMPLE" matches the "example" stopword
     let rules = load_default_rules().unwrap();
     let scanner = compile_rules(&rules).unwrap();
     let al = config::build_allowlist(&config::ProjectConfig::default(), &rules).unwrap();

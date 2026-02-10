@@ -37,6 +37,23 @@ fn print_usage() {
     eprintln!("  sekretbarilo --help       show this help");
 }
 
+/// resolve the git repository root directory.
+/// returns None if we can't determine it (non-fatal, falls back to defaults).
+fn resolve_repo_root() -> Option<std::path::PathBuf> {
+    let output = std::process::Command::new("git")
+        .args(["rev-parse", "--show-toplevel"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let root = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if root.is_empty() {
+        return None;
+    }
+    Some(std::path::PathBuf::from(root))
+}
+
 fn run_install() -> i32 {
     match hook::install(None) {
         Ok(result) => {
@@ -73,20 +90,23 @@ fn run_scan() -> i32 {
     // step 3: check for blocked .env files
     let env_check = diff::check_env_files(&files);
 
-    // step 4: load rules (defaults + project overrides)
-    let rules = match config::load_rules(None) {
-        Ok(r) => r,
+    // resolve repo root for config loading
+    let repo_root = resolve_repo_root();
+
+    // step 4: load project config (once, reused for rules and allowlist)
+    let project_config = match config::load_project_config(repo_root.as_deref()) {
+        Ok(c) => c,
         Err(e) => {
-            eprintln!("[ERROR] failed to load rules: {}", e);
+            eprintln!("[ERROR] failed to load config: {}", e);
             return 2;
         }
     };
 
-    // step 5: load project config
-    let project_config = match config::load_project_config(None) {
-        Ok(c) => c,
+    // step 5: load rules (defaults + project overrides)
+    let rules = match config::load_rules_with_config(&project_config) {
+        Ok(r) => r,
         Err(e) => {
-            eprintln!("[ERROR] failed to load config: {}", e);
+            eprintln!("[ERROR] failed to load rules: {}", e);
             return 2;
         }
     };
@@ -109,8 +129,13 @@ fn run_scan() -> i32 {
         }
     };
 
-    // step 8: scan for secrets
-    let findings = scanner::engine::scan(&files, &compiled, &allowlist);
+    // step 8: scan for secrets (exclude .env blocked files to avoid duplicate findings)
+    let scannable_files: Vec<_> = files
+        .iter()
+        .filter(|f| !env_check.blocked_files.contains(&f.path))
+        .cloned()
+        .collect();
+    let findings = scanner::engine::scan(&scannable_files, &compiled, &allowlist);
 
     // step 9: report findings
     let total = output::report_findings(&findings, &env_check.blocked_files);

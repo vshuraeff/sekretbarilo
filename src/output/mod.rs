@@ -12,7 +12,7 @@ pub fn report_findings(findings: &[Finding], blocked_env_files: &[String]) -> us
     }
 
     eprintln!();
-    eprintln!("[ERROR] secret detected in staged changes");
+    eprintln!("[ERROR] secret(s) detected in staged changes");
     eprintln!();
 
     for env_file in blocked_env_files {

@@ -6,6 +6,7 @@ use crate::config::allowlist::CompiledAllowlist;
 use crate::diff::parser::DiffFile;
 use crate::scanner::entropy;
 use crate::scanner::hash_detect;
+use crate::scanner::password;
 use crate::scanner::rules::CompiledScanner;
 
 /// minimum number of files to trigger parallel processing with rayon
@@ -53,10 +54,12 @@ pub fn scan(
 
     // use parallel processing for large diffs
     if scannable.len() >= PARALLEL_FILE_THRESHOLD {
-        scannable
+        let mut findings: Vec<Finding> = scannable
             .par_iter()
             .flat_map(|file| scan_file(file, scanner, allowlist))
-            .collect()
+            .collect();
+        findings.sort_by(|a, b| a.file.cmp(&b.file).then(a.line.cmp(&b.line)));
+        findings
     } else {
         let mut findings = Vec::new();
         for file in &scannable {
@@ -81,30 +84,47 @@ fn scan_file(
     let mut findings = Vec::new();
 
     for added_line in &file.added_lines {
-        scan_line(
-            &file.path,
-            added_line.line_number,
-            &added_line.content,
+        let ctx = ScanLineContext {
+            file_path: &file.path,
+            line_number: added_line.line_number,
+            line: &added_line.content,
             scanner,
             allowlist,
-            is_doc,
-            &mut candidate_bits,
-            &mut findings,
-        );
+            is_doc_file: is_doc,
+        };
+        scan_line(&ctx, &mut candidate_bits, &mut findings);
     }
 
     findings
 }
 
+/// check if a rule targets password-type secrets
+fn is_password_rule(rule_id: &str) -> bool {
+    rule_id == "generic-password-assignment" || rule_id == "password-in-url"
+}
+
+/// check if a rule extracts credentials from connection strings/URLs.
+/// these rules need full stopword filtering but use standard entropy checks,
+/// not the password strength heuristic.
+fn is_credential_rule(rule_id: &str) -> bool {
+    rule_id.starts_with("database-connection-string-")
+        || rule_id == "redis-connection-string"
+}
+
+/// context for scanning a single line
+struct ScanLineContext<'a> {
+    file_path: &'a str,
+    line_number: usize,
+    line: &'a [u8],
+    scanner: &'a CompiledScanner,
+    allowlist: &'a CompiledAllowlist,
+    is_doc_file: bool,
+}
+
 /// scan a single line against all rules using the aho-corasick pre-filter.
 /// uses a reusable bitset to avoid allocations per line.
 fn scan_line(
-    file_path: &str,
-    line_number: usize,
-    line: &[u8],
-    scanner: &CompiledScanner,
-    allowlist: &CompiledAllowlist,
-    is_doc_file: bool,
+    ctx: &ScanLineContext<'_>,
     candidate_bits: &mut [bool],
     findings: &mut Vec<Finding>,
 ) {
@@ -116,9 +136,9 @@ fn scan_line(
     // step 2: aho-corasick keyword pre-filter
     // find which rules have keywords present in this line
     let mut has_candidates = false;
-    for mat in scanner.automaton.find_iter(line) {
+    for mat in ctx.scanner.automaton.find_iter(ctx.line) {
         let pattern_idx = mat.pattern().as_usize();
-        if let Some(rule_indices) = scanner.keyword_to_rules.get(pattern_idx) {
+        if let Some(rule_indices) = ctx.scanner.keyword_to_rules.get(pattern_idx) {
             for &rule_idx in rule_indices {
                 if !candidate_bits[rule_idx] {
                     candidate_bits[rule_idx] = true;
@@ -133,14 +153,17 @@ fn scan_line(
     }
 
     // step 3: regex matching only for candidate rules
-    for rule_idx in 0..scanner.rules.len() {
-        if !candidate_bits[rule_idx] {
+    for (rule_idx, &is_candidate) in candidate_bits.iter().enumerate() {
+        if !is_candidate || rule_idx >= ctx.scanner.rules.len() {
             continue;
         }
 
-        let rule = &scanner.rules[rule_idx];
+        let rule = &ctx.scanner.rules[rule_idx];
 
-        if let Some(captures) = rule.regex.captures(line) {
+        // evaluate all matches for this rule on the line, not just the first.
+        // if the first match is filtered (allowlist/stopword/var-ref), a later
+        // match on the same line could still be a real secret.
+        for captures in rule.regex.captures_iter(ctx.line) {
             // step 4: extract secret value via capture group
             let secret = if rule.secret_group > 0 {
                 captures
@@ -156,43 +179,69 @@ fn scan_line(
             }
 
             // step 5: per-rule allowlist check
-            if allowlist.is_rule_allowlisted(&rule.id, secret, file_path) {
+            if ctx.allowlist.is_rule_allowlisted(&rule.id, secret, ctx.file_path) {
                 continue;
             }
 
             // step 6: variable reference detection
-            if allowlist.is_variable_reference(secret) {
+            if ctx.allowlist.is_variable_reference(secret) {
                 continue;
             }
 
-            // step 7: stopword filter
-            if allowlist.contains_stopword(secret) {
+            // step 7: stopword filter.
+            // tier 1 rules (no entropy threshold) only check for placeholder
+            // patterns (e.g. XXXX...) to avoid false positives on format
+            // examples, but skip word-based stopwords since tokens like
+            // sk_test_ inherently contain "test".
+            // tier 2+ rules, password rules, and credential rules get the
+            // full stopword check.
+            if rule.entropy_threshold.is_some()
+                || is_password_rule(&rule.id)
+                || is_credential_rule(&rule.id)
+            {
+                if ctx.allowlist.contains_stopword(secret) {
+                    continue;
+                }
+            } else if ctx.allowlist.is_placeholder_pattern(secret) {
                 continue;
             }
 
             // step 8: hash detection - skip hashes
-            if hash_detect::is_hash_in_context(secret, line) {
+            if hash_detect::is_hash_in_context(secret, ctx.line) {
                 continue;
             }
 
-            // step 9: entropy evaluation (if rule requires it)
-            if let Some(mut threshold) = rule.entropy_threshold {
-                // apply global override if set
-                if let Some(override_val) = allowlist.entropy_threshold_override {
-                    threshold = override_val;
-                }
-                // apply doc file bonus (raise threshold = less likely to flag)
-                if is_doc_file {
-                    threshold += allowlist.doc_entropy_bonus();
-                }
-                if !entropy::passes_entropy_check(secret, threshold) {
-                    continue;
+            // step 8.5: password strength heuristic for password rules.
+            // weak/placeholder passwords are allowed through; only strong
+            // passwords are flagged as real secrets.
+            if is_password_rule(&rule.id) && !password::is_strong_password(secret) {
+                continue;
+            }
+
+            // step 9: entropy evaluation (if rule requires it).
+            // password rules skip entropy check -- the password strength
+            // heuristic (step 8.5) already validates these. the entropy
+            // min-length threshold would otherwise reject strong passwords
+            // shorter than MIN_ENTROPY_LENGTH (e.g. 12-char passwords).
+            if !is_password_rule(&rule.id) {
+                if let Some(mut threshold) = rule.entropy_threshold {
+                    // apply global override as a floor (never lower a rule's threshold)
+                    if let Some(override_val) = ctx.allowlist.entropy_threshold_override {
+                        threshold = threshold.max(override_val);
+                    }
+                    // apply doc file bonus (raise threshold = less likely to flag)
+                    if ctx.is_doc_file {
+                        threshold += ctx.allowlist.doc_entropy_bonus();
+                    }
+                    if !entropy::passes_entropy_check(secret, threshold) {
+                        continue;
+                    }
                 }
             }
 
             findings.push(Finding {
-                file: file_path.to_string(),
-                line: line_number,
+                file: ctx.file_path.to_string(),
+                line: ctx.line_number,
                 rule_id: rule.id.clone(),
                 matched_value: secret.to_vec(),
             });
@@ -344,12 +393,30 @@ mod tests {
     }
 
     #[test]
-    fn scan_skips_sha256_hash() {
+    fn scan_skips_sha256_hash_with_context() {
         let scanner = make_scanner(vec![
             make_rule("generic-secret", r#"(?i)secret\s*=\s*['"]([^'"]+)['"]"#, 1, vec!["secret"], None),
         ]);
         let al = default_al();
-        // the captured value is exactly 64 hex chars (SHA-256)
+        // the captured value is exactly 64 hex chars (SHA-256) in a line with checksum context
+        let file = make_file(
+            "config.rs",
+            vec![(
+                1,
+                b"checksum secret = \"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\"",
+            )],
+        );
+        let findings = scan(&[file], &scanner, &al);
+        assert!(findings.is_empty());
+    }
+
+    #[test]
+    fn scan_detects_hex_secret_at_hash_length() {
+        let scanner = make_scanner(vec![
+            make_rule("generic-secret", r#"(?i)secret\s*=\s*['"]([^'"]+)['"]"#, 1, vec!["secret"], None),
+        ]);
+        let al = default_al();
+        // 64 hex chars but no hash context - should be detected as a secret
         let file = make_file(
             "config.rs",
             vec![(
@@ -358,7 +425,7 @@ mod tests {
             )],
         );
         let findings = scan(&[file], &scanner, &al);
-        assert!(findings.is_empty());
+        assert_eq!(findings.len(), 1, "hex secret without hash context should be detected");
     }
 
     #[test]
@@ -514,8 +581,9 @@ mod tests {
 
     #[test]
     fn scan_skips_stopword_secrets() {
+        // stopword filtering only applies to rules with entropy thresholds (tier 2+)
         let scanner = make_scanner(vec![
-            make_rule("generic-secret", r#"(?i)secret\s*=\s*['"]([^'"]+)['"]"#, 1, vec!["secret"], None),
+            make_rule("generic-secret", r#"(?i)secret\s*=\s*['"]([^'"]+)['"]"#, 1, vec!["secret"], Some(3.5)),
         ]);
         let al = default_al();
         let file = make_file(
@@ -612,13 +680,48 @@ mod tests {
         let findings_src = scan(&[src_file], &scanner, &al);
         assert!(!findings_src.is_empty(), "should detect in source files");
 
-        // in a doc file (README.md), the raised threshold may allow it through
+        // in a doc file (README.md), the raised threshold allows it through.
+        // with 1.0 bonus, threshold becomes 4.0 instead of 3.0, so the
+        // same string that triggers in source should not trigger in docs.
         let doc_file = make_file("README.md", vec![(1, line)]);
         let findings_doc = scan(&[doc_file], &scanner, &al);
-        // with 1.0 bonus, threshold becomes 4.0 instead of 3.0
-        // some moderate-entropy strings will pass in source but not in docs
-        // this test verifies the mechanism works (doc findings should differ or be fewer)
-        let _ = findings_doc; // doc behavior is valid either way depending on actual entropy
+        assert!(
+            findings_doc.len() <= findings_src.len(),
+            "doc files should not flag more than source files"
+        );
+    }
+
+    #[test]
+    fn scan_detects_second_match_when_first_filtered() {
+        let scanner = make_scanner(vec![
+            make_rule("aws-key", r"(AKIA[A-Z0-9]{16})", 1, vec!["akia"], None),
+        ]);
+        // set up an allowlist that skips the example key but not a real one
+        let rules = vec![crate::scanner::rules::Rule {
+            id: "aws-key".to_string(),
+            description: "AWS key".to_string(),
+            regex_pattern: r"(AKIA[A-Z0-9]{16})".to_string(),
+            secret_group: 1,
+            keywords: vec!["akia".to_string()],
+            entropy_threshold: None,
+            allowlist: RuleAllowlist {
+                regexes: vec!["AKIAIOSFODNN7EXAMPLE".to_string()],
+                paths: vec![],
+            },
+        }];
+        let al = crate::config::build_allowlist(
+            &crate::config::ProjectConfig::default(),
+            &rules,
+        ).unwrap();
+
+        // line has two AWS keys: first is the allowlisted example, second is real
+        let file = make_file(
+            "config.py",
+            vec![(5, b"keys = [\"AKIAIOSFODNN7EXAMPLE\", \"AKIAIOSFODNN7ABCDEFG\"]")],
+        );
+        let findings = scan(&[file], &scanner, &al);
+        assert_eq!(findings.len(), 1, "should detect the second (real) key even though first is allowlisted");
+        assert_eq!(findings[0].matched_value, b"AKIAIOSFODNN7ABCDEFG");
     }
 
     #[test]

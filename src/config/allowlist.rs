@@ -3,7 +3,7 @@
 // provides global path filtering, stopword checking, variable reference
 // detection, and documentation file exception handling.
 
-use regex::bytes::Regex;
+use regex::bytes::{Regex, RegexBuilder};
 
 /// default file extensions to skip (binary and non-source files)
 const BINARY_EXTENSIONS: &[&str] = &[
@@ -27,7 +27,7 @@ const GENERATED_FILES: &[&str] = &[
 ];
 
 /// default generated file extensions to skip
-const GENERATED_EXTENSIONS: &[&str] = &["min.js", "min.css", "map"];
+const GENERATED_EXTENSIONS: &[&str] = &["min.js", "min.css", "js.map", "css.map"];
 
 /// default vendor directories to skip
 const VENDOR_DIRS: &[&str] = &[
@@ -47,13 +47,59 @@ const CONFIG_FILE: &str = ".sekretbarilo.toml";
 const DEFAULT_STOPWORDS: &[&str] = &[
     "example", "test", "sample", "placeholder", "dummy", "changeme", "fake",
     "mock", "todo", "fixme", "xxx", "lorem", "default", "replace_me",
-    "insert_here", "your_", "my_", "<your", "${", "#{",
+    "insert_here", "your_", "my_", "<your",
 ];
 
 /// documentation file patterns
-const DOC_EXTENSIONS: &[&str] = &["md", "rst", "txt", "adoc"];
+const DOC_EXTENSIONS: &[&str] = &["md", "rst", "adoc"];
 const DOC_PREFIXES: &[&str] = &["readme", "changelog", "contributing", "license"];
 const DOC_DIRS: &[&str] = &["docs/", "doc/", "documentation/", "wiki/"];
+
+/// check if `haystack` contains `needle` at a word boundary.
+/// only ascii alphabetic chars are considered "word" characters, so digits,
+/// underscores, and other non-alpha chars act as boundaries. this prevents
+/// "test" from matching inside "attestation" but still matches "7example"
+/// or "test_key" (since digits and `_` are boundaries).
+/// special case: "xxx" matches any run of 3+ identical characters (placeholder pattern).
+fn contains_word(haystack: &str, needle: &str) -> bool {
+    if needle.is_empty() {
+        return false;
+    }
+    // special case: "xxx" detects X-placeholder patterns like "XXXX..." or "xxxx..."
+    if needle == "xxx" {
+        let bytes = haystack.as_bytes();
+        let mut run = 0u8;
+        for &b in bytes {
+            if b == b'x' || b == b'X' {
+                run += 1;
+                if run >= 3 {
+                    return true;
+                }
+            } else {
+                run = 0;
+            }
+        }
+        return false;
+    }
+    let mut start = 0;
+    while let Some(pos) = haystack[start..].find(needle) {
+        let abs_pos = start + pos;
+        let before_ok = abs_pos == 0 || {
+            let b = haystack.as_bytes()[abs_pos - 1];
+            !b.is_ascii_alphabetic()
+        };
+        let end_pos = abs_pos + needle.len();
+        let after_ok = end_pos >= haystack.len() || {
+            let b = haystack.as_bytes()[end_pos];
+            !b.is_ascii_alphabetic()
+        };
+        if before_ok && after_ok {
+            return true;
+        }
+        start = abs_pos + 1;
+    }
+    false
+}
 
 /// variable reference patterns (compiled lazily)
 const VAR_PATTERNS: &[&str] = &[
@@ -78,6 +124,28 @@ const VAR_PATTERNS: &[&str] = &[
     r#"^os\.Getenv\(['"][A-Za-z_][A-Za-z0-9_]*['"]\)$"#,
 ];
 
+/// max compiled regex size for user-supplied patterns (1 MB).
+/// prevents ReDoS from crafted .sekretbarilo.toml config.
+const USER_REGEX_SIZE_LIMIT: usize = 1 << 20;
+
+/// build a regex from user-supplied pattern with size limits
+fn build_user_regex(pattern: &str) -> Result<Regex, regex::Error> {
+    RegexBuilder::new(pattern)
+        .size_limit(USER_REGEX_SIZE_LIMIT)
+        .build()
+}
+
+/// build a path regex that is auto-anchored at the start.
+/// prevents patterns like "test/.*" from matching "src/contest/file".
+fn build_user_path_regex(pattern: &str) -> Result<Regex, regex::Error> {
+    let anchored = if pattern.starts_with('^') {
+        pattern.to_string()
+    } else {
+        format!("^{}", pattern)
+    };
+    build_user_regex(&anchored)
+}
+
 /// compiled allowlist configuration for use during scanning
 pub struct CompiledAllowlist {
     /// compiled regex patterns for variable reference detection
@@ -94,6 +162,7 @@ pub struct CompiledAllowlist {
 
 impl CompiledAllowlist {
     /// create a new allowlist with default settings only
+    #[allow(dead_code)]
     pub fn default_allowlist() -> Result<Self, String> {
         Self::new(&[], &[], None, &[])
     }
@@ -114,7 +183,7 @@ impl CompiledAllowlist {
 
         let mut user_path_patterns = Vec::with_capacity(user_paths.len());
         for path_pattern in user_paths {
-            let re = Regex::new(path_pattern)
+            let re = build_user_path_regex(path_pattern)
                 .map_err(|e| format!("failed to compile user path pattern '{}': {}", path_pattern, e))?;
             user_path_patterns.push(re);
         }
@@ -123,13 +192,13 @@ impl CompiledAllowlist {
         for (rule_id, value_regexes, path_regexes) in per_rule {
             let mut compiled_values = Vec::new();
             for pattern in value_regexes {
-                let re = Regex::new(pattern)
+                let re = build_user_regex(pattern)
                     .map_err(|e| format!("failed to compile allowlist regex for rule '{}': {}", rule_id, e))?;
                 compiled_values.push(re);
             }
             let mut compiled_paths = Vec::new();
             for pattern in path_regexes {
-                let re = Regex::new(pattern)
+                let re = build_user_path_regex(pattern)
                     .map_err(|e| format!("failed to compile allowlist path for rule '{}': {}", rule_id, e))?;
                 compiled_paths.push(re);
             }
@@ -139,7 +208,7 @@ impl CompiledAllowlist {
         Ok(Self {
             var_ref_patterns,
             user_path_patterns,
-            user_stopwords: user_stopwords.to_vec(),
+            user_stopwords: user_stopwords.iter().map(|s| s.to_lowercase()).collect(),
             entropy_threshold_override: entropy_override,
             per_rule_allowlists,
         })
@@ -175,17 +244,24 @@ impl CompiledAllowlist {
             }
         }
 
-        // skip specific generated files
+        // skip specific generated files (case-insensitive)
         for gen_file in GENERATED_FILES {
-            if filename == *gen_file {
+            if filename.eq_ignore_ascii_case(gen_file) {
                 return true;
             }
         }
 
-        // skip vendor directories
+        // skip vendor directories (case-insensitive for macOS/Windows)
+        // require path boundary: must start with the vendor dir or be preceded by '/'
         for vendor_dir in VENDOR_DIRS {
-            if path.contains(vendor_dir) {
+            if lower.starts_with(vendor_dir) {
                 return true;
+            }
+            // check for /vendor_dir/ in middle of path without allocation
+            if let Some(pos) = lower.find(vendor_dir) {
+                if pos > 0 && lower.as_bytes()[pos - 1] == b'/' {
+                    return true;
+                }
             }
         }
 
@@ -199,23 +275,33 @@ impl CompiledAllowlist {
         false
     }
 
-    /// check if the captured secret value contains a stopword
+    /// check if the captured secret value contains a stopword.
+    /// uses word-boundary matching to avoid false positives where a stopword
+    /// appears as a substring of an unrelated word (e.g. "test" in "attestation").
     pub fn contains_stopword(&self, secret: &[u8]) -> bool {
         let lower = String::from_utf8_lossy(secret).to_lowercase();
 
         for stopword in DEFAULT_STOPWORDS {
-            if lower.contains(stopword) {
+            if contains_word(&lower, stopword) {
                 return true;
             }
         }
 
         for stopword in &self.user_stopwords {
-            if lower.contains(&stopword.to_lowercase()) {
+            if contains_word(&lower, stopword.as_str()) {
                 return true;
             }
         }
 
         false
+    }
+
+    /// check if the captured secret is a placeholder pattern (e.g. XXXX...).
+    /// this is a subset of the stopword check that applies to all rules,
+    /// including tier 1 prefix-based rules.
+    pub fn is_placeholder_pattern(&self, secret: &[u8]) -> bool {
+        let lower = String::from_utf8_lossy(secret).to_lowercase();
+        contains_word(&lower, "xxx")
     }
 
     /// check if the captured secret value is actually a variable reference
@@ -339,6 +425,9 @@ mod tests {
         assert!(al.is_path_skipped("app.min.js"));
         assert!(al.is_path_skipped("style.min.css"));
         assert!(al.is_path_skipped("bundle.js.map"));
+        assert!(al.is_path_skipped("style.css.map"));
+        // plain .map files should NOT be skipped
+        assert!(!al.is_path_skipped("data.map"));
     }
 
     #[test]
@@ -495,8 +584,9 @@ mod tests {
         let al = default_al();
         assert!(al.is_documentation_file("README.md"));
         assert!(al.is_documentation_file("docs/guide.rst"));
-        assert!(al.is_documentation_file("NOTES.txt"));
         assert!(al.is_documentation_file("path/to/file.adoc"));
+        // .txt is intentionally NOT a doc extension to avoid weakening scans on files like secrets.txt
+        assert!(!al.is_documentation_file("NOTES.txt"));
     }
 
     #[test]

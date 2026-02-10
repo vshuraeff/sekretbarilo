@@ -16,6 +16,7 @@ const COMMON_PASSWORDS: &[&str] = &[
 
 /// result of password strength analysis
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct PasswordStrength {
     pub score: f64,
     pub has_uppercase: bool,
@@ -42,9 +43,7 @@ pub fn analyze_strength(data: &[u8]) -> PasswordStrength {
     let has_uppercase = data.iter().any(|&b| b.is_ascii_uppercase());
     let has_lowercase = data.iter().any(|&b| b.is_ascii_lowercase());
     let has_digits = data.iter().any(|&b| b.is_ascii_digit());
-    let has_special = data.iter().any(|&b| {
-        b.is_ascii_punctuation() || (b.is_ascii_graphic() && !b.is_ascii_alphanumeric())
-    });
+    let has_special = data.iter().any(|&b| b.is_ascii_punctuation());
 
     let char_class_count =
         has_uppercase as usize + has_lowercase as usize + has_digits as usize + has_special as usize;

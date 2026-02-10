@@ -1,5 +1,6 @@
 use std::fs;
 use std::io;
+#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -25,9 +26,9 @@ if [ -n "$SEKRETBARILO_BIN" ]; then
     exit_code=$?
     if [ $exit_code -eq 1 ]; then
         exit 1
-    elif [ $exit_code -eq 2 ]; then
-        echo "[ERROR] sekretbarilo encountered an internal error" >&2
-        exit 2
+    elif [ $exit_code -ne 0 ]; then
+        echo "[ERROR] sekretbarilo exited with code $exit_code" >&2
+        exit $exit_code
     fi
 else
     echo "[WARN] sekretbarilo not found in PATH or ~/.cargo/bin/, skipping secret scan" >&2
@@ -82,19 +83,35 @@ impl std::fmt::Display for InstallResult {
     }
 }
 
-/// find the git repository root using `git rev-parse --show-toplevel`
-fn find_git_root() -> Result<PathBuf, InstallError> {
+/// find the git hooks directory using `git rev-parse --git-path hooks`.
+/// this respects core.hooksPath and worktree layouts.
+fn find_hooks_dir() -> Result<PathBuf, InstallError> {
     let output = Command::new("git")
-        .args(["rev-parse", "--show-toplevel"])
+        .args(["rev-parse", "--git-path", "hooks"])
         .output()
-        .map_err(|_| InstallError::GitNotFound)?;
+        .map_err(|e| {
+            if e.kind() == io::ErrorKind::NotFound {
+                InstallError::GitNotFound
+            } else {
+                InstallError::IoError(e)
+            }
+        })?;
 
     if !output.status.success() {
         return Err(InstallError::NotARepository);
     }
 
-    let root = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    Ok(PathBuf::from(root))
+    let hooks_path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let path = PathBuf::from(&hooks_path);
+
+    // git rev-parse --git-path returns paths relative to CWD, not repo root.
+    // resolve relative paths against the current working directory.
+    if path.is_relative() {
+        let cwd = std::env::current_dir().map_err(InstallError::IoError)?;
+        Ok(cwd.join(path))
+    } else {
+        Ok(path)
+    }
 }
 
 /// install the pre-commit hook into the given hooks directory.
@@ -102,10 +119,7 @@ fn find_git_root() -> Result<PathBuf, InstallError> {
 pub fn install(hooks_dir: Option<&Path>) -> Result<InstallResult, InstallError> {
     let hooks_path = match hooks_dir {
         Some(dir) => dir.to_path_buf(),
-        None => {
-            let git_root = find_git_root()?;
-            git_root.join(".git").join("hooks")
-        }
+        None => find_hooks_dir()?,
     };
 
     // create hooks directory if it doesn't exist
@@ -121,10 +135,9 @@ pub fn install(hooks_dir: Option<&Path>) -> Result<InstallResult, InstallError> 
             return Ok(InstallResult::AlreadyInstalled);
         }
 
-        // append to existing hook
-        let mut content = existing;
-        content.push_str(&hook_script());
-        content.push('\n');
+        // append to existing hook, inserting before trailing exit if present
+        let script = hook_script();
+        let content = insert_before_trailing_exit(&existing, &script);
         fs::write(&hook_file, content)?;
         make_executable(&hook_file)?;
         Ok(InstallResult::Appended)
@@ -137,7 +150,27 @@ pub fn install(hooks_dir: Option<&Path>) -> Result<InstallResult, InstallError> 
     }
 }
 
+/// insert the hook script before any trailing `exit` line in existing content.
+/// if no trailing exit is found, appends at the end.
+fn insert_before_trailing_exit(existing: &str, script: &str) -> String {
+    let trimmed = existing.trim_end();
+    // check if the last non-empty line starts with "exit"
+    if let Some(last_line) = trimmed.lines().last() {
+        let stripped = last_line.trim();
+        if stripped.starts_with("exit ") || stripped == "exit" {
+            // compute the byte offset of the last line directly
+            let last_line_start = trimmed.len() - last_line.len();
+            let before = &existing[..last_line_start];
+            let exit_and_after = &existing[last_line_start..];
+            return format!("{}{}\n{}", before, script, exit_and_after);
+        }
+    }
+    // no trailing exit, just append
+    format!("{}{}\n", existing, script)
+}
+
 /// set executable permission on a file (unix only)
+#[cfg(unix)]
 fn make_executable(path: &Path) -> Result<(), io::Error> {
     let metadata = fs::metadata(path)?;
     let mut perms = metadata.permissions();
@@ -146,6 +179,12 @@ fn make_executable(path: &Path) -> Result<(), io::Error> {
     let new_mode = mode | ((mode & 0o444) >> 2);
     perms.set_mode(new_mode);
     fs::set_permissions(path, perms)
+}
+
+/// no-op on non-unix platforms (git hooks don't need execute bits on windows)
+#[cfg(not(unix))]
+fn make_executable(_path: &Path) -> Result<(), io::Error> {
+    Ok(())
 }
 
 #[cfg(test)]
@@ -256,8 +295,8 @@ mod tests {
         assert!(script.contains("exit_code=$?"));
         // exits with code 1 when secrets found
         assert!(script.contains("exit_code -eq 1"));
-        // handles internal error (code 2)
-        assert!(script.contains("exit_code -eq 2"));
+        // handles any non-zero exit code
+        assert!(script.contains("exit_code -ne 0"));
     }
 
     #[test]
@@ -319,7 +358,34 @@ mod tests {
         // original content is preserved
         assert!(content.contains("# my custom linter"));
         assert!(content.contains("python lint.py"));
-        // our hook is appended
+        // our hook is inserted before the exit
         assert!(content.contains("\"$SEKRETBARILO_BIN\" scan"));
+        // exit should come AFTER our hook
+        let hook_pos = content.find(HOOK_MARKER).unwrap();
+        let exit_pos = content.rfind("exit $?").unwrap();
+        assert!(
+            hook_pos < exit_pos,
+            "sekretbarilo hook should be inserted before trailing exit"
+        );
+    }
+
+    #[test]
+    fn test_insert_before_trailing_exit() {
+        let existing = "#!/bin/sh\necho hello\nexit 0\n";
+        let script = "\n# test hook\necho hook\n# end test";
+        let result = insert_before_trailing_exit(existing, script);
+        // hook should appear before exit
+        let hook_pos = result.find("# test hook").unwrap();
+        let exit_pos = result.rfind("exit 0").unwrap();
+        assert!(hook_pos < exit_pos);
+    }
+
+    #[test]
+    fn test_insert_without_trailing_exit() {
+        let existing = "#!/bin/sh\necho hello\n";
+        let script = "\n# test hook\necho hook\n# end test";
+        let result = insert_before_trailing_exit(existing, script);
+        // hook should be appended at end
+        assert!(result.ends_with("# end test\n"));
     }
 }
