@@ -153,18 +153,25 @@ impl CompiledAllowlist {
             return true;
         }
 
-        // skip binary file extensions
         let lower = path.to_lowercase();
-        for ext in BINARY_EXTENSIONS {
-            if lower.ends_with(&format!(".{}", ext)) {
-                return true;
+
+        // skip binary file extensions (without format! allocation per extension)
+        if let Some(dot_pos) = lower.rfind('.') {
+            let ext = &lower[dot_pos + 1..];
+            for &bin_ext in BINARY_EXTENSIONS {
+                if ext == bin_ext {
+                    return true;
+                }
             }
         }
 
         // skip generated file extensions (multi-part like .min.js)
-        for ext in GENERATED_EXTENSIONS {
-            if lower.ends_with(&format!(".{}", ext)) {
-                return true;
+        for &gen_ext in GENERATED_EXTENSIONS {
+            if lower.ends_with(gen_ext) {
+                let prefix_len = lower.len() - gen_ext.len();
+                if prefix_len > 0 && lower.as_bytes()[prefix_len - 1] == b'.' {
+                    return true;
+                }
             }
         }
 
@@ -246,9 +253,16 @@ impl CompiledAllowlist {
         }
 
         // check doc directories
-        for dir in DOC_DIRS {
-            if lower.starts_with(dir) || lower.contains(&format!("/{}", dir)) {
+        for &dir in DOC_DIRS {
+            if lower.starts_with(dir) {
                 return true;
+            }
+            // check for /docs/, /doc/, etc. in middle of path
+            // without format! allocation
+            if let Some(pos) = lower.find(dir) {
+                if pos > 0 && lower.as_bytes()[pos - 1] == b'/' {
+                    return true;
+                }
             }
         }
 

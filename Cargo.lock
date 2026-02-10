@@ -409,6 +409,7 @@ dependencies = [
  "bstr",
  "criterion",
  "memchr",
+ "rayon",
  "regex",
  "serde",
  "toml",

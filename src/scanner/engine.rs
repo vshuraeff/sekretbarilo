@@ -1,10 +1,15 @@
 // core scanning engine (aho-corasick + regex)
 
+use rayon::prelude::*;
+
 use crate::config::allowlist::CompiledAllowlist;
 use crate::diff::parser::DiffFile;
 use crate::scanner::entropy;
 use crate::scanner::hash_detect;
 use crate::scanner::rules::CompiledScanner;
+
+/// minimum number of files to trigger parallel processing with rayon
+const PARALLEL_FILE_THRESHOLD: usize = 4;
 
 /// a detected secret finding
 #[derive(Debug, Clone)]
@@ -28,43 +33,71 @@ pub struct Finding {
 ///   7. stopword filter (skip if secret contains stopword)
 ///   8. hash detection (skip if it's a hash)
 ///   9. entropy evaluation (with doc file bonus if applicable)
+///
+/// for diffs with many files, processing is parallelized with rayon.
 pub fn scan(
     files: &[DiffFile],
     scanner: &CompiledScanner,
     allowlist: &CompiledAllowlist,
 ) -> Vec<Finding> {
+    // filter to scannable files first (early exit for binary, deleted, allowlisted)
+    let scannable: Vec<&DiffFile> = files
+        .iter()
+        .filter(|f| !f.is_deleted && !f.is_binary && !f.added_lines.is_empty())
+        .filter(|f| !allowlist.is_path_skipped(&f.path))
+        .collect();
+
+    if scannable.is_empty() {
+        return Vec::new();
+    }
+
+    // use parallel processing for large diffs
+    if scannable.len() >= PARALLEL_FILE_THRESHOLD {
+        scannable
+            .par_iter()
+            .flat_map(|file| scan_file(file, scanner, allowlist))
+            .collect()
+    } else {
+        let mut findings = Vec::new();
+        for file in &scannable {
+            findings.extend(scan_file(file, scanner, allowlist));
+        }
+        findings
+    }
+}
+
+/// scan a single file's added lines for secrets.
+/// returns findings for this file only.
+fn scan_file(
+    file: &DiffFile,
+    scanner: &CompiledScanner,
+    allowlist: &CompiledAllowlist,
+) -> Vec<Finding> {
+    let is_doc = allowlist.is_documentation_file(&file.path);
+    let num_rules = scanner.rules.len();
+
+    // reusable bitset for candidate rules (avoids per-line vec allocation)
+    let mut candidate_bits = vec![false; num_rules];
     let mut findings = Vec::new();
 
-    for file in files {
-        // skip deleted and binary files
-        if file.is_deleted || file.is_binary {
-            continue;
-        }
-
-        // step 1: global path allowlist
-        if allowlist.is_path_skipped(&file.path) {
-            continue;
-        }
-
-        let is_doc = allowlist.is_documentation_file(&file.path);
-
-        for added_line in &file.added_lines {
-            scan_line(
-                &file.path,
-                added_line.line_number,
-                &added_line.content,
-                scanner,
-                allowlist,
-                is_doc,
-                &mut findings,
-            );
-        }
+    for added_line in &file.added_lines {
+        scan_line(
+            &file.path,
+            added_line.line_number,
+            &added_line.content,
+            scanner,
+            allowlist,
+            is_doc,
+            &mut candidate_bits,
+            &mut findings,
+        );
     }
 
     findings
 }
 
-/// scan a single line against all rules using the aho-corasick pre-filter
+/// scan a single line against all rules using the aho-corasick pre-filter.
+/// uses a reusable bitset to avoid allocations per line.
 fn scan_line(
     file_path: &str,
     line_number: usize,
@@ -72,28 +105,39 @@ fn scan_line(
     scanner: &CompiledScanner,
     allowlist: &CompiledAllowlist,
     is_doc_file: bool,
+    candidate_bits: &mut [bool],
     findings: &mut Vec<Finding>,
 ) {
+    // clear bitset
+    for bit in candidate_bits.iter_mut() {
+        *bit = false;
+    }
+
     // step 2: aho-corasick keyword pre-filter
     // find which rules have keywords present in this line
-    let mut candidate_rules = Vec::new();
+    let mut has_candidates = false;
     for mat in scanner.automaton.find_iter(line) {
         let pattern_idx = mat.pattern().as_usize();
         if let Some(rule_indices) = scanner.keyword_to_rules.get(pattern_idx) {
             for &rule_idx in rule_indices {
-                if !candidate_rules.contains(&rule_idx) {
-                    candidate_rules.push(rule_idx);
+                if !candidate_bits[rule_idx] {
+                    candidate_bits[rule_idx] = true;
+                    has_candidates = true;
                 }
             }
         }
     }
 
-    if candidate_rules.is_empty() {
+    if !has_candidates {
         return;
     }
 
     // step 3: regex matching only for candidate rules
-    for &rule_idx in &candidate_rules {
+    for rule_idx in 0..scanner.rules.len() {
+        if !candidate_bits[rule_idx] {
+            continue;
+        }
+
         let rule = &scanner.rules[rule_idx];
 
         if let Some(captures) = rule.regex.captures(line) {
@@ -352,10 +396,9 @@ mod tests {
         );
         let findings = scan(&[file1, file2], &scanner, &al);
         assert_eq!(findings.len(), 2);
-        assert_eq!(findings[0].rule_id, "aws-key");
-        assert_eq!(findings[0].file, "aws.rs");
-        assert_eq!(findings[1].rule_id, "github-token");
-        assert_eq!(findings[1].file, "github.rs");
+        // with parallel processing, order may vary, so check both exist
+        assert!(findings.iter().any(|f| f.rule_id == "aws-key" && f.file == "aws.rs"));
+        assert!(findings.iter().any(|f| f.rule_id == "github-token" && f.file == "github.rs"));
     }
 
     #[test]
@@ -576,5 +619,40 @@ mod tests {
         // some moderate-entropy strings will pass in source but not in docs
         // this test verifies the mechanism works (doc findings should differ or be fewer)
         let _ = findings_doc; // doc behavior is valid either way depending on actual entropy
+    }
+
+    #[test]
+    fn scan_skips_files_with_no_added_lines() {
+        let scanner = make_scanner(vec![
+            make_rule("test", r"secret_[a-z]+", 0, vec!["secret_"], None),
+        ]);
+        let al = default_al();
+        let file = DiffFile {
+            path: "empty.rs".to_string(),
+            is_new: false,
+            is_deleted: false,
+            is_renamed: false,
+            is_binary: false,
+            added_lines: vec![],
+        };
+        let findings = scan(&[file], &scanner, &al);
+        assert!(findings.is_empty());
+    }
+
+    #[test]
+    fn scan_parallel_with_many_files() {
+        let scanner = make_scanner(vec![
+            make_rule("aws-key", r"(AKIA[A-Z0-9]{16})", 1, vec!["akia"], None),
+        ]);
+        let al = default_al();
+        // create enough files to trigger parallel processing
+        let files: Vec<DiffFile> = (0..10)
+            .map(|i| make_file(
+                &format!("file{}.rs", i),
+                vec![(1, b"key = \"AKIAIOSFODNN7ABCDEFGH\"")],
+            ))
+            .collect();
+        let findings = scan(&files, &scanner, &al);
+        assert_eq!(findings.len(), 10);
     }
 }
