@@ -245,11 +245,16 @@ sekretbarilo uses several techniques to minimize false positives:
 
 ## Performance
 
-sekretbarilo is designed for speed - a pre-commit hook should never slow down your workflow.
+sekretbarilo is designed for speed — a pre-commit hook should never slow down your workflow.
 
-- Typical commits (1-10 files, <100 changed lines): **< 1ms**
-- Medium commits (10-50 files): **< 10ms**
-- Large commits (several MB diff): **< 100ms**
+| scenario | scale | time |
+|---|---|---|
+| typical commit | 1 file, 10 lines | ~2.5 µs |
+| medium commit | 10 files, 500 lines | ~170 µs |
+| large commit | 100 files, 5000 lines | ~680 µs |
+| very large commit | 400 files, 40000 lines | ~3.7 ms |
+
+Throughput scales sub-linearly — the aho-corasick pre-filter skips clean lines, reaching ~10.7M lines/sec on large diffs. Aho-corasick keyword matching is **~96x faster** than naive string search.
 
 Key optimizations:
 - Aho-corasick automaton for single-pass keyword matching across all rules
