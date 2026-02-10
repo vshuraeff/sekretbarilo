@@ -1,0 +1,8 @@
+# default detection rules for sekretbarilo
+# rules are organized by tier (1 = lowest false positive rate)
+
+# tier 1: prefix-based rules (very low false positives)
+
+# tier 2: context-needed rules (medium false positives)
+
+# tier 3: catch-all rules (highest false positive risk)

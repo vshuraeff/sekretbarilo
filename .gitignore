@@ -1,0 +1,20 @@
+# ralphex progress logs
+progress*.txt
+
+# rust build artifacts
+/target
+
+# editor swap/backup files
+*.swp
+*.swo
+*~
+.*.swp
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# OS
+.DS_Store
+Thumbs.db
