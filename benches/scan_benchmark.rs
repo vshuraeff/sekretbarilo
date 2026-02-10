@@ -1,5 +1,6 @@
 use criterion::{criterion_group, criterion_main, Criterion, BenchmarkId};
 
+use aho_corasick::AhoCorasick;
 use sekretbarilo::config::allowlist::CompiledAllowlist;
 use sekretbarilo::diff::parser::{parse_diff, AddedLine, DiffFile};
 use sekretbarilo::scanner::engine::scan;
@@ -147,10 +148,15 @@ fn bench_very_large_diff(c: &mut Criterion) {
     let rules = load_default_rules().unwrap();
     let scanner = compile_rules(&rules).unwrap();
     let allowlist = CompiledAllowlist::default_allowlist().unwrap();
-    // ~200 files x 100 lines = 20000 lines, generates a large payload
-    let diff_bytes = generate_diff_bytes(200, 100);
+    // ~400 files x 100 lines = 40000 lines, generates a 1MB+ payload
+    let diff_bytes = generate_diff_bytes(400, 100);
+    assert!(
+        diff_bytes.len() > 1_000_000,
+        "very large diff should be 1MB+, got {} bytes",
+        diff_bytes.len()
+    );
 
-    c.bench_function("scan_very_large_200files_20000lines", |b| {
+    c.bench_function("scan_very_large_400files_40000lines", |b| {
         b.iter(|| {
             let files = parse_diff(&diff_bytes);
             scan(&files, &scanner, &allowlist)
@@ -217,9 +223,79 @@ fn bench_aho_corasick_prefilter(c: &mut Criterion) {
 
     c.bench_function("prefilter_no_keywords_100lines", |b| {
         b.iter(|| {
-            scan(&[no_match_file.clone()], &scanner, &allowlist)
+            scan(std::slice::from_ref(&no_match_file), &scanner, &allowlist)
         })
     });
+}
+
+// -- benchmark: aho-corasick vs naive keyword matching --
+// compares the aho-corasick automaton approach against naive str::contains per keyword
+
+fn bench_aho_corasick_vs_naive(c: &mut Criterion) {
+    let rules = load_default_rules().unwrap();
+    // collect all unique keywords from all rules
+    let keywords: Vec<String> = {
+        let mut kws = Vec::new();
+        for rule in &rules {
+            for kw in &rule.keywords {
+                let lower = kw.to_lowercase();
+                if !kws.contains(&lower) {
+                    kws.push(lower);
+                }
+            }
+        }
+        kws
+    };
+
+    let automaton = AhoCorasick::builder()
+        .ascii_case_insensitive(true)
+        .build(&keywords)
+        .unwrap();
+
+    // generate test lines: mix of matching and non-matching
+    let lines: Vec<Vec<u8>> = (0..1000)
+        .map(|i| {
+            match i % 10 {
+                // ~10% of lines contain a keyword that might match
+                0 => format!("let aws_key = \"AKIAIOSFODNN7ABCDEFG{:03}\";", i).into_bytes(),
+                1 => format!("const token = \"ghp_abcdef{:04}\";", i).into_bytes(),
+                2 => format!("password = \"s3cret_value_{:03}\";", i).into_bytes(),
+                _ => format!("let x_{i} = compute_value({i}) + offset;").into_bytes(),
+            }
+        })
+        .collect();
+
+    let mut group = c.benchmark_group("keyword_matching");
+
+    group.bench_function("aho_corasick", |b| {
+        b.iter(|| {
+            let mut match_count = 0usize;
+            for line in &lines {
+                if automaton.find(line).is_some() {
+                    match_count += 1;
+                }
+            }
+            match_count
+        })
+    });
+
+    group.bench_function("naive_contains", |b| {
+        b.iter(|| {
+            let mut match_count = 0usize;
+            for line in &lines {
+                let line_lower: Vec<u8> = line.iter().map(|&b| b.to_ascii_lowercase()).collect();
+                for kw in &keywords {
+                    if line_lower.windows(kw.len()).any(|w| w == kw.as_bytes()) {
+                        match_count += 1;
+                        break;
+                    }
+                }
+            }
+            match_count
+        })
+    });
+
+    group.finish();
 }
 
 // -- benchmark: diff parsing only --
@@ -276,6 +352,7 @@ criterion_group!(
     bench_scan_with_secrets,
     bench_entropy,
     bench_aho_corasick_prefilter,
+    bench_aho_corasick_vs_naive,
     bench_diff_parsing,
     bench_path_allowlist,
 );

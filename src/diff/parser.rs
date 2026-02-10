@@ -441,4 +441,251 @@ new mode 100755
         assert!(!files[0].is_binary);
         assert!(files[0].added_lines.is_empty());
     }
+
+    // --- additional tests for plan 8.1 coverage ---
+
+    #[test]
+    fn line_number_mapping_with_mixed_changes() {
+        // verifies correct line numbering when added, removed, and context lines interleave
+        let diff = b"\
+diff --git a/f.rs b/f.rs
+--- a/f.rs
++++ b/f.rs
+@@ -1,7 +1,8 @@
+ line1
+-removed_line2
++added_line2
++added_line3
+ line4
+ line5
+-removed_line6
++added_line6
+ line7
+";
+        let files = parse_diff(diff);
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].added_lines.len(), 3);
+        // added_line2 replaces removed_line2, new line number = 2
+        assert_eq!(files[0].added_lines[0].line_number, 2);
+        assert_eq!(files[0].added_lines[0].content, b"added_line2");
+        // added_line3 is inserted, new line number = 3
+        assert_eq!(files[0].added_lines[1].line_number, 3);
+        assert_eq!(files[0].added_lines[1].content, b"added_line3");
+        // after context lines 4,5 (new lines 4,5), removed_line6 is replaced by added_line6
+        // context: line4=4, line5=5, removed doesn't advance, added_line6=6
+        assert_eq!(files[0].added_lines[2].line_number, 6);
+        assert_eq!(files[0].added_lines[2].content, b"added_line6");
+    }
+
+    #[test]
+    fn line_number_mapping_across_multiple_hunks() {
+        // verifies line numbers reset correctly for each hunk
+        let diff = b"\
+diff --git a/f.rs b/f.rs
+--- a/f.rs
++++ b/f.rs
+@@ -0,0 +1,2 @@
++first_line
++second_line
+@@ -5,0 +7,1 @@
++inserted_at_7
+@@ -20 +22 @@
+-old_twenty
++new_at_22
+";
+        let files = parse_diff(diff);
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].added_lines.len(), 4);
+        assert_eq!(files[0].added_lines[0].line_number, 1);
+        assert_eq!(files[0].added_lines[1].line_number, 2);
+        assert_eq!(files[0].added_lines[2].line_number, 7);
+        assert_eq!(files[0].added_lines[3].line_number, 22);
+    }
+
+    #[test]
+    fn parse_renamed_file_with_content_changes() {
+        let diff = b"\
+diff --git a/old_name.rs b/new_name.rs
+rename from old_name.rs
+rename to new_name.rs
+--- a/old_name.rs
++++ b/new_name.rs
+@@ -1,3 +1,4 @@
+ fn hello() {
++    println!(\"world\");
+     // old comment
+ }
+";
+        let files = parse_diff(diff);
+        assert_eq!(files.len(), 1);
+        assert!(files[0].is_renamed);
+        assert_eq!(files[0].path, "new_name.rs");
+        assert_eq!(files[0].added_lines.len(), 1);
+        assert_eq!(files[0].added_lines[0].line_number, 2);
+        assert_eq!(files[0].added_lines[0].content, b"    println!(\"world\");");
+    }
+
+    #[test]
+    fn parse_git_binary_patch() {
+        // git can also produce "GIT binary patch" markers
+        let diff = b"\
+diff --git a/data.bin b/data.bin
+new file mode 100644
+GIT binary patch
+literal 1234
+zcmb7EO>5gg5Ps
+";
+        let files = parse_diff(diff);
+        assert_eq!(files.len(), 1);
+        assert!(files[0].is_binary);
+        assert!(files[0].is_new);
+        assert!(files[0].added_lines.is_empty());
+    }
+
+    #[test]
+    fn parse_mixed_diff_multiple_file_types() {
+        // a single diff containing new, deleted, renamed, binary, and normal files
+        let diff = b"\
+diff --git a/new.rs b/new.rs
+new file mode 100644
+--- /dev/null
++++ b/new.rs
+@@ -0,0 +1,2 @@
++fn new() {}
++fn also_new() {}
+diff --git a/removed.rs b/removed.rs
+deleted file mode 100644
+--- a/removed.rs
++++ /dev/null
+@@ -1,2 +0,0 @@
+-fn removed() {}
+-fn also_removed() {}
+diff --git a/old.rs b/renamed.rs
+rename from old.rs
+rename to renamed.rs
+diff --git a/image.png b/image.png
+Binary files /dev/null and b/image.png differ
+diff --git a/normal.rs b/normal.rs
+--- a/normal.rs
++++ b/normal.rs
+@@ -1 +1,2 @@
+ existing
++added
+";
+        let files = parse_diff(diff);
+        assert_eq!(files.len(), 5);
+
+        // new file
+        assert!(files[0].is_new);
+        assert_eq!(files[0].path, "new.rs");
+        assert_eq!(files[0].added_lines.len(), 2);
+
+        // deleted file
+        assert!(files[1].is_deleted);
+        assert_eq!(files[1].path, "removed.rs");
+        assert!(files[1].added_lines.is_empty());
+
+        // renamed file
+        assert!(files[2].is_renamed);
+        assert_eq!(files[2].path, "renamed.rs");
+
+        // binary file
+        assert!(files[3].is_binary);
+        assert_eq!(files[3].path, "image.png");
+        assert!(files[3].added_lines.is_empty());
+
+        // normal file
+        assert!(!files[4].is_new);
+        assert!(!files[4].is_deleted);
+        assert!(!files[4].is_binary);
+        assert_eq!(files[4].path, "normal.rs");
+        assert_eq!(files[4].added_lines.len(), 1);
+        assert_eq!(files[4].added_lines[0].content, b"added");
+    }
+
+    #[test]
+    fn extract_path_deeply_nested() {
+        let header = b"diff --git a/src/very/deep/nested/path/file.rs b/src/very/deep/nested/path/file.rs";
+        assert_eq!(
+            extract_path_from_diff_header(header),
+            "src/very/deep/nested/path/file.rs"
+        );
+    }
+
+    #[test]
+    fn parse_diff_with_only_removals() {
+        // a diff where lines are only removed, no additions
+        let diff = b"\
+diff --git a/f.rs b/f.rs
+--- a/f.rs
++++ b/f.rs
+@@ -5,3 +5,0 @@
+-removed1
+-removed2
+-removed3
+";
+        let files = parse_diff(diff);
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].path, "f.rs");
+        assert!(files[0].added_lines.is_empty());
+    }
+
+    #[test]
+    fn parse_diff_whitespace_only_lines() {
+        // tests that lines with only whitespace after '+' are captured
+        let diff = b"diff --git a/f.rs b/f.rs\n--- a/f.rs\n+++ b/f.rs\n@@ -1,2 +1,3 @@\n line1\n+    \n line3\n";
+        let files = parse_diff(diff);
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].added_lines.len(), 1);
+        // content should be the whitespace after '+'
+        assert_eq!(files[0].added_lines[0].content, b"    ");
+        assert_eq!(files[0].added_lines[0].line_number, 2);
+    }
+
+    #[test]
+    fn hunk_header_with_context_label() {
+        // hunk headers can have function/context labels after the second @@
+        let header = b"@@ -100,5 +200,10 @@ impl Scanner {";
+        assert_eq!(parse_hunk_header_new_start(header), 200);
+    }
+
+    #[test]
+    fn hunk_header_large_line_numbers() {
+        let header = b"@@ -99999,100 +123456,200 @@";
+        assert_eq!(parse_hunk_header_new_start(header), 123456);
+    }
+
+    #[test]
+    fn parse_empty_newlines_only_diff() {
+        // input with only newlines, no actual diff content
+        let files = parse_diff(b"\n\n\n");
+        assert!(files.is_empty());
+    }
+
+    #[test]
+    fn parse_new_file_with_single_line() {
+        let diff = b"\
+diff --git a/single.txt b/single.txt
+new file mode 100644
+--- /dev/null
++++ b/single.txt
+@@ -0,0 +1 @@
++only line
+\\ No newline at end of file
+";
+        let files = parse_diff(diff);
+        assert_eq!(files.len(), 1);
+        assert!(files[0].is_new);
+        assert_eq!(files[0].added_lines.len(), 1);
+        assert_eq!(files[0].added_lines[0].line_number, 1);
+        assert_eq!(files[0].added_lines[0].content, b"only line");
+    }
+
+    #[test]
+    fn parse_diff_path_with_spaces() {
+        let header = b"diff --git a/path with spaces/file.rs b/path with spaces/file.rs";
+        // the current parser finds " b/" which will match at the correct position
+        let path = extract_path_from_diff_header(header);
+        assert_eq!(path, "path with spaces/file.rs");
+    }
 }
