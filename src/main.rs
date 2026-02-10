@@ -2,12 +2,55 @@ mod diff;
 mod scanner;
 mod config;
 mod output;
+mod hook;
 
 fn main() {
     std::process::exit(run());
 }
 
 fn run() -> i32 {
+    let args: Vec<String> = std::env::args().collect();
+
+    match args.get(1).map(|s| s.as_str()) {
+        Some("install") => run_install(),
+        Some("scan") | None => run_scan(),
+        Some("--help" | "-h") => {
+            print_usage();
+            0
+        }
+        Some(cmd) => {
+            eprintln!("[ERROR] unknown command: {}", cmd);
+            eprintln!();
+            print_usage();
+            2
+        }
+    }
+}
+
+fn print_usage() {
+    eprintln!("sekretbarilo - git pre-commit secret scanner");
+    eprintln!();
+    eprintln!("usage:");
+    eprintln!("  sekretbarilo              scan staged changes (default)");
+    eprintln!("  sekretbarilo scan         scan staged changes");
+    eprintln!("  sekretbarilo install      install git pre-commit hook");
+    eprintln!("  sekretbarilo --help       show this help");
+}
+
+fn run_install() -> i32 {
+    match hook::install(None) {
+        Ok(result) => {
+            eprintln!("[OK] {}", result);
+            0
+        }
+        Err(e) => {
+            eprintln!("[ERROR] {}", e);
+            2
+        }
+    }
+}
+
+fn run_scan() -> i32 {
     // exit codes: 0 = no secrets, 1 = secrets found, 2 = internal error
 
     // step 1: get the staged diff
