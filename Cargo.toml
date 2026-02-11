@@ -1,6 +1,6 @@
 [package]
 name = "sekretbarilo"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "High-performance Rust git pre-commit secret scanner"
 license = "MIT"
@@ -17,6 +17,7 @@ rayon = "1.10"
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
 tempfile = "3"
+serial_test = "3"
 
 [[bench]]
 name = "scan_benchmark"

@@ -6,10 +6,11 @@ High-performance Rust git pre-commit hook that scans staged changes for secrets,
 
 ## Features
 
-- **Fast**: sub-millisecond scans on typical commits using aho-corasick multi-pattern matching
+- **Fast**: typical commits scan in ~2.5 µs; even 400-file diffs complete in under 4 ms
 - **Three-tier rule system**: 42 built-in rules organized by precision (prefix-based, context-aware, catch-all)
 - **Low false positives**: Shannon entropy analysis, stopword filtering, hash detection, variable reference detection
-- **Configurable**: project-level `.sekretbarilo.toml` for allowlists, custom rules, and overrides
+- **Audit mode**: scan all tracked files or full git history for secrets (`sekretbarilo audit`)
+- **Configurable**: hierarchical `.sekretbarilo.toml` (system, user, project) for allowlists, custom rules, and overrides
 - **Zero config needed**: works out of the box with sensible defaults
 - **Blocks .env files**: automatically prevents committing `.env`, `.env.local`, `.env.production` etc.
 
@@ -51,6 +52,46 @@ Or simply:
 
 ```sh
 sekretbarilo
+```
+
+## Audit mode
+
+Scan all tracked files in the working tree for secrets:
+
+```sh
+sekretbarilo audit
+```
+
+Scan the full git history for secrets (without switching branches):
+
+```sh
+sekretbarilo audit --history
+```
+
+Filter history scans by branch or date range:
+
+```sh
+sekretbarilo audit --history --branch main
+sekretbarilo audit --history --since 2024-01-01
+sekretbarilo audit --history --since 2024-01-01 --until 2024-06-30
+sekretbarilo audit --history --branch main --since 2024-01-01
+```
+
+Include untracked ignored files in the audit:
+
+```sh
+sekretbarilo audit --include-ignored
+```
+
+Audit findings use `[AUDIT]` prefix and the same exit codes as scan mode.
+
+### Audit configuration
+
+```toml
+[audit]
+include_ignored = false                  # include untracked ignored files (default: false)
+exclude_patterns = ["^vendor/", "^build/"]  # regex patterns to exclude from audit
+include_patterns = ["\\.rs$"]            # regex patterns to force-include (overrides excludes)
 ```
 
 ## How it works
@@ -100,6 +141,59 @@ Secret values are always masked - only the first 2 and last 2 characters are sho
 ## Configuration
 
 Create a `.sekretbarilo.toml` file in your repository root to customize behavior.
+
+### Config file lookup order
+
+sekretbarilo searches for config files in the following locations (lowest priority first):
+
+| Priority | Location | Description |
+|----------|----------|-------------|
+| 1 (lowest) | `/etc/sekretbarilo.toml` | System-wide defaults |
+| 2 | `$XDG_CONFIG_HOME/sekretbarilo/sekretbarilo.toml` | User-level defaults (falls back to `~/.config/sekretbarilo/sekretbarilo.toml`) |
+| 3 | `~/.sekretbarilo.toml` | Home directory config |
+| 4..N | Parent directories from `$HOME` down to repo root | Hierarchical project configs |
+| N+1 (highest) | `.sekretbarilo.toml` in current directory | Project-specific config |
+
+All found config files are loaded and merged. The merge strategy is:
+
+- **Scalar fields** (e.g., `entropy_threshold`): the most local (highest priority) value wins
+- **List fields** (e.g., `allowlist.paths`, `allowlist.stopwords`): concatenated from all levels, deduplicated
+- **Rules** (by `id`): if the same rule `id` appears at multiple levels, the most local definition wins; rules with unique ids from all levels are combined
+
+This allows you to set organization-wide defaults in `~/.config/sekretbarilo/sekretbarilo.toml` and override them per-project.
+
+#### Example: multi-level config
+
+System-wide (`/etc/sekretbarilo.toml`):
+```toml
+[settings]
+entropy_threshold = 3.0
+
+[allowlist]
+stopwords = ["company-safe-token"]
+```
+
+User-level (`~/.config/sekretbarilo/sekretbarilo.toml`):
+```toml
+[allowlist]
+paths = ["vendor/.*"]
+```
+
+Project-level (`.sekretbarilo.toml`):
+```toml
+[settings]
+entropy_threshold = 4.0
+
+[allowlist]
+stopwords = ["project-specific-token"]
+```
+
+Effective merged config:
+```toml
+# entropy_threshold = 4.0 (project wins)
+# allowlist.stopwords = ["company-safe-token", "project-specific-token"] (merged)
+# allowlist.paths = ["vendor/.*"] (from user config)
+```
 
 ### Allowlist paths
 

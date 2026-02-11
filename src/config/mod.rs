@@ -1,9 +1,11 @@
 pub mod allowlist;
+pub mod discovery;
+pub mod merge;
 
 use crate::scanner::rules::{self, Rule};
 use allowlist::CompiledAllowlist;
 use serde::Deserialize;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// top-level project configuration from .sekretbarilo.toml
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -15,6 +17,23 @@ pub struct ProjectConfig {
     /// user-defined rules (merged with defaults)
     #[serde(default)]
     pub rules: Vec<Rule>,
+    /// audit mode configuration
+    #[serde(default)]
+    pub audit: AuditConfig,
+}
+
+/// audit section of the config file
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct AuditConfig {
+    /// include untracked ignored files in audit (default: false)
+    #[serde(default)]
+    pub include_ignored: Option<bool>,
+    /// additional patterns to exclude from audit (regex)
+    #[serde(default)]
+    pub exclude_patterns: Vec<String>,
+    /// patterns to force-include during audit (regex)
+    #[serde(default)]
+    pub include_patterns: Vec<String>,
 }
 
 /// allowlist section of the config file
@@ -48,19 +67,74 @@ pub struct SettingsConfig {
     pub entropy_threshold: Option<f64>,
 }
 
-/// load the project config from .sekretbarilo.toml (if it exists)
-pub fn load_project_config(repo_root: Option<&Path>) -> Result<ProjectConfig, String> {
-    if let Some(root) = repo_root {
-        let config_path = root.join(".sekretbarilo.toml");
-        if config_path.exists() {
-            let content = std::fs::read_to_string(&config_path)
-                .map_err(|e| format!("failed to read {}: {}", config_path.display(), e))?;
-            let config: ProjectConfig = toml::from_str(&content)
-                .map_err(|e| format!("failed to parse {}: {}", config_path.display(), e))?;
-            return Ok(config);
+/// load a single config file. returns None if the file doesn't exist or is empty.
+/// returns Err for read errors on existing files or TOML parse errors (logged to stderr).
+pub fn load_single_config(path: &Path) -> Option<ProjectConfig> {
+    if !path.is_file() {
+        return None;
+    }
+    match std::fs::read_to_string(path) {
+        Ok(content) => {
+            if content.trim().is_empty() {
+                return None;
+            }
+            match toml::from_str::<ProjectConfig>(&content) {
+                Ok(config) => Some(config),
+                Err(e) => {
+                    eprintln!(
+                        "[WARN] failed to parse {}: {} (skipping)",
+                        path.display(),
+                        e
+                    );
+                    None
+                }
+            }
+        }
+        Err(e) => {
+            eprintln!(
+                "[WARN] failed to read {}: {} (skipping)",
+                path.display(),
+                e
+            );
+            None
         }
     }
-    Ok(ProjectConfig::default())
+}
+
+/// discover all config files (system, xdg, directory hierarchy) and load them.
+/// returns configs in priority order (lowest priority first).
+fn discover_and_load_configs(start_dir: &Path) -> Vec<ProjectConfig> {
+    let home = dirs_home(start_dir);
+    let config_paths = discovery::discover_configs(start_dir, &home);
+
+    config_paths
+        .iter()
+        .filter_map(|path| load_single_config(path))
+        .collect()
+}
+
+/// resolve the home directory for hierarchy walking.
+fn dirs_home(fallback: &Path) -> PathBuf {
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| fallback.to_path_buf())
+}
+
+/// load the project config by discovering and merging all config files
+/// in the hierarchy from repo_root up to home directory.
+pub fn load_project_config(repo_root: Option<&Path>) -> Result<ProjectConfig, String> {
+    let start = match repo_root {
+        Some(root) => root.to_path_buf(),
+        None => std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+    };
+
+    let configs = discover_and_load_configs(&start);
+
+    if configs.is_empty() {
+        return Ok(ProjectConfig::default());
+    }
+
+    Ok(merge::merge_all(configs))
 }
 
 /// load the complete set of rules: defaults merged with optional user overrides
@@ -206,6 +280,32 @@ stopwords = ["safe_token"]
     }
 
     #[test]
+    fn parse_audit_config() {
+        let toml = r#"
+[audit]
+include_ignored = true
+exclude_patterns = ["^vendor/", "^build/"]
+include_patterns = ["\\.rs$"]
+"#;
+        let config: ProjectConfig = toml::from_str(toml).unwrap();
+        assert_eq!(config.audit.include_ignored, Some(true));
+        assert_eq!(config.audit.exclude_patterns, vec!["^vendor/", "^build/"]);
+        assert_eq!(config.audit.include_patterns, vec!["\\.rs$"]);
+    }
+
+    #[test]
+    fn parse_config_without_audit_section() {
+        let toml = r#"
+[settings]
+entropy_threshold = 3.5
+"#;
+        let config: ProjectConfig = toml::from_str(toml).unwrap();
+        assert!(config.audit.include_ignored.is_none());
+        assert!(config.audit.exclude_patterns.is_empty());
+        assert!(config.audit.include_patterns.is_empty());
+    }
+
+    #[test]
     fn build_allowlist_from_config() {
         let config = ProjectConfig {
             allowlist: AllowlistConfig {
@@ -221,6 +321,7 @@ stopwords = ["safe_token"]
                 entropy_threshold: Some(4.0),
             },
             rules: vec![],
+            ..Default::default()
         };
 
         let al = build_allowlist(&config, &[]).unwrap();
@@ -261,6 +362,7 @@ stopwords = ["safe_token"]
             },
             settings: SettingsConfig::default(),
             rules: vec![],
+            ..Default::default()
         };
 
         let al = build_allowlist(&config, &rules).unwrap();

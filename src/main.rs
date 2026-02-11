@@ -1,3 +1,4 @@
+mod audit;
 mod diff;
 mod scanner;
 mod config;
@@ -14,6 +15,7 @@ fn run() -> i32 {
     match args.get(1).map(|s| s.as_str()) {
         Some("install") => run_install(),
         Some("scan") | None => run_scan(),
+        Some("audit") => run_audit(&args[2..]),
         Some("--help" | "-h") => {
             print_usage();
             0
@@ -34,7 +36,23 @@ fn print_usage() {
     eprintln!("  sekretbarilo              scan staged changes (default)");
     eprintln!("  sekretbarilo scan         scan staged changes");
     eprintln!("  sekretbarilo install      install git pre-commit hook");
+    eprintln!("  sekretbarilo audit        scan all tracked files in working tree");
     eprintln!("  sekretbarilo --help       show this help");
+    eprintln!();
+    eprintln!("audit flags:");
+    eprintln!("  --history                 scan full git history (all commits)");
+    eprintln!("  --branch <name>           limit to commits reachable from branch (requires --history)");
+    eprintln!("  --since <date>            only commits after date (requires --history)");
+    eprintln!("  --until <date>            only commits before date (requires --history)");
+    eprintln!("  --include-ignored         include untracked ignored files");
+    eprintln!();
+    eprintln!("examples:");
+    eprintln!("  sekretbarilo audit                                 scan working tree");
+    eprintln!("  sekretbarilo audit --history                       scan all commits");
+    eprintln!("  sekretbarilo audit --history --branch main         scan main branch history");
+    eprintln!("  sekretbarilo audit --history --since 2024-01-01    scan commits after date");
+    eprintln!("  sekretbarilo audit --history --branch main --since 2024-01-01 --until 2024-06-30");
+    eprintln!("                                                     scan main branch in date range");
 }
 
 /// resolve the git repository root directory.
@@ -145,4 +163,57 @@ fn run_scan() -> i32 {
     } else {
         0
     }
+}
+
+fn run_audit(args: &[String]) -> i32 {
+    let repo_root = match resolve_repo_root() {
+        Some(r) => r,
+        None => {
+            eprintln!("[ERROR] not a git repository");
+            return 2;
+        }
+    };
+
+    let mut options = audit::AuditOptions::default();
+    let mut i = 0;
+
+    while i < args.len() {
+        match args[i].as_str() {
+            "--history" => options.history = true,
+            "--branch" => {
+                i += 1;
+                if i >= args.len() {
+                    eprintln!("[ERROR] --branch requires a value");
+                    return 2;
+                }
+                options.branch = Some(args[i].clone());
+            }
+            "--since" => {
+                i += 1;
+                if i >= args.len() {
+                    eprintln!("[ERROR] --since requires a value");
+                    return 2;
+                }
+                options.since = Some(args[i].clone());
+            }
+            "--until" => {
+                i += 1;
+                if i >= args.len() {
+                    eprintln!("[ERROR] --until requires a value");
+                    return 2;
+                }
+                options.until = Some(args[i].clone());
+            }
+            "--include-ignored" => options.include_ignored = true,
+            other => {
+                eprintln!("[ERROR] unknown audit flag: {}", other);
+                eprintln!();
+                print_usage();
+                return 2;
+            }
+        }
+        i += 1;
+    }
+
+    audit::run_audit(&repo_root, &options)
 }
