@@ -458,6 +458,8 @@ fn history_list_commits_returns_correct_info() {
     assert_eq!(commits[1].hash, hashes[0]);
     assert_eq!(commits[0].author, "Test User");
     assert_eq!(commits[1].author, "Test User");
+    assert_eq!(commits[0].email, "test@test.com");
+    assert_eq!(commits[1].email, "test@test.com");
     // dates should be non-empty ISO format
     assert!(!commits[0].date.is_empty());
     assert!(!commits[1].date.is_empty());
@@ -494,6 +496,164 @@ fn history_clean_repo_returns_zero() {
     };
     let exit_code = audit::run_audit(dir.path(), &options);
     assert_eq!(exit_code, 0, "history scan of clean repo should return 0");
+}
+
+// -- branch + email output tests --
+
+/// create a test repo with a feature branch containing a secret.
+/// returns the tempdir.
+/// the main branch is clean, the feature branch has a secret in config.py.
+/// initial commit uses a different author so each commit has a unique email.
+fn create_branched_repo_with_secret() -> tempfile::TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+
+    Command::new("git")
+        .args(["init"])
+        .current_dir(root)
+        .output()
+        .expect("git init failed");
+
+    // initial commit on main (clean) - uses a generic maintainer identity
+    Command::new("git")
+        .args(["config", "user.email", "maintainer@example.com"])
+        .current_dir(root)
+        .output()
+        .unwrap();
+    Command::new("git")
+        .args(["config", "user.name", "Repo Maintainer"])
+        .current_dir(root)
+        .output()
+        .unwrap();
+    std::fs::write(root.join("readme.md"), "# project\n").unwrap();
+    Command::new("git")
+        .args(["add", "."])
+        .current_dir(root)
+        .output()
+        .unwrap();
+    Command::new("git")
+        .args(["commit", "-m", "init"])
+        .current_dir(root)
+        .output()
+        .unwrap();
+
+    Command::new("git")
+        .args(["branch", "-M", "main"])
+        .current_dir(root)
+        .output()
+        .unwrap();
+
+    // switch to alice for the feature branch commit (unique email for this commit)
+    Command::new("git")
+        .args(["config", "user.email", "alice@example.com"])
+        .current_dir(root)
+        .output()
+        .unwrap();
+    Command::new("git")
+        .args(["config", "user.name", "Alice Dev"])
+        .current_dir(root)
+        .output()
+        .unwrap();
+
+    // create feature branch with a secret
+    Command::new("git")
+        .args(["checkout", "-b", "feature/auth"])
+        .current_dir(root)
+        .output()
+        .unwrap();
+    std::fs::write(
+        root.join("config.py"),
+        "AWS_KEY = \"AKIAIOSFODNN7ABCDEFG\"\n",
+    )
+    .unwrap();
+    Command::new("git")
+        .args(["add", "."])
+        .current_dir(root)
+        .output()
+        .unwrap();
+    Command::new("git")
+        .args(["commit", "-m", "add secret on feature"])
+        .current_dir(root)
+        .output()
+        .unwrap();
+
+    // go back to main
+    Command::new("git")
+        .args(["checkout", "main"])
+        .current_dir(root)
+        .output()
+        .unwrap();
+
+    dir
+}
+
+#[test]
+fn history_output_includes_branch_and_email() {
+    // verify that the history audit output includes branch names and author email
+    let dir = create_branched_repo_with_secret();
+    let root = dir.path();
+
+    // scan the feature/auth branch for secrets
+    let options = audit::AuditOptions {
+        history: true,
+        branch: Some("feature/auth".to_string()),
+        ..Default::default()
+    };
+
+    // use the low-level api to capture findings and branch map
+    let rules = load_default_rules().unwrap();
+    let scanner = compile_rules(&rules).unwrap();
+    let al = config::build_allowlist(&config::ProjectConfig::default(), &rules).unwrap();
+    let audit_config = config::AuditConfig::default();
+
+    // run the history audit (it prints to stderr)
+    let exit_code = history::run_history_audit(root, &options, &scanner, &al, &audit_config);
+    assert_eq!(exit_code, 1, "should find the secret on feature/auth");
+
+    // verify the internal mechanics: list_commits returns email, get_branches resolves branches
+    let commits = history::list_commits(root, &options).unwrap();
+    // find alice's commit (unique email - only the feature branch commit uses alice@example.com)
+    let feature_commit = commits
+        .iter()
+        .find(|c| c.email == "alice@example.com")
+        .expect("should find a commit with alice's email");
+    assert_eq!(feature_commit.author, "Alice Dev");
+    assert_eq!(feature_commit.email, "alice@example.com");
+
+    // verify branch resolution includes feature/auth
+    let branch_map =
+        history::get_branches_for_commits(&[feature_commit.hash.clone()], root);
+    let branches = branch_map.get(&feature_commit.hash).unwrap();
+    assert!(
+        branches.contains(&"feature/auth".to_string()),
+        "branch map should include feature/auth, got: {:?}",
+        branches
+    );
+
+    // verify the rendered report output includes email and branch info.
+    // run the binary and capture stderr to check the actual report text.
+    let bin = env!("CARGO_BIN_EXE_sekretbarilo");
+    let output = Command::new(bin)
+        .args(["audit", "--history", "--branch", "feature/auth"])
+        .current_dir(root)
+        .output()
+        .expect("failed to run sekretbarilo");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("alice@example.com"),
+        "rendered output should contain author email, got:\n{}",
+        stderr
+    );
+    assert!(
+        stderr.contains("Alice Dev"),
+        "rendered output should contain author name, got:\n{}",
+        stderr
+    );
+    assert!(
+        stderr.contains("feature/auth"),
+        "rendered output should contain branch name, got:\n{}",
+        stderr
+    );
 }
 
 // -- audit filter tests (task 6) --

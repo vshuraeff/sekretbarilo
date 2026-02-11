@@ -85,6 +85,17 @@ sekretbarilo audit --include-ignored
 
 Audit findings use `[AUDIT]` prefix and the same exit codes as scan mode.
 
+History audit output includes author email and branch containment per commit:
+
+```
+  commit: abc12345 (John Doe <john@example.com>, 2024-01-15T10:30:00+00:00)
+    branches: main, feature/auth
+    file: config.py
+    line: 7
+    rule: aws-access-key-id
+    match: AK**************QA
+```
+
 ### Audit configuration
 
 ```toml

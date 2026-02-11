@@ -18,11 +18,28 @@ use crate::scanner::rules::CompiledScanner;
 
 use super::AuditOptions;
 
+/// strip control characters and unicode bidi overrides from a string
+/// to prevent terminal injection via malicious git author/email/branch/file fields.
+fn sanitize_display(s: &str) -> String {
+    s.chars()
+        .filter(|&c| c >= ' ' || c == '\t')
+        .filter(|&c| c != '\x7f')
+        .filter(|&c| {
+            !matches!(c,
+                '\u{200E}'..='\u{200F}' | // LTR/RTL marks
+                '\u{202A}'..='\u{202E}' | // bidi overrides
+                '\u{2066}'..='\u{2069}'   // bidi isolates
+            )
+        })
+        .collect()
+}
+
 /// metadata about a single git commit
 #[derive(Debug, Clone)]
 pub struct CommitInfo {
     pub hash: String,
     pub author: String,
+    pub email: String,
     pub date: String,
     /// unix timestamp for correct chronological ordering
     pub timestamp: i64,
@@ -76,6 +93,50 @@ pub fn validate_date_format(date: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// resolve which branches contain each of the given commit hashes.
+/// returns a map from commit hash to a sorted list of branch names.
+/// only queries branches for the provided hashes (intended for deduped findings, not all commits).
+pub fn get_branches_for_commits(
+    hashes: &[String],
+    repo_root: &Path,
+) -> HashMap<String, Vec<String>> {
+    hashes
+        .par_iter()
+        .map(|hash| {
+            // skip hashes that don't look like hex (defense-in-depth)
+            if !hash.bytes().all(|b| b.is_ascii_hexdigit()) || hash.is_empty() {
+                return (hash.clone(), Vec::new());
+            }
+            let output = Command::new("git")
+                .args(["branch", "--contains", hash, "--format=%(refname:short)"])
+                .current_dir(repo_root)
+                .output();
+
+            let branches = match output {
+                Ok(out) if out.status.success() => {
+                    let stdout = String::from_utf8_lossy(&out.stdout);
+                    let mut branches: Vec<String> = stdout
+                        .lines()
+                        .map(|l| l.trim().to_string())
+                        .filter(|l| !l.is_empty())
+                        .collect();
+                    branches.sort();
+                    branches
+                }
+                _ => {
+                    // branch resolution is best-effort; warn and continue
+                    eprintln!(
+                        "[AUDIT] warning: could not resolve branches for commit {}",
+                        hash
+                    );
+                    Vec::new()
+                }
+            };
+            (hash.clone(), branches)
+        })
+        .collect()
+}
+
 /// list commits matching the audit options.
 /// uses `git rev-list` with optional branch/date filters.
 pub fn list_commits(repo_root: &Path, options: &AuditOptions) -> Result<Vec<CommitInfo>, String> {
@@ -105,8 +166,8 @@ pub fn list_commits(repo_root: &Path, options: &AuditOptions) -> Result<Vec<Comm
         args.push(format!("--until={}", until));
     }
 
-    // output format: hash, author, date, timestamp (one per line, 4 lines per commit)
-    args.push("--format=%H%n%an%n%aI%n%at".to_string());
+    // output format: hash, author, email, date, timestamp (one per line, 5 lines per commit)
+    args.push("--format=%H%n%an%n%ae%n%aI%n%at".to_string());
 
     let output = Command::new("git")
         .args(&args)
@@ -131,19 +192,21 @@ pub fn list_commits(repo_root: &Path, options: &AuditOptions) -> Result<Vec<Comm
             i += 1;
             continue;
         }
-        // expect 4 consecutive lines: hash, author, date, timestamp
-        if i + 3 < lines.len() && !line.is_empty() {
+        // expect 5 consecutive lines: hash, author, email, date, timestamp
+        if i + 4 < lines.len() && !line.is_empty() {
             let hash = line.to_string();
             let author = lines[i + 1].to_string();
-            let date = lines[i + 2].to_string();
-            let timestamp = lines[i + 3].trim().parse::<i64>().unwrap_or(0);
+            let email = lines[i + 2].to_string();
+            let date = lines[i + 3].to_string();
+            let timestamp = lines[i + 4].trim().parse::<i64>().unwrap_or(0);
             commits.push(CommitInfo {
                 hash,
                 author,
+                email,
                 date,
                 timestamp,
             });
-            i += 4;
+            i += 5;
         } else {
             i += 1;
         }
@@ -314,12 +377,26 @@ pub fn deduplicate_findings(findings: Vec<HistoryFinding>) -> Vec<HistoryFinding
 }
 
 /// report history findings to stderr.
-/// groups findings by commit.
+/// groups findings by commit, showing author email and branch containment.
+/// `branch_map` maps commit hashes to the branches that contain them.
 /// returns the total number of findings.
 pub fn report_history_findings(
     findings: &[HistoryFinding],
     commit_count: usize,
     error_count: usize,
+    branch_map: &HashMap<String, Vec<String>>,
+) -> usize {
+    write_history_findings(findings, commit_count, error_count, branch_map, &mut std::io::stderr())
+}
+
+/// write history findings to the given writer.
+/// testable variant of `report_history_findings`.
+pub(crate) fn write_history_findings(
+    findings: &[HistoryFinding],
+    commit_count: usize,
+    error_count: usize,
+    branch_map: &HashMap<String, Vec<String>>,
+    out: &mut dyn std::io::Write,
 ) -> usize {
     let total = findings.len();
     let error_suffix = if error_count > 0 {
@@ -329,16 +406,17 @@ pub fn report_history_findings(
     };
 
     if total == 0 {
-        eprintln!(
+        let _ = writeln!(
+            out,
             "[AUDIT] scanned {} commit(s). 0 secret(s) found.{}",
             commit_count, error_suffix
         );
         return 0;
     }
 
-    eprintln!();
-    eprintln!("[AUDIT] secret(s) detected in git history");
-    eprintln!();
+    let _ = writeln!(out);
+    let _ = writeln!(out, "[AUDIT] secret(s) detected in git history");
+    let _ = writeln!(out);
 
     // group by commit hash for readable output
     let mut current_hash = String::new();
@@ -350,24 +428,37 @@ pub fn report_history_findings(
             } else {
                 &current_hash
             };
-            eprintln!(
-                "  commit: {} ({}, {})",
-                short_hash, hf.commit.author, hf.commit.date
+            let _ = writeln!(
+                out,
+                "  commit: {} ({} <{}>, {})",
+                short_hash,
+                sanitize_display(&hf.commit.author),
+                sanitize_display(&hf.commit.email),
+                sanitize_display(&hf.commit.date)
             );
+            // show branch containment if available
+            if let Some(branches) = branch_map.get(&current_hash) {
+                if !branches.is_empty() {
+                    let safe: Vec<String> =
+                        branches.iter().map(|b| sanitize_display(b)).collect();
+                    let _ = writeln!(out, "    branches: {}", safe.join(", "));
+                }
+            }
         }
-        let masked = mask_secret(&hf.finding.matched_value);
-        eprintln!("    file: {}", hf.finding.file);
-        eprintln!("    line: {}", hf.finding.line);
-        eprintln!("    rule: {}", hf.finding.rule_id);
-        eprintln!("    match: {}", masked);
-        eprintln!();
+        let masked = sanitize_display(&mask_secret(&hf.finding.matched_value));
+        let _ = writeln!(out, "    file: {}", sanitize_display(&hf.finding.file));
+        let _ = writeln!(out, "    line: {}", hf.finding.line);
+        let _ = writeln!(out, "    rule: {}", sanitize_display(&hf.finding.rule_id));
+        let _ = writeln!(out, "    match: {}", masked);
+        let _ = writeln!(out);
     }
 
-    eprintln!(
+    let _ = writeln!(
+        out,
         "[AUDIT] scanned {} commit(s). {} secret(s) found.{}",
         commit_count, total, error_suffix
     );
-    eprintln!();
+    let _ = writeln!(out);
 
     total
 }
@@ -464,8 +555,30 @@ pub fn run_history_audit(
     // step 5: deduplicate
     let deduped = deduplicate_findings(all_findings);
 
-    // step 6: report
-    let total = report_history_findings(&deduped, commit_count, errors);
+    // step 6: resolve branches for commits that have findings
+    let finding_hashes: Vec<String> = {
+        let mut seen = HashSet::new();
+        deduped
+            .iter()
+            .filter_map(|hf| {
+                if seen.insert(hf.commit.hash.as_str()) {
+                    Some(hf.commit.hash.clone())
+                } else {
+                    None
+                }
+            })
+            .collect()
+    };
+    if !finding_hashes.is_empty() {
+        eprintln!(
+            "[AUDIT] resolving branches for {} commit(s)...",
+            finding_hashes.len()
+        );
+    }
+    let branch_map = get_branches_for_commits(&finding_hashes, repo_root);
+
+    // step 7: report
+    let total = report_history_findings(&deduped, commit_count, errors, &branch_map);
 
     if total > 0 {
         1
@@ -486,11 +599,13 @@ mod tests {
         let ci = CommitInfo {
             hash: "abc123".to_string(),
             author: "test user".to_string(),
+            email: "test@example.com".to_string(),
             date: "2024-01-15T10:30:00+00:00".to_string(),
             timestamp: 1705312200,
         };
         assert_eq!(ci.hash, "abc123");
         assert_eq!(ci.author, "test user");
+        assert_eq!(ci.email, "test@example.com");
         assert_eq!(ci.date, "2024-01-15T10:30:00+00:00");
         assert_eq!(ci.timestamp, 1705312200);
     }
@@ -506,6 +621,7 @@ mod tests {
         let ci = CommitInfo {
             hash: "abc123".to_string(),
             author: "test".to_string(),
+            email: "test@test.com".to_string(),
             date: "2024-01-15".to_string(),
             timestamp: 1705276800,
         };
@@ -530,6 +646,7 @@ mod tests {
                 commit: CommitInfo {
                     hash: "newer_commit".to_string(),
                     author: "dev".to_string(),
+                    email: "dev@test.com".to_string(),
                     date: "2024-06-01".to_string(),
                     timestamp: 1717200000,
                 },
@@ -544,6 +661,7 @@ mod tests {
                 commit: CommitInfo {
                     hash: "older_commit".to_string(),
                     author: "dev".to_string(),
+                    email: "dev@test.com".to_string(),
                     date: "2024-01-01".to_string(),
                     timestamp: 1704067200,
                 },
@@ -569,6 +687,7 @@ mod tests {
                 commit: CommitInfo {
                     hash: "c1".to_string(),
                     author: "dev".to_string(),
+                    email: "dev@test.com".to_string(),
                     date: "2024-01-01".to_string(),
                     timestamp: 1704067200,
                 },
@@ -583,6 +702,7 @@ mod tests {
                 commit: CommitInfo {
                     hash: "c2".to_string(),
                     author: "dev".to_string(),
+                    email: "dev@test.com".to_string(),
                     date: "2024-02-01".to_string(),
                     timestamp: 1706745600,
                 },
@@ -601,7 +721,8 @@ mod tests {
 
     #[test]
     fn report_history_findings_empty() {
-        let count = report_history_findings(&[], 10, 0);
+        let branch_map = HashMap::new();
+        let count = report_history_findings(&[], 10, 0, &branch_map);
         assert_eq!(count, 0);
     }
 
@@ -617,11 +738,13 @@ mod tests {
             commit: CommitInfo {
                 hash: "abc12345def".to_string(),
                 author: "dev".to_string(),
+                email: "dev@test.com".to_string(),
                 date: "2024-01-15".to_string(),
                 timestamp: 1705276800,
             },
         }];
-        let count = report_history_findings(&findings, 5, 0);
+        let branch_map = HashMap::new();
+        let count = report_history_findings(&findings, 5, 0, &branch_map);
         assert_eq!(count, 1);
     }
 
@@ -640,5 +763,155 @@ mod tests {
         assert!(validate_date_format("").is_err());
         assert!(validate_date_format("2024\n-01-01").is_err());
         assert!(validate_date_format("date\x00here").is_err());
+    }
+
+    #[test]
+    fn get_branches_for_commits_returns_branch_names() {
+        // create a temp repo with two branches
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+
+        Command::new("git")
+            .args(["init"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["config", "user.email", "test@test.com"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["config", "user.name", "Test"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+
+        // initial commit on main
+        std::fs::write(root.join("readme.md"), "hello\n").unwrap();
+        Command::new("git")
+            .args(["add", "."])
+            .current_dir(root)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-m", "init"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["branch", "-M", "main"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+
+        // get the initial commit hash
+        let output = Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+        let init_hash = String::from_utf8_lossy(&output.stdout).trim().to_string();
+
+        // create a feature branch with another commit
+        Command::new("git")
+            .args(["checkout", "-b", "feature"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+        std::fs::write(root.join("feature.txt"), "feature\n").unwrap();
+        Command::new("git")
+            .args(["add", "."])
+            .current_dir(root)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-m", "feature commit"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+        let output = Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+        let feature_hash = String::from_utf8_lossy(&output.stdout).trim().to_string();
+
+        let branch_map =
+            get_branches_for_commits(&[init_hash.clone(), feature_hash.clone()], root);
+
+        // initial commit is on both main and feature
+        let init_branches = branch_map.get(&init_hash).unwrap();
+        assert!(init_branches.contains(&"main".to_string()));
+        assert!(init_branches.contains(&"feature".to_string()));
+
+        // feature commit is only on feature
+        let feat_branches = branch_map.get(&feature_hash).unwrap();
+        assert!(feat_branches.contains(&"feature".to_string()));
+        assert!(!feat_branches.contains(&"main".to_string()));
+    }
+
+    #[test]
+    fn report_history_findings_includes_email_and_branches() {
+        let findings = vec![HistoryFinding {
+            finding: Finding {
+                file: "secret.py".to_string(),
+                line: 3,
+                rule_id: "aws-key".to_string(),
+                matched_value: b"AKIAIOSFODNN7ABCDEFG".to_vec(),
+            },
+            commit: CommitInfo {
+                hash: "deadbeef12345678".to_string(),
+                author: "Alice".to_string(),
+                email: "alice@example.com".to_string(),
+                date: "2024-03-01".to_string(),
+                timestamp: 1709251200,
+            },
+        }];
+        let mut branch_map = HashMap::new();
+        branch_map.insert(
+            "deadbeef12345678".to_string(),
+            vec!["feature/auth".to_string(), "main".to_string()],
+        );
+
+        let mut buf = Vec::new();
+        let count = write_history_findings(&findings, 1, 0, &branch_map, &mut buf);
+        assert_eq!(count, 1);
+
+        let output = String::from_utf8(buf).unwrap();
+        assert!(output.contains("alice@example.com"), "output should contain email");
+        assert!(output.contains("Alice"), "output should contain author name");
+        assert!(output.contains("branches: feature/auth, main"), "output should contain branches");
+        assert!(output.contains("commit: deadbeef"), "output should contain short hash");
+    }
+
+    #[test]
+    fn report_history_findings_skips_branches_when_empty() {
+        let findings = vec![HistoryFinding {
+            finding: Finding {
+                file: "config.py".to_string(),
+                line: 1,
+                rule_id: "generic-secret".to_string(),
+                matched_value: b"supersecret123".to_vec(),
+            },
+            commit: CommitInfo {
+                hash: "cafebabe90abcdef".to_string(),
+                author: "Bob".to_string(),
+                email: "bob@test.com".to_string(),
+                date: "2024-05-10".to_string(),
+                timestamp: 1715299200,
+            },
+        }];
+        // empty branch list for the commit
+        let mut branch_map = HashMap::new();
+        branch_map.insert("cafebabe90abcdef".to_string(), Vec::new());
+
+        let mut buf = Vec::new();
+        let count = write_history_findings(&findings, 1, 0, &branch_map, &mut buf);
+        assert_eq!(count, 1);
+
+        let output = String::from_utf8(buf).unwrap();
+        assert!(!output.contains("branches:"), "output should not contain branches line when empty");
+        assert!(output.contains("bob@test.com"), "output should contain email");
     }
 }
