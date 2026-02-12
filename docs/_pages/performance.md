@@ -71,7 +71,9 @@ sekretbarilo achieves microsecond-scale scanning through several architectural o
 ### 1. Aho-Corasick Automaton
 
 **What**: single-pass keyword matching across all 43 rules simultaneously
+
 **Why**: instead of checking each rule's keywords against every line (O(rules × keywords × lines)), Aho-Corasick builds a finite automaton that matches all keywords in one pass (O(lines))
+
 **Impact**: 96x faster than naive `contains()` approach
 
 The automaton is compiled once at startup and reused across all files and lines.
@@ -79,7 +81,9 @@ The automaton is compiled once at startup and reused across all files and lines.
 ### 2. Lazy Regex Evaluation
 
 **What**: only rules whose keywords matched in the Aho-Corasick pass have their regexes evaluated
+
 **Why**: most lines match zero keywords, so most regex checks are skipped entirely
+
 **Impact**: reduces regex evaluation from 100% of lines to ~10% (keyword match rate)
 
 This is a critical filter: regex compilation and matching are expensive. The keyword pre-filter eliminates 90%+ of regex work.
@@ -87,7 +91,9 @@ This is a critical filter: regex compilation and matching are expensive. The key
 ### 3. One-Time Compilation
 
 **What**: regex patterns and Aho-Corasick automaton are compiled once at startup
+
 **Why**: compilation is expensive; reuse amortizes the cost across all files and lines
+
 **Impact**: avoids per-file or per-line recompilation overhead
 
 For pre-commit hooks, this means the scanner process lifetime is short (single commit), so compilation overhead is noticeable. One-time compilation keeps it negligible.
@@ -95,7 +101,9 @@ For pre-commit hooks, this means the scanner process lifetime is short (single c
 ### 4. Byte-Level Processing
 
 **What**: works with `&[u8]` byte slices instead of `&str`
+
 **Why**: avoids UTF-8 validation overhead on every line
+
 **Impact**: eliminates UTF-8 validation cost (~10-20% speedup for non-ASCII content)
 
 Secret patterns are often ASCII-only (API keys, tokens), and diff output is byte-oriented. Byte slices let the scanner skip validation and work directly with raw bytes.
@@ -103,7 +111,9 @@ Secret patterns are often ASCII-only (API keys, tokens), and diff output is byte
 ### 5. Parallel Processing (rayon)
 
 **What**: audit mode processes files and commits in parallel across all CPU cores
+
 **Why**: modern CPUs have 4-16+ cores; serial processing leaves them idle
+
 **Impact**: near-linear speedup on multi-core systems (4x on 4 cores, 8x on 8 cores)
 
 Parallel processing triggers when:
@@ -114,7 +124,9 @@ Parallel processing triggers when:
 ### 6. Early Exit Paths
 
 **What**: binary files, allowlisted paths, vendor directories, and lock files are skipped before any scanning
+
 **Why**: scanning binary or generated files wastes CPU cycles and produces false positives
+
 **Impact**: eliminates scanning overhead for 30-50% of files in typical repos
 
 Early exit filters (applied before keyword matching):
@@ -126,7 +138,9 @@ Early exit filters (applied before keyword matching):
 ### 7. Branch Resolution Optimization
 
 **What**: in history audit, branch resolution (`git branch --contains`) is only run for commits that actually have findings
+
 **Why**: `git branch --contains` is expensive (O(branches × commits)); most commits have no findings
+
 **Impact**: reduces branch resolution from 100% of commits to ~1-5% (findings rate)
 
 This optimization is critical for large repositories with many branches. Without it, history audit would spend most of its time resolving branches for clean commits.
@@ -134,7 +148,9 @@ This optimization is critical for large repositories with many branches. Without
 ### 8. Deduplication
 
 **What**: history audit deduplicates findings — same secret in same file keeps only the earliest introducing commit
+
 **Why**: a secret introduced in commit A and present in commits B, C, D only needs to be reported once
+
 **Impact**: reduces noise and branch resolution overhead by 10-100x in repos with long-lived secrets
 
 Deduplication uses a hash map keyed by `(file_path, rule_id, secret_hash)`. Only the earliest commit (by timestamp) is retained.
@@ -162,7 +178,9 @@ Criterion runs each benchmark multiple times, applies statistical analysis, and 
 ### Pre-commit Hook
 
 **Scenario**: developer commits 1-10 files with 10-500 lines changed
+
 **Time**: 2-200 microseconds
+
 **Experience**: imperceptible — faster than terminal I/O
 
 The hook runs as:
@@ -180,7 +198,9 @@ Total latency includes:
 ### Working Tree Audit
 
 **Scenario**: scan all tracked files in a repository
+
 **Time**: seconds for most repos (parallel file processing)
+
 **Example**: 1000 files, 100k lines → ~1-3 seconds on 8-core CPU
 
 Audit mode uses rayon to process files in parallel:
@@ -198,7 +218,9 @@ For repositories with 10k+ files, audit time scales linearly with file count and
 ### History Audit
 
 **Scenario**: scan every commit in git history
+
 **Time**: minutes for large repos (parallel commit processing with dedup)
+
 **Example**: 10,000 commits, 500 with changes → ~2-10 minutes on 8-core CPU
 
 History audit uses rayon to process commits in parallel:
@@ -217,7 +239,9 @@ For extremely large repositories (100k+ commits), history audit can take 30+ min
 ### Agent Hook Performance
 
 **Scenario**: Claude Code reads a file; sekretbarilo checks it first
+
 **Time**: microseconds for typical files
+
 **Experience**: imperceptible — no noticeable delay
 
 The check-file operation includes fast-path optimizations:
