@@ -18,3 +18,7 @@ progress*.txt
 # OS
 .DS_Store
 Thumbs.db
+
+# development process artifacts
+CLAUDE.md
+docs/

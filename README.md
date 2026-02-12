@@ -1,6 +1,6 @@
 # sekretbarilo
 
-Secret scanner for git repositories. Scans staged commits, working trees, and full git history for API keys, credentials, and secrets.
+High-performance secret scanner for git workflows and AI coding agents. Catches API keys, credentials, and secrets in staged commits, working trees, full git history, and files read by AI agents — before they leak.
 
 *sekretbarilo* means "secret keeper" in Esperanto.
 
@@ -12,11 +12,11 @@ Secret scanner for git repositories. Scans staged commits, working trees, and fu
 - **Pre-commit hook**: automatic scanning of staged changes on every commit
 - **Working tree audit**: scan all tracked (and optionally ignored) files for secrets
 - **Git history audit**: scan every commit across all branches with deduplication, author tracking, and branch resolution
-- **Agent hooks**: integrates with AI coding agents (Claude Code) to scan files before they are read
+- **Agent hooks**: prevents AI coding agents (Claude Code) from reading files that contain secrets
 - **Health diagnostics**: `doctor` command checks hook installation, configuration, and binary availability
 - **Configurable**: hierarchical `.sekretbarilo.toml` (system, user, project) for allowlists, custom rules, and overrides
 - **Zero config needed**: works out of the box with sensible defaults
-- **Blocks .env files**: automatically prevents committing `.env`, `.env.local`, `.env.production` etc.
+- **Blocks .env files**: automatically prevents committing or reading `.env`, `.env.local`, `.env.production` etc.
 
 ## Installation
 
@@ -114,7 +114,7 @@ This adds a `PreToolUse` hook for the `Read` tool. When Claude Code reads a file
 
 **.env file blocking:** `check-file` blocks `.env` files unconditionally (same policy as the pre-commit hook). `.env.example`, `.env.sample`, and `.env.template` are allowed through.
 
-**Fast-path skipping:** binary files (`.png`, `.jpg`, `.exe`, etc.), vendor directories (`node_modules/`, `vendor/`), and lock files (`package-lock.json`, `Cargo.lock`, etc.) are rejected immediately without loading config or reading the file.
+**Fast-path skipping:** binary files (`.png`, `.jpg`, `.exe`, etc.), vendor directories (`node_modules/`, `vendor/`), and lock files (`package-lock.json`, `Cargo.lock`, etc.) are allowed through without scanning — they can't contain readable secrets, so the agent is free to read them.
 
 **Full config support:** `check-file` respects all hierarchical config — allowlists, stopwords, custom rules, entropy thresholds, and audit exclude patterns.
 
@@ -315,7 +315,7 @@ Both modes share the same scanner engine, rules, allowlists, and output formatti
 1. Parse stdin JSON payload or direct file path argument
 2. Resolve file path (absolute or relative, using `cwd` from hook payload)
 3. Block `.env` files unconditionally (same policy as pre-commit)
-4. Fast-path rejection: binary extensions, vendor directories, lock files (no config loading needed)
+4. Fast-path allow: binary extensions, vendor directories, lock files pass through without scanning
 5. Load hierarchical config and compile rules
 6. Apply user-configured allowlists and audit exclude patterns
 7. Read file and convert to synthetic DiffFile
