@@ -260,6 +260,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "getargs"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "084c6b182b01dec54ff12986b9cc8859a9b0d92b074f878c382a4481a070e66e"
+
+[[package]]
 name = "getrandom"
 version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -630,11 +636,12 @@ checksum = "490dcfcbfef26be6800d11870ff2df8774fa6e86d047e3e8c8a76b25655e41ca"
 
 [[package]]
 name = "sekretbarilo"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "aho-corasick",
  "bstr",
  "criterion",
+ "getargs",
  "memchr",
  "rayon",
  "regex",

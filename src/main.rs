@@ -9,6 +9,8 @@ mod hook;
 
 use std::path::{Path, PathBuf};
 
+use getargs::Arg;
+
 use config::allowlist::CompiledAllowlist;
 use config::ProjectConfig;
 use doctor::resolve_repo_root;
@@ -70,191 +72,91 @@ struct AuditFlags {
 /// parse cli arguments into (command, overrides, audit_flags, check_file_flags, install_flags).
 /// first positional arg is the subcommand. no subcommand shows help.
 fn parse_cli(args: &[String]) -> Result<(Command, CliOverrides, AuditFlags, CheckFileFlags, InstallFlags), String> {
+    let args_str: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+    let mut opts = getargs::Options::new(args_str.into_iter());
+
     let mut command: Option<Command> = None;
     let mut overrides = CliOverrides::default();
     let mut audit_flags = AuditFlags::default();
     let mut check_file_flags = CheckFileFlags::default();
     let mut install_flags = InstallFlags::default();
 
-    let mut i = 0;
-    while i < args.len() {
-        match args[i].as_str() {
-            // subcommands
-            "scan" | "install" | "audit" | "check-file" | "doctor" | "--help" | "-h" if command.is_none() => {
-                command = Some(match args[i].as_str() {
+    while let Some(arg) = opts.next_arg().map_err(|e| e.to_string())? {
+        match arg {
+            // subcommands (first positional sets the command)
+            Arg::Positional(pos) if command.is_none() => {
+                command = Some(match pos {
                     "scan" => Command::Scan,
                     "audit" => Command::Audit,
                     "doctor" => Command::Doctor,
-                    "install" => {
-                        // parse install subcommand
-                        if i + 1 < args.len() {
-                            match args[i + 1].as_str() {
-                                "pre-commit" => {
-                                    i += 1;
-                                    Command::InstallPreCommit
-                                }
-                                "agent-hook" => {
-                                    i += 1;
-                                    // expect agent name next
-                                    if i + 1 < args.len() {
-                                        match args[i + 1].as_str() {
-                                            "claude" => {
-                                                i += 1;
-                                                Command::InstallAgentHook
-                                            }
-                                            "codex" => {
-                                                return Err(
-                                                    "codex agent hooks are not yet supported. \
-                                                     codex cli does not currently provide a hooks api"
-                                                        .to_string(),
-                                                );
-                                            }
-                                            other => {
-                                                return Err(format!(
-                                                    "unknown agent hook target: '{}'. supported: claude",
-                                                    other
-                                                ));
-                                            }
-                                        }
-                                    } else {
-                                        return Err(
-                                            "install agent-hook requires a target. supported: claude"
-                                                .to_string(),
-                                        );
-                                    }
-                                }
-                                "all" => {
-                                    i += 1;
-                                    Command::InstallAll
-                                }
-                                "--help" | "-h" => {
-                                    i += 1;
-                                    Command::InstallHelp
-                                }
-                                // not a recognized subcommand (flag-like)
-                                _ if args[i + 1].starts_with('-') => {
-                                    return Err(format!(
-                                        "unknown install flag: '{}'. use 'install --help' for usage",
-                                        args[i + 1]
-                                    ));
-                                }
-                                other => {
-                                    return Err(format!(
-                                        "unknown install target: '{}'. supported: pre-commit, agent-hook, all",
-                                        other
-                                    ));
-                                }
-                            }
-                        } else {
-                            // bare "install" with no subcommand shows install help
-                            Command::InstallHelp
-                        }
-                    }
                     "check-file" => Command::CheckFile,
-                    "--help" | "-h" => Command::Help,
-                    _ => unreachable!(),
+                    "install" => parse_install_subcommand(&mut opts)?,
+                    other => return Err(format!("unknown command: '{}'", other)),
                 });
             }
-
-            // common flags
-            "--config" => {
-                i += 1;
-                if i >= args.len() {
-                    return Err("--config requires a value".to_string());
-                }
-                overrides.config_paths.push(PathBuf::from(&args[i]));
-            }
-            "--no-defaults" => {
-                overrides.no_defaults = true;
-            }
-            "--entropy-threshold" => {
-                i += 1;
-                if i >= args.len() {
-                    return Err("--entropy-threshold requires a value".to_string());
-                }
-                let val: f64 = args[i]
-                    .parse()
-                    .map_err(|_| format!("invalid value for --entropy-threshold: '{}'", args[i]))?;
-                overrides.entropy_threshold = Some(val);
-            }
-            "--allowlist-path" => {
-                i += 1;
-                if i >= args.len() {
-                    return Err("--allowlist-path requires a value".to_string());
-                }
-                overrides.allowlist_paths.push(args[i].clone());
-            }
-            "--stopword" => {
-                i += 1;
-                if i >= args.len() {
-                    return Err("--stopword requires a value".to_string());
-                }
-                overrides.stopwords.push(args[i].clone());
-            }
-
-            // audit-specific flags
-            "--history" => {
-                audit_flags.history = true;
-            }
-            "--branch" => {
-                i += 1;
-                if i >= args.len() {
-                    return Err("--branch requires a value".to_string());
-                }
-                audit_flags.branch = Some(args[i].clone());
-            }
-            "--since" => {
-                i += 1;
-                if i >= args.len() {
-                    return Err("--since requires a value".to_string());
-                }
-                audit_flags.since = Some(args[i].clone());
-            }
-            "--until" => {
-                i += 1;
-                if i >= args.len() {
-                    return Err("--until requires a value".to_string());
-                }
-                audit_flags.until = Some(args[i].clone());
-            }
-            "--include-ignored" => {
-                overrides.include_ignored = true;
-            }
-            "--exclude-pattern" => {
-                i += 1;
-                if i >= args.len() {
-                    return Err("--exclude-pattern requires a value".to_string());
-                }
-                overrides.exclude_patterns.push(args[i].clone());
-            }
-            "--include-pattern" => {
-                i += 1;
-                if i >= args.len() {
-                    return Err("--include-pattern requires a value".to_string());
-                }
-                overrides.include_patterns.push(args[i].clone());
-            }
-
-            // install flags
-            "--global" => {
-                install_flags.global = true;
-            }
-
-            // check-file flags
-            "--stdin-json" => {
-                check_file_flags.stdin_json = true;
-            }
-
-            other => {
-                // allow positional file path for check-file
-                if command == Some(Command::CheckFile) && !other.starts_with('-') && check_file_flags.file_path.is_none() {
-                    check_file_flags.file_path = Some(other.to_string());
+            // positional after command (check-file file path)
+            Arg::Positional(pos) => {
+                if command == Some(Command::CheckFile) && check_file_flags.file_path.is_none() {
+                    check_file_flags.file_path = Some(pos.to_string());
                 } else {
-                    return Err(format!("unknown flag: {}", other));
+                    return Err(format!("unexpected argument: '{}'", pos));
                 }
             }
+            // help (only before a subcommand; after one it falls through to unknown)
+            Arg::Long("help") if command.is_none() => command = Some(Command::Help),
+            Arg::Short('h') if command.is_none() => command = Some(Command::Help),
+            // common flags
+            Arg::Long("config") => {
+                let val = opts.value().map_err(|e| e.to_string())?;
+                overrides.config_paths.push(PathBuf::from(val));
+            }
+            Arg::Long("no-defaults") => overrides.no_defaults = true,
+            Arg::Long("entropy-threshold") => {
+                let val = opts.value().map_err(|e| e.to_string())?;
+                let n: f64 = val
+                    .parse()
+                    .map_err(|_| format!("invalid value for --entropy-threshold: '{}'", val))?;
+                overrides.entropy_threshold = Some(n);
+            }
+            Arg::Long("allowlist-path") => {
+                let val = opts.value().map_err(|e| e.to_string())?;
+                overrides.allowlist_paths.push(val.to_string());
+            }
+            Arg::Long("stopword") => {
+                let val = opts.value().map_err(|e| e.to_string())?;
+                overrides.stopwords.push(val.to_string());
+            }
+            // audit-specific flags
+            Arg::Long("history") => audit_flags.history = true,
+            Arg::Long("branch") => {
+                let val = opts.value().map_err(|e| e.to_string())?;
+                audit_flags.branch = Some(val.to_string());
+            }
+            Arg::Long("since") => {
+                let val = opts.value().map_err(|e| e.to_string())?;
+                audit_flags.since = Some(val.to_string());
+            }
+            Arg::Long("until") => {
+                let val = opts.value().map_err(|e| e.to_string())?;
+                audit_flags.until = Some(val.to_string());
+            }
+            Arg::Long("include-ignored") => overrides.include_ignored = true,
+            Arg::Long("exclude-pattern") => {
+                let val = opts.value().map_err(|e| e.to_string())?;
+                overrides.exclude_patterns.push(val.to_string());
+            }
+            Arg::Long("include-pattern") => {
+                let val = opts.value().map_err(|e| e.to_string())?;
+                overrides.include_patterns.push(val.to_string());
+            }
+            // install flags
+            Arg::Long("global") => install_flags.global = true,
+            // check-file flags
+            Arg::Long("stdin-json") => check_file_flags.stdin_json = true,
+            // unknown
+            Arg::Long(unknown) => return Err(format!("unknown flag: --{}", unknown)),
+            Arg::Short(unknown) => return Err(format!("unknown flag: -{}", unknown)),
         }
-        i += 1;
     }
 
     let command = command.unwrap_or(Command::Help);
@@ -322,6 +224,47 @@ fn parse_cli(args: &[String]) -> Result<(Command, CliOverrides, AuditFlags, Chec
     }
 
     Ok((command, overrides, audit_flags, check_file_flags, install_flags))
+}
+
+/// parse the install subcommand target from the remaining args.
+fn parse_install_subcommand<'a, I: Iterator<Item = &'a str>>(
+    opts: &mut getargs::Options<&'a str, I>,
+) -> Result<Command, String> {
+    match opts.next_arg().map_err(|e| e.to_string())? {
+        Some(Arg::Positional("pre-commit")) => Ok(Command::InstallPreCommit),
+        Some(Arg::Positional("all")) => Ok(Command::InstallAll),
+        Some(Arg::Positional("agent-hook")) => {
+            match opts.next_arg().map_err(|e| e.to_string())? {
+                Some(Arg::Positional("claude")) => Ok(Command::InstallAgentHook),
+                Some(Arg::Positional("codex")) => Err(
+                    "codex agent hooks are not yet supported. \
+                     codex cli does not currently provide a hooks api"
+                        .to_string(),
+                ),
+                Some(Arg::Positional(other)) => Err(format!(
+                    "unknown agent hook target: '{}'. supported: claude",
+                    other
+                )),
+                _ => Err(
+                    "install agent-hook requires a target. supported: claude".to_string(),
+                ),
+            }
+        }
+        Some(Arg::Long("help")) | Some(Arg::Short('h')) => Ok(Command::InstallHelp),
+        Some(Arg::Positional(other)) => Err(format!(
+            "unknown install target: '{}'. supported: pre-commit, agent-hook, all",
+            other
+        )),
+        Some(Arg::Long(f)) => Err(format!(
+            "unknown install flag: '--{}'. use 'install --help' for usage",
+            f
+        )),
+        Some(Arg::Short(f)) => Err(format!(
+            "unknown install flag: '-{}'. use 'install --help' for usage",
+            f
+        )),
+        None => Ok(Command::InstallHelp),
+    }
 }
 
 fn run() -> i32 {
