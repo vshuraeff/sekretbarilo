@@ -32,6 +32,7 @@ enum Command {
     CheckFile,
     Doctor,
     Help,
+    Version,
 }
 
 /// install-specific flags parsed from cli
@@ -116,6 +117,9 @@ fn parse_cli(
             // help (only before a subcommand; after one it falls through to unknown)
             Arg::Long("help") if command.is_none() => command = Some(Command::Help),
             Arg::Short('h') if command.is_none() => command = Some(Command::Help),
+            // version
+            Arg::Long("version") if command.is_none() => command = Some(Command::Version),
+            Arg::Short('V') if command.is_none() => command = Some(Command::Version),
             // common flags
             Arg::Long("config") => {
                 let val = opts.value().map_err(|e| e.to_string())?;
@@ -300,6 +304,10 @@ fn run() -> i32 {
             print_usage();
             0
         }
+        Command::Version => {
+            eprintln!("sekretbarilo {}", env!("CARGO_PKG_VERSION"));
+            0
+        }
         Command::InstallPreCommit => run_install_pre_commit(install_flags.global),
         Command::InstallAgentHook => run_install_agent_hook(install_flags.global),
         Command::InstallAll => run_install_all(install_flags.global),
@@ -318,7 +326,7 @@ fn run() -> i32 {
 }
 
 fn print_usage() {
-    eprintln!("sekretbarilo - secret scanner for git repositories");
+    eprintln!("sekretbarilo - secret scanner for git workflows and AI coding agents");
     eprintln!();
     eprintln!("usage:");
     eprintln!("  sekretbarilo scan         scan staged changes");
@@ -327,6 +335,7 @@ fn print_usage() {
     eprintln!("  sekretbarilo check-file   scan a single file for secrets (agent hook mode)");
     eprintln!("  sekretbarilo doctor       diagnose hook installation and configuration");
     eprintln!("  sekretbarilo --help       show this help");
+    eprintln!("  sekretbarilo --version    show version");
     eprintln!();
     eprintln!("common flags:");
     eprintln!("  --config <path>           use explicit config file (repeatable, skips discovery)");

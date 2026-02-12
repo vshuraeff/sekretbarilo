@@ -1,8 +1,8 @@
 [package]
 name = "sekretbarilo"
-version = "0.2.1"
+version = "0.2.2"
 edition = "2021"
-description = "High-performance secret scanner for git commits, working trees, and repository history"
+description = "High-performance secret scanner for git workflows and AI coding agents"
 license = "MIT"
 
 [dependencies]
