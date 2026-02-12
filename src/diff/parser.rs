@@ -604,7 +604,8 @@ diff --git a/normal.rs b/normal.rs
 
     #[test]
     fn extract_path_deeply_nested() {
-        let header = b"diff --git a/src/very/deep/nested/path/file.rs b/src/very/deep/nested/path/file.rs";
+        let header =
+            b"diff --git a/src/very/deep/nested/path/file.rs b/src/very/deep/nested/path/file.rs";
         assert_eq!(
             extract_path_from_diff_header(header),
             "src/very/deep/nested/path/file.rs"

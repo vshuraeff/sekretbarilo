@@ -44,8 +44,9 @@ pub fn install_claude_hook(global: bool) -> Result<ClaudeHookResult, String> {
         let base = match resolve_project_root() {
             Some(root) => root,
             None => {
-                let cwd = std::env::current_dir()
-                    .map_err(|_| "could not determine project root or current directory".to_string())?;
+                let cwd = std::env::current_dir().map_err(|_| {
+                    "could not determine project root or current directory".to_string()
+                })?;
                 eprintln!(
                     "[WARN] not inside a git repository, using current directory for local hook placement: {}",
                     cwd.display()
@@ -203,11 +204,10 @@ fn write_config(path: &Path, value: &serde_json::Value) -> Result<(), String> {
         .create_new(true)
         .open(&tmp)
         .map_err(|e| format!("failed to create {}: {}", tmp.display(), e))?;
-    file.write_all((content + "\n").as_bytes())
-        .map_err(|e| {
-            let _ = std::fs::remove_file(&tmp);
-            format!("failed to write {}: {}", tmp.display(), e)
-        })?;
+    file.write_all((content + "\n").as_bytes()).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        format!("failed to write {}: {}", tmp.display(), e)
+    })?;
     file.sync_all().map_err(|e| {
         let _ = std::fs::remove_file(&tmp);
         format!("failed to sync {}: {}", tmp.display(), e)
@@ -215,7 +215,12 @@ fn write_config(path: &Path, value: &serde_json::Value) -> Result<(), String> {
     drop(file);
     std::fs::rename(&tmp, path).map_err(|e| {
         let _ = std::fs::remove_file(&tmp);
-        format!("failed to rename {} -> {}: {}", tmp.display(), path.display(), e)
+        format!(
+            "failed to rename {} -> {}: {}",
+            tmp.display(),
+            path.display(),
+            e
+        )
     })
 }
 
@@ -242,8 +247,8 @@ fn parse_hook_stdin() -> Result<(String, Option<String>), String> {
         .read_to_string(&mut input)
         .map_err(|e| format!("failed to read stdin: {}", e))?;
 
-    let payload: HookPayload = serde_json::from_str(&input)
-        .map_err(|e| format!("failed to parse hook payload: {}", e))?;
+    let payload: HookPayload =
+        serde_json::from_str(&input).map_err(|e| format!("failed to parse hook payload: {}", e))?;
 
     if payload.tool_input.file_path.is_empty() {
         return Err("file_path is empty in hook payload".to_string());
@@ -256,10 +261,7 @@ fn parse_hook_stdin() -> Result<(String, Option<String>), String> {
 /// if the path is absolute and cwd is provided, computes relative path from cwd.
 /// if the path is absolute without cwd, uses the parent dir as base.
 /// if relative, uses the provided cwd or current directory as base.
-fn resolve_file_path(
-    file_path: &str,
-    cwd: Option<&str>,
-) -> Result<(String, PathBuf), String> {
+fn resolve_file_path(file_path: &str, cwd: Option<&str>) -> Result<(String, PathBuf), String> {
     let path = Path::new(file_path);
 
     if path.is_absolute() {
@@ -373,7 +375,10 @@ pub fn run_check_file(stdin_json: bool, file_arg: Option<&str>) -> i32 {
 
     // step 2a: validate base directory exists
     if !base_dir.is_dir() {
-        eprintln!("[ERROR] base directory does not exist: {}", base_dir.display());
+        eprintln!(
+            "[ERROR] base directory does not exist: {}",
+            base_dir.display()
+        );
         return 2;
     }
 
@@ -461,10 +466,7 @@ pub fn run_check_file(stdin_json: bool, file_arg: Option<&str>) -> i32 {
 
     // step 9: report findings to stderr (agent reads stderr for feedback)
     eprintln!();
-    eprintln!(
-        "[AGENT] secret(s) detected in {}",
-        file_path
-    );
+    eprintln!("[AGENT] secret(s) detected in {}", file_path);
     eprintln!();
     for finding in &findings {
         let masked = mask_secret(&finding.matched_value);
@@ -558,8 +560,7 @@ mod tests {
 
     #[test]
     fn resolve_relative_path_with_cwd() {
-        let (rel, base) =
-            resolve_file_path("src/config.rs", Some("/home/user/project")).unwrap();
+        let (rel, base) = resolve_file_path("src/config.rs", Some("/home/user/project")).unwrap();
         assert_eq!(rel, "src/config.rs");
         assert_eq!(base, PathBuf::from("/home/user/project"));
     }
@@ -627,11 +628,7 @@ mod tests {
     fn check_file_with_secret() {
         let dir = tempfile::tempdir().unwrap();
         let file_path = dir.path().join("secret.py");
-        std::fs::write(
-            &file_path,
-            "aws_key = \"AKIAIOSFODNN7REALKEYZ\"\n",
-        )
-        .unwrap();
+        std::fs::write(&file_path, "aws_key = \"AKIAIOSFODNN7REALKEYZ\"\n").unwrap();
 
         let result = run_check_file(false, Some(file_path.to_str().unwrap()));
         assert_eq!(result, 2);
@@ -690,11 +687,7 @@ mod tests {
         let vendor_dir = dir.path().join("node_modules").join("pkg");
         std::fs::create_dir_all(&vendor_dir).unwrap();
         let file_path = vendor_dir.join("secret.js");
-        std::fs::write(
-            &file_path,
-            "const key = \"AKIAIOSFODNN7REALKEYZ\";\n",
-        )
-        .unwrap();
+        std::fs::write(&file_path, "const key = \"AKIAIOSFODNN7REALKEYZ\";\n").unwrap();
 
         // use relative path from temp dir root - triggers vendor dir detection
         let _guard = CwdGuard(std::env::current_dir().unwrap());
@@ -710,11 +703,7 @@ mod tests {
         let vendor_dir = dir.path().join("node_modules").join("pkg");
         std::fs::create_dir_all(&vendor_dir).unwrap();
         let file_path = vendor_dir.join("secret.js");
-        std::fs::write(
-            &file_path,
-            "const key = \"AKIAIOSFODNN7REALKEYZ\";\n",
-        )
-        .unwrap();
+        std::fs::write(&file_path, "const key = \"AKIAIOSFODNN7REALKEYZ\";\n").unwrap();
 
         // absolute path with cwd context resolves to relative "node_modules/pkg/secret.js"
         let (rel, base) = resolve_file_path(
@@ -769,7 +758,11 @@ mod tests {
             "model": "claude-sonnet-4-5-20250929",
             "permissions": {"allow": ["Read"]}
         });
-        std::fs::write(&config_path, serde_json::to_string_pretty(&existing).unwrap()).unwrap();
+        std::fs::write(
+            &config_path,
+            serde_json::to_string_pretty(&existing).unwrap(),
+        )
+        .unwrap();
 
         let result = install_claude_hook_to_path(&config_path).unwrap();
         assert_eq!(result, ClaudeHookResult::Created);
@@ -821,7 +814,11 @@ mod tests {
                 ]
             }
         });
-        std::fs::write(&config_path, serde_json::to_string_pretty(&existing).unwrap()).unwrap();
+        std::fs::write(
+            &config_path,
+            serde_json::to_string_pretty(&existing).unwrap(),
+        )
+        .unwrap();
 
         let result = install_claude_hook_to_path(&config_path).unwrap();
         assert_eq!(result, ClaudeHookResult::Created);
@@ -853,7 +850,11 @@ mod tests {
                 ]
             }
         });
-        std::fs::write(&config_path, serde_json::to_string_pretty(&existing).unwrap()).unwrap();
+        std::fs::write(
+            &config_path,
+            serde_json::to_string_pretty(&existing).unwrap(),
+        )
+        .unwrap();
 
         let result = install_claude_hook_to_path(&config_path).unwrap();
         assert_eq!(result, ClaudeHookResult::Created);
@@ -898,7 +899,11 @@ mod tests {
                 ]
             }
         });
-        std::fs::write(&config_path, serde_json::to_string_pretty(&existing).unwrap()).unwrap();
+        std::fs::write(
+            &config_path,
+            serde_json::to_string_pretty(&existing).unwrap(),
+        )
+        .unwrap();
 
         let result = install_claude_hook_to_path(&config_path).unwrap();
         assert_eq!(result, ClaudeHookResult::Created);
@@ -929,7 +934,11 @@ mod tests {
                 ]
             }
         });
-        std::fs::write(&config_path, serde_json::to_string_pretty(&existing).unwrap()).unwrap();
+        std::fs::write(
+            &config_path,
+            serde_json::to_string_pretty(&existing).unwrap(),
+        )
+        .unwrap();
 
         let result = install_claude_hook_to_path(&config_path).unwrap();
         assert_eq!(result, ClaudeHookResult::Updated);

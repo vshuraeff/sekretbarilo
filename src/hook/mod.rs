@@ -78,7 +78,9 @@ impl std::fmt::Display for InstallResult {
         match self {
             InstallResult::Created => write!(f, "created new pre-commit hook"),
             InstallResult::Appended => write!(f, "appended to existing pre-commit hook"),
-            InstallResult::AlreadyInstalled => write!(f, "sekretbarilo already installed in pre-commit hook"),
+            InstallResult::AlreadyInstalled => {
+                write!(f, "sekretbarilo already installed in pre-commit hook")
+            }
         }
     }
 }
@@ -180,9 +182,7 @@ pub fn install_global() -> Result<InstallResult, InstallError> {
             }
         })?;
 
-    if !check.status.success()
-        || String::from_utf8_lossy(&check.stdout).trim().is_empty()
-    {
+    if !check.status.success() || String::from_utf8_lossy(&check.stdout).trim().is_empty() {
         // set core.hooksPath to our directory
         let dir_str = hooks_dir.to_str().ok_or_else(|| {
             InstallError::IoError(io::Error::new(

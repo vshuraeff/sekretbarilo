@@ -7,10 +7,9 @@ use regex::bytes::{Regex, RegexBuilder};
 
 /// default file extensions to skip (binary and non-source files)
 const BINARY_EXTENSIONS: &[&str] = &[
-    "png", "jpg", "jpeg", "gif", "bmp", "ico", "svg", "woff", "woff2", "ttf",
-    "eot", "otf", "pdf", "exe", "dll", "so", "dylib", "zip", "gz", "tar",
-    "bz2", "xz", "7z", "rar", "mp3", "mp4", "avi", "mov", "wav", "ogg",
-    "webp", "webm",
+    "png", "jpg", "jpeg", "gif", "bmp", "ico", "svg", "woff", "woff2", "ttf", "eot", "otf", "pdf",
+    "exe", "dll", "so", "dylib", "zip", "gz", "tar", "bz2", "xz", "7z", "rar", "mp3", "mp4", "avi",
+    "mov", "wav", "ogg", "webp", "webm",
 ];
 
 /// default generated/lock files to skip
@@ -45,9 +44,24 @@ const CONFIG_FILE: &str = ".sekretbarilo.toml";
 /// default stopwords - if the captured secret contains any of these,
 /// the finding is skipped
 const DEFAULT_STOPWORDS: &[&str] = &[
-    "example", "test", "sample", "placeholder", "dummy", "changeme", "fake",
-    "mock", "todo", "fixme", "xxx", "lorem", "default", "replace_me",
-    "insert_here", "your_", "my_", "<your",
+    "example",
+    "test",
+    "sample",
+    "placeholder",
+    "dummy",
+    "changeme",
+    "fake",
+    "mock",
+    "todo",
+    "fixme",
+    "xxx",
+    "lorem",
+    "default",
+    "replace_me",
+    "insert_here",
+    "your_",
+    "my_",
+    "<your",
 ];
 
 /// documentation file patterns
@@ -183,8 +197,12 @@ impl CompiledAllowlist {
 
         let mut user_path_patterns = Vec::with_capacity(user_paths.len());
         for path_pattern in user_paths {
-            let re = build_user_path_regex(path_pattern)
-                .map_err(|e| format!("failed to compile user path pattern '{}': {}", path_pattern, e))?;
+            let re = build_user_path_regex(path_pattern).map_err(|e| {
+                format!(
+                    "failed to compile user path pattern '{}': {}",
+                    path_pattern, e
+                )
+            })?;
             user_path_patterns.push(re);
         }
 
@@ -192,14 +210,22 @@ impl CompiledAllowlist {
         for (rule_id, value_regexes, path_regexes) in per_rule {
             let mut compiled_values = Vec::new();
             for pattern in value_regexes {
-                let re = build_user_regex(pattern)
-                    .map_err(|e| format!("failed to compile allowlist regex for rule '{}': {}", rule_id, e))?;
+                let re = build_user_regex(pattern).map_err(|e| {
+                    format!(
+                        "failed to compile allowlist regex for rule '{}': {}",
+                        rule_id, e
+                    )
+                })?;
                 compiled_values.push(re);
             }
             let mut compiled_paths = Vec::new();
             for pattern in path_regexes {
-                let re = build_user_path_regex(pattern)
-                    .map_err(|e| format!("failed to compile allowlist path for rule '{}': {}", rule_id, e))?;
+                let re = build_user_path_regex(pattern).map_err(|e| {
+                    format!(
+                        "failed to compile allowlist path for rule '{}': {}",
+                        rule_id, e
+                    )
+                })?;
                 compiled_paths.push(re);
             }
             per_rule_allowlists.push((rule_id.clone(), compiled_values, compiled_paths));
@@ -363,12 +389,7 @@ impl CompiledAllowlist {
 
     /// check per-rule allowlist: returns true if the finding should be skipped
     /// based on the rule's specific allowlist configuration
-    pub fn is_rule_allowlisted(
-        &self,
-        rule_id: &str,
-        secret: &[u8],
-        file_path: &str,
-    ) -> bool {
+    pub fn is_rule_allowlisted(&self, rule_id: &str, secret: &[u8], file_path: &str) -> bool {
         for (id, value_regexes, path_regexes) in &self.per_rule_allowlists {
             if id == rule_id {
                 // check value regexes
@@ -457,7 +478,10 @@ mod tests {
     #[test]
     fn user_path_patterns() {
         let al = CompiledAllowlist::new(
-            &["test/fixtures/.*".to_string(), "docs/examples/.*".to_string()],
+            &[
+                "test/fixtures/.*".to_string(),
+                "docs/examples/.*".to_string(),
+            ],
             &[],
             None,
             &[],
@@ -519,16 +543,8 @@ mod tests {
             )],
         )
         .unwrap();
-        assert!(al.is_rule_allowlisted(
-            "aws-access-key-id",
-            b"AKIAIOSFODNN7EXAMPLE",
-            "config.py"
-        ));
-        assert!(!al.is_rule_allowlisted(
-            "aws-access-key-id",
-            b"AKIAIOSFODNN7REALKEY",
-            "config.py"
-        ));
+        assert!(al.is_rule_allowlisted("aws-access-key-id", b"AKIAIOSFODNN7EXAMPLE", "config.py"));
+        assert!(!al.is_rule_allowlisted("aws-access-key-id", b"AKIAIOSFODNN7REALKEY", "config.py"));
     }
 
     #[test]
@@ -549,11 +565,7 @@ mod tests {
             b"some-api-key-value",
             "test/fixtures/keys.yml"
         ));
-        assert!(!al.is_rule_allowlisted(
-            "generic-api-key",
-            b"some-api-key-value",
-            "src/config.rs"
-        ));
+        assert!(!al.is_rule_allowlisted("generic-api-key", b"some-api-key-value", "src/config.rs"));
     }
 
     #[test]
@@ -570,11 +582,7 @@ mod tests {
         )
         .unwrap();
         // different rule id should not match
-        assert!(!al.is_rule_allowlisted(
-            "github-token",
-            b"AKIAIOSFODNN7EXAMPLE",
-            "config.py"
-        ));
+        assert!(!al.is_rule_allowlisted("github-token", b"AKIAIOSFODNN7EXAMPLE", "config.py"));
     }
 
     // -- documentation file tests (5.4) --

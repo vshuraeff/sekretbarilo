@@ -8,10 +8,30 @@ const STRONG_PASSWORD_THRESHOLD: f64 = 6.0;
 
 /// common placeholder/weak passwords that should not be flagged
 const COMMON_PASSWORDS: &[&str] = &[
-    "password", "123456", "12345678", "qwerty", "abc123", "monkey", "master",
-    "dragon", "111111", "baseball", "iloveyou", "trustno1", "sunshine",
-    "letmein", "football", "shadow", "michael", "login", "admin",
-    "welcome", "passw0rd", "1234567890", "000000", "access",
+    "password",
+    "123456",
+    "12345678",
+    "qwerty",
+    "abc123",
+    "monkey",
+    "master",
+    "dragon",
+    "111111",
+    "baseball",
+    "iloveyou",
+    "trustno1",
+    "sunshine",
+    "letmein",
+    "football",
+    "shadow",
+    "michael",
+    "login",
+    "admin",
+    "welcome",
+    "passw0rd",
+    "1234567890",
+    "000000",
+    "access",
 ];
 
 /// result of password strength analysis
@@ -45,8 +65,10 @@ pub fn analyze_strength(data: &[u8]) -> PasswordStrength {
     let has_digits = data.iter().any(|&b| b.is_ascii_digit());
     let has_special = data.iter().any(|&b| b.is_ascii_punctuation());
 
-    let char_class_count =
-        has_uppercase as usize + has_lowercase as usize + has_digits as usize + has_special as usize;
+    let char_class_count = has_uppercase as usize
+        + has_lowercase as usize
+        + has_digits as usize
+        + has_special as usize;
 
     let is_dictionary_word = COMMON_PASSWORDS
         .iter()

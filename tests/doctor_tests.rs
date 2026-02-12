@@ -395,11 +395,7 @@ fn e2e_doctor_exit_0_when_all_installed() {
         .to_str()
         .unwrap()
         .to_string();
-    let path_var = format!(
-        "{}:{}",
-        bin_dir,
-        std::env::var("PATH").unwrap_or_default()
-    );
+    let path_var = format!("{}:{}", bin_dir, std::env::var("PATH").unwrap_or_default());
 
     let output = Command::new(bin())
         .args(["doctor"])

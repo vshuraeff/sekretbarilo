@@ -2,9 +2,7 @@
 
 use sekretbarilo::config::discovery::{discover_configs, discover_hierarchy};
 use sekretbarilo::config::merge::{merge_all, merge_two};
-use sekretbarilo::config::{
-    AllowlistConfig, ProjectConfig, SettingsConfig, load_single_config,
-};
+use sekretbarilo::config::{load_single_config, AllowlistConfig, ProjectConfig, SettingsConfig};
 use serial_test::serial;
 use std::fs;
 use tempfile::tempdir;
@@ -50,7 +48,10 @@ fn list_merge_allowlist_paths_from_both_levels() {
     let merged = merge_two(parent, child);
     assert_eq!(merged.allowlist.paths.len(), 2);
     assert!(merged.allowlist.paths.contains(&"vendor/.*".to_string()));
-    assert!(merged.allowlist.paths.contains(&"test/fixtures/.*".to_string()));
+    assert!(merged
+        .allowlist
+        .paths
+        .contains(&"test/fixtures/.*".to_string()));
 }
 
 // -- 1.4.3: rule merge by id --
@@ -234,13 +235,23 @@ fn deduplication_of_list_entries() {
 
     // "vendor/.*" appears only once
     assert_eq!(
-        merged.allowlist.paths.iter().filter(|p| *p == "vendor/.*").count(),
+        merged
+            .allowlist
+            .paths
+            .iter()
+            .filter(|p| *p == "vendor/.*")
+            .count(),
         1
     );
     assert_eq!(merged.allowlist.paths.len(), 3); // vendor, test, new
-    // "safe" appears only once
+                                                 // "safe" appears only once
     assert_eq!(
-        merged.allowlist.stopwords.iter().filter(|s| *s == "safe").count(),
+        merged
+            .allowlist
+            .stopwords
+            .iter()
+            .filter(|s| *s == "safe")
+            .count(),
         1
     );
     assert_eq!(merged.allowlist.stopwords.len(), 2); // safe, dev
@@ -317,10 +328,7 @@ stopwords = ["project-safe"]
     let paths = discover_hierarchy(&child, root);
     assert_eq!(paths.len(), 2);
 
-    let configs: Vec<ProjectConfig> = paths
-        .iter()
-        .filter_map(|p| load_single_config(p))
-        .collect();
+    let configs: Vec<ProjectConfig> = paths.iter().filter_map(|p| load_single_config(p)).collect();
     assert_eq!(configs.len(), 2);
 
     let merged = merge_all(configs);
@@ -361,7 +369,9 @@ fn xdg_config_is_discovered_when_env_set() {
 
     // should find the xdg config
     assert!(
-        configs.iter().any(|p| p.to_string_lossy().contains("custom-xdg")),
+        configs
+            .iter()
+            .any(|p| p.to_string_lossy().contains("custom-xdg")),
         "expected xdg config in results: {:?}",
         configs
     );
@@ -410,8 +420,12 @@ fn hierarchy_configs_come_after_xdg_in_priority() {
     );
 
     // xdg config should come before project config
-    let xdg_idx = configs.iter().position(|p| p.to_string_lossy().contains(".config/sekretbarilo"));
-    let project_idx = configs.iter().position(|p| p.to_string_lossy().contains("projects/repo"));
+    let xdg_idx = configs
+        .iter()
+        .position(|p| p.to_string_lossy().contains(".config/sekretbarilo"));
+    let project_idx = configs
+        .iter()
+        .position(|p| p.to_string_lossy().contains("projects/repo"));
     assert!(
         xdg_idx.unwrap() < project_idx.unwrap(),
         "xdg should have lower priority (earlier index) than project config"
@@ -532,5 +546,8 @@ stopwords = ["project-safe"]
     assert_eq!(merged.settings.entropy_threshold, Some(4.0));
     // both stopwords present
     assert!(merged.allowlist.stopwords.contains(&"xdg-safe".to_string()));
-    assert!(merged.allowlist.stopwords.contains(&"project-safe".to_string()));
+    assert!(merged
+        .allowlist
+        .stopwords
+        .contains(&"project-safe".to_string()));
 }

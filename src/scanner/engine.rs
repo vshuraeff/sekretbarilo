@@ -107,8 +107,7 @@ fn is_password_rule(rule_id: &str) -> bool {
 /// these rules need full stopword filtering but use standard entropy checks,
 /// not the password strength heuristic.
 fn is_credential_rule(rule_id: &str) -> bool {
-    rule_id.starts_with("database-connection-string-")
-        || rule_id == "redis-connection-string"
+    rule_id.starts_with("database-connection-string-") || rule_id == "redis-connection-string"
 }
 
 /// context for scanning a single line
@@ -123,11 +122,7 @@ struct ScanLineContext<'a> {
 
 /// scan a single line against all rules using the aho-corasick pre-filter.
 /// uses a reusable bitset to avoid allocations per line.
-fn scan_line(
-    ctx: &ScanLineContext<'_>,
-    candidate_bits: &mut [bool],
-    findings: &mut Vec<Finding>,
-) {
+fn scan_line(ctx: &ScanLineContext<'_>, candidate_bits: &mut [bool], findings: &mut Vec<Finding>) {
     // clear bitset
     for bit in candidate_bits.iter_mut() {
         *bit = false;
@@ -179,7 +174,10 @@ fn scan_line(
             }
 
             // step 5: per-rule allowlist check
-            if ctx.allowlist.is_rule_allowlisted(&rule.id, secret, ctx.file_path) {
+            if ctx
+                .allowlist
+                .is_rule_allowlisted(&rule.id, secret, ctx.file_path)
+            {
                 continue;
             }
 
@@ -255,7 +253,13 @@ mod tests {
     use crate::diff::parser::{AddedLine, DiffFile};
     use crate::scanner::rules::{compile_rules, Rule, RuleAllowlist};
 
-    fn make_rule(id: &str, pattern: &str, group: usize, keywords: Vec<&str>, threshold: Option<f64>) -> Rule {
+    fn make_rule(
+        id: &str,
+        pattern: &str,
+        group: usize,
+        keywords: Vec<&str>,
+        threshold: Option<f64>,
+    ) -> Rule {
         Rule {
             id: id.into(),
             description: id.into(),
@@ -294,9 +298,13 @@ mod tests {
 
     #[test]
     fn scan_empty_files() {
-        let scanner = make_scanner(vec![
-            make_rule("test", r"secret_[a-z]+", 0, vec!["secret_"], None),
-        ]);
+        let scanner = make_scanner(vec![make_rule(
+            "test",
+            r"secret_[a-z]+",
+            0,
+            vec!["secret_"],
+            None,
+        )]);
         let al = default_al();
         let files: Vec<DiffFile> = vec![];
         let findings = scan(&files, &scanner, &al);
@@ -305,9 +313,13 @@ mod tests {
 
     #[test]
     fn scan_detects_keyword_match() {
-        let scanner = make_scanner(vec![
-            make_rule("aws-access-key", r"(AKIA[A-Z0-9]{16})", 1, vec!["akia"], None),
-        ]);
+        let scanner = make_scanner(vec![make_rule(
+            "aws-access-key",
+            r"(AKIA[A-Z0-9]{16})",
+            1,
+            vec!["akia"],
+            None,
+        )]);
         let al = default_al();
         let file = make_file(
             "config.rs",
@@ -322,9 +334,13 @@ mod tests {
 
     #[test]
     fn scan_skips_no_keyword_match() {
-        let scanner = make_scanner(vec![
-            make_rule("aws-access-key", r"AKIA[A-Z0-9]{16}", 0, vec!["akia"], None),
-        ]);
+        let scanner = make_scanner(vec![make_rule(
+            "aws-access-key",
+            r"AKIA[A-Z0-9]{16}",
+            0,
+            vec!["akia"],
+            None,
+        )]);
         let al = default_al();
         // line has no "akia" keyword
         let file = make_file("config.rs", vec![(1, b"let x = 42;")]);
@@ -334,14 +350,15 @@ mod tests {
 
     #[test]
     fn scan_skips_deleted_files() {
-        let scanner = make_scanner(vec![
-            make_rule("test", r"AKIA[A-Z0-9]{16}", 0, vec!["akia"], None),
-        ]);
+        let scanner = make_scanner(vec![make_rule(
+            "test",
+            r"AKIA[A-Z0-9]{16}",
+            0,
+            vec!["akia"],
+            None,
+        )]);
         let al = default_al();
-        let mut file = make_file(
-            "old.rs",
-            vec![(1, b"AKIAIOSFODNN7ABCDEFGH")],
-        );
+        let mut file = make_file("old.rs", vec![(1, b"AKIAIOSFODNN7ABCDEFGH")]);
         file.is_deleted = true;
         let findings = scan(&[file], &scanner, &al);
         assert!(findings.is_empty());
@@ -349,14 +366,15 @@ mod tests {
 
     #[test]
     fn scan_skips_binary_files() {
-        let scanner = make_scanner(vec![
-            make_rule("test", r"AKIA[A-Z0-9]{16}", 0, vec!["akia"], None),
-        ]);
+        let scanner = make_scanner(vec![make_rule(
+            "test",
+            r"AKIA[A-Z0-9]{16}",
+            0,
+            vec!["akia"],
+            None,
+        )]);
         let al = default_al();
-        let mut file = make_file(
-            "image.png",
-            vec![(1, b"AKIAIOSFODNN7ABCDEFGH")],
-        );
+        let mut file = make_file("image.png", vec![(1, b"AKIAIOSFODNN7ABCDEFGH")]);
         file.is_binary = true;
         let findings = scan(&[file], &scanner, &al);
         assert!(findings.is_empty());
@@ -364,9 +382,13 @@ mod tests {
 
     #[test]
     fn scan_entropy_filter_blocks_low_entropy() {
-        let scanner = make_scanner(vec![
-            make_rule("generic-secret", r#"(?i)secret\s*=\s*['"]([^'"]+)['"]"#, 1, vec!["secret"], Some(3.5)),
-        ]);
+        let scanner = make_scanner(vec![make_rule(
+            "generic-secret",
+            r#"(?i)secret\s*=\s*['"]([^'"]+)['"]"#,
+            1,
+            vec!["secret"],
+            Some(3.5),
+        )]);
         let al = default_al();
         // low entropy secret (repeated chars)
         let file = make_file(
@@ -379,9 +401,13 @@ mod tests {
 
     #[test]
     fn scan_entropy_filter_allows_high_entropy() {
-        let scanner = make_scanner(vec![
-            make_rule("generic-secret", r#"(?i)secret\s*=\s*['"]([^'"]+)['"]"#, 1, vec!["secret"], Some(3.0)),
-        ]);
+        let scanner = make_scanner(vec![make_rule(
+            "generic-secret",
+            r#"(?i)secret\s*=\s*['"]([^'"]+)['"]"#,
+            1,
+            vec!["secret"],
+            Some(3.0),
+        )]);
         let al = default_al();
         // high entropy secret
         let file = make_file(
@@ -394,9 +420,13 @@ mod tests {
 
     #[test]
     fn scan_skips_sha256_hash_with_context() {
-        let scanner = make_scanner(vec![
-            make_rule("generic-secret", r#"(?i)secret\s*=\s*['"]([^'"]+)['"]"#, 1, vec!["secret"], None),
-        ]);
+        let scanner = make_scanner(vec![make_rule(
+            "generic-secret",
+            r#"(?i)secret\s*=\s*['"]([^'"]+)['"]"#,
+            1,
+            vec!["secret"],
+            None,
+        )]);
         let al = default_al();
         // the captured value is exactly 64 hex chars (SHA-256) in a line with checksum context
         let file = make_file(
@@ -412,9 +442,13 @@ mod tests {
 
     #[test]
     fn scan_detects_hex_secret_at_hash_length() {
-        let scanner = make_scanner(vec![
-            make_rule("generic-secret", r#"(?i)secret\s*=\s*['"]([^'"]+)['"]"#, 1, vec!["secret"], None),
-        ]);
+        let scanner = make_scanner(vec![make_rule(
+            "generic-secret",
+            r#"(?i)secret\s*=\s*['"]([^'"]+)['"]"#,
+            1,
+            vec!["secret"],
+            None,
+        )]);
         let al = default_al();
         // 64 hex chars but no hash context - should be detected as a secret
         let file = make_file(
@@ -425,14 +459,22 @@ mod tests {
             )],
         );
         let findings = scan(&[file], &scanner, &al);
-        assert_eq!(findings.len(), 1, "hex secret without hash context should be detected");
+        assert_eq!(
+            findings.len(),
+            1,
+            "hex secret without hash context should be detected"
+        );
     }
 
     #[test]
     fn scan_skips_git_commit_hash_in_context() {
-        let scanner = make_scanner(vec![
-            make_rule("generic-secret", r#"(?i)secret\s*=\s*['"]([^'"]+)['"]"#, 1, vec!["secret"], None),
-        ]);
+        let scanner = make_scanner(vec![make_rule(
+            "generic-secret",
+            r#"(?i)secret\s*=\s*['"]([^'"]+)['"]"#,
+            1,
+            vec!["secret"],
+            None,
+        )]);
         let al = default_al();
         // 40-char hex (SHA-1) in a line with "commit" context
         let file = make_file(
@@ -450,13 +492,16 @@ mod tests {
     fn scan_multiple_files_multiple_rules() {
         let scanner = make_scanner(vec![
             make_rule("aws-key", r"(AKIA[A-Z0-9]{16})", 1, vec!["akia"], None),
-            make_rule("github-token", r"(ghp_[0-9a-zA-Z]{36})", 1, vec!["ghp_"], None),
+            make_rule(
+                "github-token",
+                r"(ghp_[0-9a-zA-Z]{36})",
+                1,
+                vec!["ghp_"],
+                None,
+            ),
         ]);
         let al = default_al();
-        let file1 = make_file(
-            "aws.rs",
-            vec![(10, b"key = \"AKIAIOSFODNN7ABCDEFGH\"")],
-        );
+        let file1 = make_file("aws.rs", vec![(10, b"key = \"AKIAIOSFODNN7ABCDEFGH\"")]);
         let file2 = make_file(
             "github.rs",
             vec![(20, b"token = \"ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij\"")],
@@ -464,15 +509,23 @@ mod tests {
         let findings = scan(&[file1, file2], &scanner, &al);
         assert_eq!(findings.len(), 2);
         // with parallel processing, order may vary, so check both exist
-        assert!(findings.iter().any(|f| f.rule_id == "aws-key" && f.file == "aws.rs"));
-        assert!(findings.iter().any(|f| f.rule_id == "github-token" && f.file == "github.rs"));
+        assert!(findings
+            .iter()
+            .any(|f| f.rule_id == "aws-key" && f.file == "aws.rs"));
+        assert!(findings
+            .iter()
+            .any(|f| f.rule_id == "github-token" && f.file == "github.rs"));
     }
 
     #[test]
     fn scan_capture_group_zero_uses_full_match() {
-        let scanner = make_scanner(vec![
-            make_rule("prefix-token", r"ghp_[0-9a-zA-Z]{36}", 0, vec!["ghp_"], None),
-        ]);
+        let scanner = make_scanner(vec![make_rule(
+            "prefix-token",
+            r"ghp_[0-9a-zA-Z]{36}",
+            0,
+            vec!["ghp_"],
+            None,
+        )]);
         let al = default_al();
         let file = make_file(
             "test.rs",
@@ -498,7 +551,8 @@ mod tests {
         let findings = scan(&[file], &scanner, &al);
         assert!(
             findings.iter().any(|f| f.rule_id == "aws-access-key-id"),
-            "expected aws-access-key-id finding, got: {:?}", findings
+            "expected aws-access-key-id finding, got: {:?}",
+            findings
         );
     }
 
@@ -513,8 +567,11 @@ mod tests {
         );
         let findings = scan(&[file], &scanner, &al);
         assert!(
-            findings.iter().any(|f| f.rule_id == "github-personal-access-token"),
-            "expected github-personal-access-token finding, got: {:?}", findings
+            findings
+                .iter()
+                .any(|f| f.rule_id == "github-personal-access-token"),
+            "expected github-personal-access-token finding, got: {:?}",
+            findings
         );
     }
 
@@ -523,14 +580,12 @@ mod tests {
         let rules = crate::scanner::rules::load_default_rules().unwrap();
         let scanner = compile_rules(&rules).unwrap();
         let al = default_al();
-        let file = make_file(
-            "key.pem",
-            vec![(1, b"-----BEGIN RSA PRIVATE KEY-----")],
-        );
+        let file = make_file("key.pem", vec![(1, b"-----BEGIN RSA PRIVATE KEY-----")]);
         let findings = scan(&[file], &scanner, &al);
         assert!(
             findings.iter().any(|f| f.rule_id == "pem-private-key"),
-            "expected pem-private-key finding, got: {:?}", findings
+            "expected pem-private-key finding, got: {:?}",
+            findings
         );
     }
 
@@ -538,9 +593,13 @@ mod tests {
 
     #[test]
     fn scan_skips_allowlisted_paths() {
-        let scanner = make_scanner(vec![
-            make_rule("aws-key", r"(AKIA[A-Z0-9]{16})", 1, vec!["akia"], None),
-        ]);
+        let scanner = make_scanner(vec![make_rule(
+            "aws-key",
+            r"(AKIA[A-Z0-9]{16})",
+            1,
+            vec!["akia"],
+            None,
+        )]);
         let al = default_al();
         // file in a vendor directory
         let file = make_file(
@@ -553,28 +612,30 @@ mod tests {
 
     #[test]
     fn scan_skips_binary_extension_paths() {
-        let scanner = make_scanner(vec![
-            make_rule("aws-key", r"(AKIA[A-Z0-9]{16})", 1, vec!["akia"], None),
-        ]);
+        let scanner = make_scanner(vec![make_rule(
+            "aws-key",
+            r"(AKIA[A-Z0-9]{16})",
+            1,
+            vec!["akia"],
+            None,
+        )]);
         let al = default_al();
-        let file = make_file(
-            "screenshot.png",
-            vec![(1, b"AKIAIOSFODNN7ABCDEFGH")],
-        );
+        let file = make_file("screenshot.png", vec![(1, b"AKIAIOSFODNN7ABCDEFGH")]);
         let findings = scan(&[file], &scanner, &al);
         assert!(findings.is_empty(), "should skip binary file extensions");
     }
 
     #[test]
     fn scan_skips_generated_files() {
-        let scanner = make_scanner(vec![
-            make_rule("aws-key", r"(AKIA[A-Z0-9]{16})", 1, vec!["akia"], None),
-        ]);
+        let scanner = make_scanner(vec![make_rule(
+            "aws-key",
+            r"(AKIA[A-Z0-9]{16})",
+            1,
+            vec!["akia"],
+            None,
+        )]);
         let al = default_al();
-        let file = make_file(
-            "package-lock.json",
-            vec![(1, b"AKIAIOSFODNN7ABCDEFGH")],
-        );
+        let file = make_file("package-lock.json", vec![(1, b"AKIAIOSFODNN7ABCDEFGH")]);
         let findings = scan(&[file], &scanner, &al);
         assert!(findings.is_empty(), "should skip generated files");
     }
@@ -582,37 +643,49 @@ mod tests {
     #[test]
     fn scan_skips_stopword_secrets() {
         // stopword filtering only applies to rules with entropy thresholds (tier 2+)
-        let scanner = make_scanner(vec![
-            make_rule("generic-secret", r#"(?i)secret\s*=\s*['"]([^'"]+)['"]"#, 1, vec!["secret"], Some(3.5)),
-        ]);
+        let scanner = make_scanner(vec![make_rule(
+            "generic-secret",
+            r#"(?i)secret\s*=\s*['"]([^'"]+)['"]"#,
+            1,
+            vec!["secret"],
+            Some(3.5),
+        )]);
         let al = default_al();
         let file = make_file(
             "config.rs",
             vec![(1, b"secret = \"example_token_for_testing\"")],
         );
         let findings = scan(&[file], &scanner, &al);
-        assert!(findings.is_empty(), "should skip secrets containing stopwords");
+        assert!(
+            findings.is_empty(),
+            "should skip secrets containing stopwords"
+        );
     }
 
     #[test]
     fn scan_skips_variable_references() {
-        let scanner = make_scanner(vec![
-            make_rule("generic-secret", r#"(?i)secret\s*=\s*['"]([^'"]+)['"]"#, 1, vec!["secret"], None),
-        ]);
+        let scanner = make_scanner(vec![make_rule(
+            "generic-secret",
+            r#"(?i)secret\s*=\s*['"]([^'"]+)['"]"#,
+            1,
+            vec!["secret"],
+            None,
+        )]);
         let al = default_al();
-        let file = make_file(
-            "config.rs",
-            vec![(1, b"secret = \"${DB_PASSWORD}\"")],
-        );
+        let file = make_file("config.rs", vec![(1, b"secret = \"${DB_PASSWORD}\"")]);
         let findings = scan(&[file], &scanner, &al);
         assert!(findings.is_empty(), "should skip variable references");
     }
 
     #[test]
     fn scan_skips_process_env_references() {
-        let scanner = make_scanner(vec![
-            make_rule("generic-secret", r#"(?i)secret\s*=\s*['"]([^'"]+)['"]"#, 1, vec!["secret"], None),
-        ]);
+        let scanner = make_scanner(vec![make_rule(
+            "generic-secret",
+            r#"(?i)secret\s*=\s*['"]([^'"]+)['"]"#,
+            1,
+            vec!["secret"],
+            None,
+        )]);
         let al = default_al();
         let file = make_file(
             "config.js",
@@ -637,39 +710,32 @@ mod tests {
             },
         }];
         let scanner = compile_rules(&rules).unwrap();
-        let al = crate::config::build_allowlist(
-            &crate::config::ProjectConfig::default(),
-            &rules,
-        ).unwrap();
+        let al = crate::config::build_allowlist(&crate::config::ProjectConfig::default(), &rules)
+            .unwrap();
 
         // the example key should be skipped
-        let file1 = make_file(
-            "config.py",
-            vec![(5, b"key = \"AKIAIOSFODNN7EXAMPLE\"")],
-        );
+        let file1 = make_file("config.py", vec![(5, b"key = \"AKIAIOSFODNN7EXAMPLE\"")]);
         let findings1 = scan(&[file1], &scanner, &al);
-        assert!(findings1.is_empty(), "example AWS key should be allowlisted");
+        assert!(
+            findings1.is_empty(),
+            "example AWS key should be allowlisted"
+        );
 
         // a real key should be detected
-        let file2 = make_file(
-            "config.py",
-            vec![(5, b"key = \"AKIAIOSFODNN7ABCDEFG\"")],
-        );
+        let file2 = make_file("config.py", vec![(5, b"key = \"AKIAIOSFODNN7ABCDEFG\"")]);
         let findings2 = scan(&[file2], &scanner, &al);
         assert_eq!(findings2.len(), 1, "real AWS key should be detected");
     }
 
     #[test]
     fn scan_doc_files_get_entropy_bonus() {
-        let scanner = make_scanner(vec![
-            make_rule(
-                "generic-secret",
-                r#"(?i)secret\s*=\s*['"]([^'"]+)['"]"#,
-                1,
-                vec!["secret"],
-                Some(3.0),
-            ),
-        ]);
+        let scanner = make_scanner(vec![make_rule(
+            "generic-secret",
+            r#"(?i)secret\s*=\s*['"]([^'"]+)['"]"#,
+            1,
+            vec!["secret"],
+            Some(3.0),
+        )]);
         let al = default_al();
 
         // a value with moderate entropy that would trigger in source code
@@ -693,9 +759,13 @@ mod tests {
 
     #[test]
     fn scan_detects_second_match_when_first_filtered() {
-        let scanner = make_scanner(vec![
-            make_rule("aws-key", r"(AKIA[A-Z0-9]{16})", 1, vec!["akia"], None),
-        ]);
+        let scanner = make_scanner(vec![make_rule(
+            "aws-key",
+            r"(AKIA[A-Z0-9]{16})",
+            1,
+            vec!["akia"],
+            None,
+        )]);
         // set up an allowlist that skips the example key but not a real one
         let rules = vec![crate::scanner::rules::Rule {
             id: "aws-key".to_string(),
@@ -709,26 +779,35 @@ mod tests {
                 paths: vec![],
             },
         }];
-        let al = crate::config::build_allowlist(
-            &crate::config::ProjectConfig::default(),
-            &rules,
-        ).unwrap();
+        let al = crate::config::build_allowlist(&crate::config::ProjectConfig::default(), &rules)
+            .unwrap();
 
         // line has two AWS keys: first is the allowlisted example, second is real
         let file = make_file(
             "config.py",
-            vec![(5, b"keys = [\"AKIAIOSFODNN7EXAMPLE\", \"AKIAIOSFODNN7ABCDEFG\"]")],
+            vec![(
+                5,
+                b"keys = [\"AKIAIOSFODNN7EXAMPLE\", \"AKIAIOSFODNN7ABCDEFG\"]",
+            )],
         );
         let findings = scan(&[file], &scanner, &al);
-        assert_eq!(findings.len(), 1, "should detect the second (real) key even though first is allowlisted");
+        assert_eq!(
+            findings.len(),
+            1,
+            "should detect the second (real) key even though first is allowlisted"
+        );
         assert_eq!(findings[0].matched_value, b"AKIAIOSFODNN7ABCDEFG");
     }
 
     #[test]
     fn scan_skips_files_with_no_added_lines() {
-        let scanner = make_scanner(vec![
-            make_rule("test", r"secret_[a-z]+", 0, vec!["secret_"], None),
-        ]);
+        let scanner = make_scanner(vec![make_rule(
+            "test",
+            r"secret_[a-z]+",
+            0,
+            vec!["secret_"],
+            None,
+        )]);
         let al = default_al();
         let file = DiffFile {
             path: "empty.rs".to_string(),
@@ -744,16 +823,22 @@ mod tests {
 
     #[test]
     fn scan_parallel_with_many_files() {
-        let scanner = make_scanner(vec![
-            make_rule("aws-key", r"(AKIA[A-Z0-9]{16})", 1, vec!["akia"], None),
-        ]);
+        let scanner = make_scanner(vec![make_rule(
+            "aws-key",
+            r"(AKIA[A-Z0-9]{16})",
+            1,
+            vec!["akia"],
+            None,
+        )]);
         let al = default_al();
         // create enough files to trigger parallel processing
         let files: Vec<DiffFile> = (0..10)
-            .map(|i| make_file(
-                &format!("file{}.rs", i),
-                vec![(1, b"key = \"AKIAIOSFODNN7ABCDEFGH\"")],
-            ))
+            .map(|i| {
+                make_file(
+                    &format!("file{}.rs", i),
+                    vec![(1, b"key = \"AKIAIOSFODNN7ABCDEFGH\"")],
+                )
+            })
             .collect();
         let findings = scan(&files, &scanner, &al);
         assert_eq!(findings.len(), 10);

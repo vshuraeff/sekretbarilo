@@ -81,8 +81,8 @@ pub fn load_default_rules() -> Result<Vec<Rule>, String> {
 /// load user rules from a TOML string
 #[allow(dead_code)]
 pub fn load_rules_from_str(toml_content: &str) -> Result<Vec<Rule>, String> {
-    let config: RulesConfig = toml::from_str(toml_content)
-        .map_err(|e| format!("failed to parse rules TOML: {}", e))?;
+    let config: RulesConfig =
+        toml::from_str(toml_content).map_err(|e| format!("failed to parse rules TOML: {}", e))?;
     Ok(config.rules)
 }
 
@@ -203,7 +203,11 @@ mod tests {
     fn load_default_rules_all_compile() {
         let rules = load_default_rules().unwrap();
         let result = compile_rules(&rules);
-        assert!(result.is_ok(), "failed to compile default rules: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "failed to compile default rules: {:?}",
+            result.err()
+        );
     }
 
     #[test]

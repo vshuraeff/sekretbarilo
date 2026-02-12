@@ -53,7 +53,11 @@ fn assert_no_findings(path: &str, line: &[u8]) {
         path,
         findings
             .iter()
-            .map(|f| format!("{}:{}", f.rule_id, String::from_utf8_lossy(&f.matched_value)))
+            .map(|f| format!(
+                "{}:{}",
+                f.rule_id,
+                String::from_utf8_lossy(&f.matched_value)
+            ))
             .collect::<Vec<_>>()
     );
 }
@@ -62,11 +66,7 @@ fn scan_lines(path: &str, lines: &[&[u8]]) -> Vec<Finding> {
     let (scanner, al) = default_scanner_and_allowlist();
     let file = make_file(
         path,
-        lines
-            .iter()
-            .enumerate()
-            .map(|(i, l)| (i + 1, *l))
-            .collect(),
+        lines.iter().enumerate().map(|(i, l)| (i + 1, *l)).collect(),
     );
     scan(&[file], &scanner, &al)
 }
@@ -160,10 +160,7 @@ fn fp_css_hex_color_3_digit() {
 
 #[test]
 fn fp_css_hex_color_in_js() {
-    assert_no_findings(
-        "src/theme.js",
-        b"const primaryColor = \"#1a2b3c\";",
-    );
+    assert_no_findings("src/theme.js", b"const primaryColor = \"#1a2b3c\";");
 }
 
 #[test]
@@ -185,10 +182,7 @@ fn fp_css_multiple_colors() {
 
 #[test]
 fn fp_css_rgba_values() {
-    assert_no_findings(
-        "src/styles.css",
-        b"background: rgba(255, 128, 0, 0.5);",
-    );
+    assert_no_findings("src/styles.css", b"background: rgba(255, 128, 0, 0.5);");
 }
 
 #[test]
@@ -279,10 +273,7 @@ fn fp_function_name_with_password_keyword() {
 
 #[test]
 fn fp_struct_field_with_api_key_keyword() {
-    assert_no_findings(
-        "src/models.rs",
-        b"    api_key_created_at: DateTime<Utc>,",
-    );
+    assert_no_findings("src/models.rs", b"    api_key_created_at: DateTime<Utc>,");
 }
 
 #[test]
@@ -295,10 +286,7 @@ fn fp_constant_name_with_token_keyword() {
 
 #[test]
 fn fp_enum_variant_with_secret_keyword() {
-    assert_no_findings(
-        "src/errors.rs",
-        b"    SecretNotFoundInVault,",
-    );
+    assert_no_findings("src/errors.rs", b"    SecretNotFoundInVault,");
 }
 
 // ============================================================================
@@ -509,7 +497,11 @@ fn fp_full_pipeline_mixed_safe_content() {
         "mixed safe content should produce no findings, got: {:?}",
         findings
             .iter()
-            .map(|f| format!("{}:{}", f.rule_id, String::from_utf8_lossy(&f.matched_value)))
+            .map(|f| format!(
+                "{}:{}",
+                f.rule_id,
+                String::from_utf8_lossy(&f.matched_value)
+            ))
             .collect::<Vec<_>>()
     );
 }
@@ -539,7 +531,11 @@ fn fp_full_pipeline_documentation_with_examples() {
         "documentation examples with placeholders should not trigger, got: {:?}",
         findings
             .iter()
-            .map(|f| format!("{}:{}", f.rule_id, String::from_utf8_lossy(&f.matched_value)))
+            .map(|f| format!(
+                "{}:{}",
+                f.rule_id,
+                String::from_utf8_lossy(&f.matched_value)
+            ))
             .collect::<Vec<_>>()
     );
 }
@@ -563,7 +559,11 @@ fn fp_full_pipeline_test_file_with_assertions() {
         "test files with validation logic should not trigger, got: {:?}",
         findings
             .iter()
-            .map(|f| format!("{}:{}", f.rule_id, String::from_utf8_lossy(&f.matched_value)))
+            .map(|f| format!(
+                "{}:{}",
+                f.rule_id,
+                String::from_utf8_lossy(&f.matched_value)
+            ))
             .collect::<Vec<_>>()
     );
 }
@@ -585,7 +585,11 @@ fn fp_full_pipeline_ci_config_with_env_refs() {
         "CI config with secret references should not trigger, got: {:?}",
         findings
             .iter()
-            .map(|f| format!("{}:{}", f.rule_id, String::from_utf8_lossy(&f.matched_value)))
+            .map(|f| format!(
+                "{}:{}",
+                f.rule_id,
+                String::from_utf8_lossy(&f.matched_value)
+            ))
             .collect::<Vec<_>>()
     );
 }
@@ -593,26 +597,14 @@ fn fp_full_pipeline_ci_config_with_env_refs() {
 #[test]
 fn fp_numeric_only_assignments() {
     // numeric values assigned to password/secret fields should not trigger
-    assert_no_findings(
-        "src/config.rs",
-        b"let password_max_attempts = 5;",
-    );
-    assert_no_findings(
-        "src/config.rs",
-        b"let secret_rotation_days = 90;",
-    );
+    assert_no_findings("src/config.rs", b"let password_max_attempts = 5;");
+    assert_no_findings("src/config.rs", b"let secret_rotation_days = 90;");
 }
 
 #[test]
 fn fp_boolean_and_null_assignments() {
-    assert_no_findings(
-        "src/config.rs",
-        b"let password_required = true;",
-    );
-    assert_no_findings(
-        "src/config.rs",
-        b"let secret_enabled = false;",
-    );
+    assert_no_findings("src/config.rs", b"let password_required = true;");
+    assert_no_findings("src/config.rs", b"let secret_enabled = false;");
 }
 
 #[test]
@@ -629,10 +621,7 @@ fn fp_type_annotations_with_keywords() {
 
 #[test]
 fn fp_import_statements_with_keywords() {
-    assert_no_findings(
-        "src/main.rs",
-        b"use crate::config::secret_manager;",
-    );
+    assert_no_findings("src/main.rs", b"use crate::config::secret_manager;");
     assert_no_findings(
         "src/main.rs",
         b"from cryptography.hazmat.primitives import hashes as password_hasher",
@@ -657,8 +646,5 @@ fn fp_error_messages_with_keywords() {
         "src/errors.rs",
         b"\"invalid password: must contain at least 8 characters\"",
     );
-    assert_no_findings(
-        "src/errors.rs",
-        b"\"api_key not found in request headers\"",
-    );
+    assert_no_findings("src/errors.rs", b"\"api_key not found in request headers\"");
 }

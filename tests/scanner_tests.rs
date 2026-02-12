@@ -131,16 +131,9 @@ fn tier1_github_refresh_token() {
 #[test]
 fn tier1_github_fine_grained_pat() {
     // github_pat_ tokens are 82+ chars after the prefix
-    let token = format!(
-        "github_pat_{}",
-        "A".repeat(82)
-    );
+    let token = format!("github_pat_{}", "A".repeat(82));
     let line = format!("token: {}", token);
-    assert_detected(
-        "config.yml",
-        line.as_bytes(),
-        "github-fine-grained-pat",
-    );
+    assert_detected("config.yml", line.as_bytes(), "github-fine-grained-pat");
 }
 
 #[test]
@@ -203,7 +196,10 @@ fn tier1_stripe_secret_key_test_detected() {
 fn tier1_stripe_secret_key_test_regex_matches() {
     // verify the regex pattern itself matches sk_test_ tokens
     let rules = load_default_rules().unwrap();
-    let rule = rules.iter().find(|r| r.id == "stripe-secret-key-test").unwrap();
+    let rule = rules
+        .iter()
+        .find(|r| r.id == "stripe-secret-key-test")
+        .unwrap();
     let re = regex::bytes::Regex::new(&rule.regex_pattern).unwrap();
     assert!(re.is_match(b"sk_test_4eC39HqLyjWDarjtT1zdp7dc"));
 }
@@ -246,11 +242,7 @@ fn tier1_pem_ec_private_key() {
 
 #[test]
 fn tier1_pem_generic_private_key() {
-    assert_detected(
-        "key.pem",
-        b"-----BEGIN PRIVATE KEY-----",
-        "pem-private-key",
-    );
+    assert_detected("key.pem", b"-----BEGIN PRIVATE KEY-----", "pem-private-key");
 }
 
 #[test]
@@ -278,22 +270,14 @@ fn tier1_digitalocean_personal_access_token() {
 fn tier1_digitalocean_oauth_token() {
     let token = format!("doo_v1_{}", "a1b2c3d4".repeat(8));
     let line = format!("token: {}", token);
-    assert_detected(
-        "config.yml",
-        line.as_bytes(),
-        "digitalocean-oauth-token",
-    );
+    assert_detected("config.yml", line.as_bytes(), "digitalocean-oauth-token");
 }
 
 #[test]
 fn tier1_digitalocean_refresh_token() {
     let token = format!("dor_v1_{}", "a1b2c3d4".repeat(8));
     let line = format!("token: {}", token);
-    assert_detected(
-        "config.yml",
-        line.as_bytes(),
-        "digitalocean-refresh-token",
-    );
+    assert_detected("config.yml", line.as_bytes(), "digitalocean-refresh-token");
 }
 
 #[test]
@@ -336,11 +320,7 @@ fn tier1_new_relic_api_key() {
 fn tier1_terraform_cloud_token() {
     let token = format!("abcdefghijklmn.atlasv1.{}", "A".repeat(60));
     let line = format!("token = \"{}\"", token);
-    assert_detected(
-        "terraform.tf",
-        line.as_bytes(),
-        "terraform-cloud-token",
-    );
+    assert_detected("terraform.tf", line.as_bytes(), "terraform-cloud-token");
 }
 
 #[test]
@@ -461,10 +441,7 @@ fn tier2_generic_password_assignment_high_entropy() {
 #[test]
 fn tier2_generic_password_low_entropy_not_flagged() {
     // low entropy value should not pass the entropy threshold
-    assert_not_detected(
-        "config.py",
-        b"password = \"aaaaaaaaaaaaaaaaaaaaaa\"",
-    );
+    assert_not_detected("config.py", b"password = \"aaaaaaaaaaaaaaaaaaaaaa\"");
 }
 
 #[test]
@@ -478,10 +455,7 @@ fn tier2_generic_secret_assignment() {
 
 #[test]
 fn tier2_generic_secret_assignment_low_entropy_not_flagged() {
-    assert_not_detected(
-        "config.py",
-        b"secret = \"aaaaaaaaaaaaaaaaaaaaaa\"",
-    );
+    assert_not_detected("config.py", b"secret = \"aaaaaaaaaaaaaaaaaaaaaa\"");
 }
 
 #[test]
@@ -530,11 +504,7 @@ fn tier2_azure_storage_account_key() {
     // azure keys are 86 base64 chars + ==
     let key = format!("{}==", "A".repeat(86));
     let line = format!("AccountKey={}", key);
-    assert_detected(
-        "config.cs",
-        line.as_bytes(),
-        "azure-storage-account-key",
-    );
+    assert_detected("config.cs", line.as_bytes(), "azure-storage-account-key");
 }
 
 #[test]
@@ -543,11 +513,7 @@ fn tier2_cloudflare_api_key() {
     let key = "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a";
     assert_eq!(key.len(), 37);
     let line = format!("cloudflare_api_key = '{}'", key);
-    assert_detected(
-        "config.py",
-        line.as_bytes(),
-        "cloudflare-api-key",
-    );
+    assert_detected("config.py", line.as_bytes(), "cloudflare-api-key");
 }
 
 #[test]
@@ -557,11 +523,7 @@ fn tier2_datadog_api_key() {
     // to avoid false negatives on hex-based API keys.
     let key = "a1b2c3d4e5f6a7b8a1b2c3d4e5f6a7b8";
     let line = format!("datadog_api_key = '{}'", key);
-    assert_detected(
-        "config.py",
-        line.as_bytes(),
-        "datadog-api-key",
-    );
+    assert_detected("config.py", line.as_bytes(), "datadog-api-key");
 }
 
 #[test]
@@ -585,11 +547,7 @@ fn tier2_heroku_api_key() {
     // 36-char uuid-like with heroku context
     let key = "a1b2c3d4-e5f6-a7b8-c9d0-e1f2a3b4c5d6";
     let line = format!("heroku_api_key = '{}'", key);
-    assert_detected(
-        "config.py",
-        line.as_bytes(),
-        "heroku-api-key",
-    );
+    assert_detected("config.py", line.as_bytes(), "heroku-api-key");
 }
 
 // ============================================================================
@@ -609,10 +567,7 @@ fn tier3_generic_api_key_high_entropy() {
 #[test]
 fn tier3_generic_api_key_low_entropy_not_flagged() {
     // low entropy value should not trigger
-    assert_not_detected(
-        "config.py",
-        b"api_key = \"aaaaaaaaaaaaaaaaaaaaaa\"",
-    );
+    assert_not_detected("config.py", b"api_key = \"aaaaaaaaaaaaaaaaaaaaaa\"");
 }
 
 #[test]
@@ -801,10 +756,7 @@ fn hash_abbreviated_git_in_merge_context() {
     // note: the scanner only detects this as hash if the captured value
     // itself is hex and line has git context keywords
     let (scanner, al) = default_scanner_and_allowlist();
-    let file = make_file(
-        "git.log",
-        vec![(1, b"merge commit da39a3e into main")],
-    );
+    let file = make_file("git.log", vec![(1, b"merge commit da39a3e into main")]);
     let findings = scan(&[file], &scanner, &al);
     // should not flag anything - no rule keywords match in this line
     assert!(
@@ -838,10 +790,7 @@ fn hash_sha256_digest_context() {
 #[test]
 fn stopword_changeme_not_flagged() {
     // "changeme" is a stopword - should not flag
-    assert_not_detected(
-        "config.py",
-        b"password = \"changeme_please_update\"",
-    );
+    assert_not_detected("config.py", b"password = \"changeme_please_update\"");
 }
 
 #[test]
@@ -854,18 +803,12 @@ fn stopword_example_not_flagged() {
 
 #[test]
 fn variable_reference_env_not_flagged() {
-    assert_not_detected(
-        "config.py",
-        b"secret = \"${SECRET_KEY}\"",
-    );
+    assert_not_detected("config.py", b"secret = \"${SECRET_KEY}\"");
 }
 
 #[test]
 fn variable_reference_process_env_not_flagged() {
-    assert_not_detected(
-        "config.js",
-        b"secret = \"process.env.SECRET_KEY\"",
-    );
+    assert_not_detected("config.js", b"secret = \"process.env.SECRET_KEY\"");
 }
 
 #[test]
@@ -876,10 +819,7 @@ fn aws_example_key_allowlisted() {
     let scanner = compile_rules(&rules).unwrap();
     let al = config::build_allowlist(&config::ProjectConfig::default(), &rules).unwrap();
 
-    let file = make_file(
-        "config.py",
-        vec![(5, b"key = \"AKIAIOSFODNN7EXAMPLE\"")],
-    );
+    let file = make_file("config.py", vec![(5, b"key = \"AKIAIOSFODNN7EXAMPLE\"")]);
     let findings = scan(&[file], &scanner, &al);
     assert!(
         findings.is_empty(),

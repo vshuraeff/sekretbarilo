@@ -51,11 +51,7 @@ fn setup_repo_with_secret(dir: &Path, filename: &str, content: &str) {
 fn config_flag_loads_custom_rules() {
     let bin = binary_path();
     let dir = tempfile::tempdir().unwrap();
-    setup_repo_with_secret(
-        dir.path(),
-        "secret.txt",
-        "CUSTOMPREFIX_ABCDEFGHIJKLMNOP",
-    );
+    setup_repo_with_secret(dir.path(), "secret.txt", "CUSTOMPREFIX_ABCDEFGHIJKLMNOP");
 
     // create a custom config with a rule
     let config_path = dir.path().join("custom.toml");
@@ -74,11 +70,7 @@ keywords = ["customprefix_"]
 
     // audit with custom config should find the custom rule
     let output = Command::new(&bin)
-        .args([
-            "audit",
-            "--config",
-            config_path.to_str().unwrap(),
-        ])
+        .args(["audit", "--config", config_path.to_str().unwrap()])
         .current_dir(dir.path())
         .output()
         .expect("run audit");
@@ -172,11 +164,7 @@ fn no_defaults_with_no_config_rules_warns() {
 fn no_defaults_with_custom_rules_only_uses_custom() {
     let bin = binary_path();
     let dir = tempfile::tempdir().unwrap();
-    setup_repo_with_secret(
-        dir.path(),
-        "secret.txt",
-        "MYTOKEN_ABCDEFGHIJKLMNOP",
-    );
+    setup_repo_with_secret(dir.path(), "secret.txt", "MYTOKEN_ABCDEFGHIJKLMNOP");
 
     let config_path = dir.path().join("rules.toml");
     std::fs::write(
