@@ -7,11 +7,13 @@ Secret scanner for git repositories. Scans staged commits, working trees, and fu
 ## Features
 
 - **Fast**: a typical commit scans in ~2.5 µs, a 400-file diff in ~3.7 ms; audits run files and commits in parallel via rayon
-- **Three-tier rule system**: 42 built-in rules organized by precision (prefix-based, context-aware, catch-all)
+- **Three-tier rule system**: 43 built-in rules organized by precision (prefix-based, context-aware, catch-all)
 - **Low false positives**: Shannon entropy analysis, stopword filtering, hash detection, variable reference detection
 - **Pre-commit hook**: automatic scanning of staged changes on every commit
 - **Working tree audit**: scan all tracked (and optionally ignored) files for secrets
 - **Git history audit**: scan every commit across all branches with deduplication, author tracking, and branch resolution
+- **Agent hooks**: integrates with AI coding agents (Claude Code) to scan files before they are read
+- **Health diagnostics**: `doctor` command checks hook installation, configuration, and binary availability
 - **Configurable**: hierarchical `.sekretbarilo.toml` (system, user, project) for allowlists, custom rules, and overrides
 - **Zero config needed**: works out of the box with sensible defaults
 - **Blocks .env files**: automatically prevents committing `.env`, `.env.local`, `.env.production` etc.
@@ -41,21 +43,21 @@ Install the git pre-commit hook in your repository:
 
 ```sh
 cd your-project
-sekretbarilo install
+sekretbarilo install pre-commit
 ```
 
 This creates (or appends to) `.git/hooks/pre-commit`. From now on, every `git commit` automatically scans staged changes for secrets.
+
+To install globally (applies to all repositories):
+
+```sh
+sekretbarilo install pre-commit --global
+```
 
 To manually scan staged changes:
 
 ```sh
 sekretbarilo scan
-```
-
-Or simply:
-
-```sh
-sekretbarilo
 ```
 
 ### Audit your repository
@@ -87,6 +89,55 @@ Include untracked ignored files in the audit:
 sekretbarilo audit --include-ignored
 ```
 
+### Agent hooks (Claude Code)
+
+Install a hook so Claude Code scans every file for secrets before reading it:
+
+```sh
+# install in current project (.claude/settings.json)
+sekretbarilo install agent-hook claude
+
+# install globally (~/.claude/settings.json)
+sekretbarilo install agent-hook claude --global
+```
+
+This adds a `PreToolUse` hook for the `Read` tool. When Claude Code reads a file, sekretbarilo scans it first and blocks the read if secrets are found, preventing accidental exposure of credentials to the agent.
+
+You can also scan a single file directly:
+
+```sh
+# scan a file by path
+sekretbarilo check-file src/config.rs
+
+# read file path from Claude Code hook JSON payload on stdin
+sekretbarilo check-file --stdin-json
+```
+
+Install all hooks at once (pre-commit + agent hooks):
+
+```sh
+sekretbarilo install all
+sekretbarilo install all --global
+```
+
+### Diagnosing your setup
+
+Check installation health across all hook types and configuration:
+
+```sh
+sekretbarilo doctor
+```
+
+The `doctor` command checks:
+- Git pre-commit hook (local and global): installed, executable, correct marker
+- Claude Code hook (local and global): installed, correct matcher and command
+- Configuration: config files found, rules compile successfully
+- Binary availability: sekretbarilo is findable in PATH
+
+### Note on Codex CLI
+
+Codex CLI does not currently support a hooks system. The `install agent-hook codex` subcommand is reserved for future use. If Codex adds a hooks API, sekretbarilo will add support. An alternative approach under consideration is running sekretbarilo as an MCP tool server, which would work with any agent that supports MCP.
+
 ## CLI flags
 
 Both `scan` and `audit` commands accept the following flags:
@@ -98,6 +149,18 @@ Both `scan` and `audit` commands accept the following flags:
 | `--entropy-threshold <n>` | Override the global entropy threshold. |
 | `--allowlist-path <pattern>` | Add a path pattern to the allowlist. Repeatable. |
 | `--stopword <word>` | Add a stopword. Repeatable. |
+
+Check-file flags:
+
+| Flag | Description |
+|------|-------------|
+| `--stdin-json` | Read file path from JSON payload on stdin (agent hook mode). |
+
+Install flags:
+
+| Flag | Description |
+|------|-------------|
+| `--global` | Install globally instead of per-project. |
 
 Audit-only flags:
 
@@ -134,6 +197,18 @@ sekretbarilo audit --exclude-pattern '^vendor/'
 
 # combine CLI flags with config files
 sekretbarilo audit --config ci-rules.toml --stopword test-token --exclude-pattern '^fixtures/'
+
+# install claude code agent hook (project-local)
+sekretbarilo install agent-hook claude
+
+# install all hooks globally
+sekretbarilo install all --global
+
+# scan a single file for secrets
+sekretbarilo check-file src/config.rs
+
+# check installation health
+sekretbarilo doctor
 ```
 
 ## Audit mode
@@ -202,11 +277,20 @@ Both modes share the same scanner engine, rules, allowlists, and output formatti
 
 ## Exit codes
 
+### `scan`, `audit`, `doctor`
+
 | Code | Meaning |
 |------|---------|
-| 0 | No secrets found |
-| 1 | Secrets detected |
+| 0 | No secrets found (or all checks passed for `doctor`) |
+| 1 | Secrets detected (or issues found for `doctor`) |
 | 2 | Internal error (config parse failure, git not found, etc.) |
+
+### `check-file`
+
+| Code | Meaning |
+|------|---------|
+| 0 | Clean (no secrets found, or file skipped as binary/allowlisted) |
+| 2 | Secrets found or error (Claude Code blocks the read on exit 2) |
 
 ## Output format
 
@@ -378,7 +462,8 @@ These rules detect secrets with distinctive prefixes and rarely produce false po
 | new-relic-api-key | New Relic key (NRAK-...) |
 | terraform-cloud-token | Terraform Cloud token (*.atlasv1.*) |
 | anthropic-api-key | Anthropic key (sk-ant-...) |
-| openai-api-key | OpenAI key (sk-...T3BlbkFJ...) |
+| openai-api-key-legacy | OpenAI key legacy format (sk-...T3BlbkFJ...) |
+| openai-api-key | OpenAI key project format (sk-proj-...) |
 
 ### Tier 2: context-aware (medium false positives)
 

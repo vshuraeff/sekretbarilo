@@ -630,7 +630,7 @@ checksum = "490dcfcbfef26be6800d11870ff2df8774fa6e86d047e3e8c8a76b25655e41ca"
 
 [[package]]
 name = "sekretbarilo"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "aho-corasick",
  "bstr",
@@ -639,6 +639,7 @@ dependencies = [
  "rayon",
  "regex",
  "serde",
+ "serde_json",
  "serial_test",
  "tempfile",
  "toml",

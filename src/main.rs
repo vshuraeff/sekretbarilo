@@ -1,5 +1,7 @@
+mod agent;
 mod audit;
 mod diff;
+mod doctor;
 mod scanner;
 mod config;
 mod output;
@@ -9,6 +11,7 @@ use std::path::{Path, PathBuf};
 
 use config::allowlist::CompiledAllowlist;
 use config::ProjectConfig;
+use doctor::resolve_repo_root;
 use scanner::rules::CompiledScanner;
 
 fn main() {
@@ -20,8 +23,26 @@ fn main() {
 enum Command {
     Scan,
     Audit,
-    Install,
+    InstallPreCommit,
+    InstallAgentHook,
+    InstallAll,
+    InstallHelp,
+    CheckFile,
+    Doctor,
     Help,
+}
+
+/// install-specific flags parsed from cli
+#[derive(Debug, Default)]
+struct InstallFlags {
+    global: bool,
+}
+
+/// check-file specific flags parsed from cli
+#[derive(Debug, Default)]
+struct CheckFileFlags {
+    stdin_json: bool,
+    file_path: Option<String>,
 }
 
 /// cli overrides that apply to both scan and audit
@@ -46,22 +67,90 @@ struct AuditFlags {
     until: Option<String>,
 }
 
-/// parse cli arguments into (command, overrides, audit_flags).
-/// first positional arg is the subcommand (defaults to Scan).
-fn parse_cli(args: &[String]) -> Result<(Command, CliOverrides, AuditFlags), String> {
+/// parse cli arguments into (command, overrides, audit_flags, check_file_flags, install_flags).
+/// first positional arg is the subcommand. no subcommand shows help.
+fn parse_cli(args: &[String]) -> Result<(Command, CliOverrides, AuditFlags, CheckFileFlags, InstallFlags), String> {
     let mut command: Option<Command> = None;
     let mut overrides = CliOverrides::default();
     let mut audit_flags = AuditFlags::default();
+    let mut check_file_flags = CheckFileFlags::default();
+    let mut install_flags = InstallFlags::default();
 
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
             // subcommands
-            "scan" | "install" | "audit" | "--help" | "-h" if command.is_none() => {
+            "scan" | "install" | "audit" | "check-file" | "doctor" | "--help" | "-h" if command.is_none() => {
                 command = Some(match args[i].as_str() {
                     "scan" => Command::Scan,
                     "audit" => Command::Audit,
-                    "install" => Command::Install,
+                    "doctor" => Command::Doctor,
+                    "install" => {
+                        // parse install subcommand
+                        if i + 1 < args.len() {
+                            match args[i + 1].as_str() {
+                                "pre-commit" => {
+                                    i += 1;
+                                    Command::InstallPreCommit
+                                }
+                                "agent-hook" => {
+                                    i += 1;
+                                    // expect agent name next
+                                    if i + 1 < args.len() {
+                                        match args[i + 1].as_str() {
+                                            "claude" => {
+                                                i += 1;
+                                                Command::InstallAgentHook
+                                            }
+                                            "codex" => {
+                                                return Err(
+                                                    "codex agent hooks are not yet supported. \
+                                                     codex cli does not currently provide a hooks api"
+                                                        .to_string(),
+                                                );
+                                            }
+                                            other => {
+                                                return Err(format!(
+                                                    "unknown agent hook target: '{}'. supported: claude",
+                                                    other
+                                                ));
+                                            }
+                                        }
+                                    } else {
+                                        return Err(
+                                            "install agent-hook requires a target. supported: claude"
+                                                .to_string(),
+                                        );
+                                    }
+                                }
+                                "all" => {
+                                    i += 1;
+                                    Command::InstallAll
+                                }
+                                "--help" | "-h" => {
+                                    i += 1;
+                                    Command::InstallHelp
+                                }
+                                // not a recognized subcommand (flag-like)
+                                _ if args[i + 1].starts_with('-') => {
+                                    return Err(format!(
+                                        "unknown install flag: '{}'. use 'install --help' for usage",
+                                        args[i + 1]
+                                    ));
+                                }
+                                other => {
+                                    return Err(format!(
+                                        "unknown install target: '{}'. supported: pre-commit, agent-hook, all",
+                                        other
+                                    ));
+                                }
+                            }
+                        } else {
+                            // bare "install" with no subcommand shows install help
+                            Command::InstallHelp
+                        }
+                    }
+                    "check-file" => Command::CheckFile,
                     "--help" | "-h" => Command::Help,
                     _ => unreachable!(),
                 });
@@ -146,14 +235,46 @@ fn parse_cli(args: &[String]) -> Result<(Command, CliOverrides, AuditFlags), Str
                 overrides.include_patterns.push(args[i].clone());
             }
 
+            // install flags
+            "--global" => {
+                install_flags.global = true;
+            }
+
+            // check-file flags
+            "--stdin-json" => {
+                check_file_flags.stdin_json = true;
+            }
+
             other => {
-                return Err(format!("unknown flag: {}", other));
+                // allow positional file path for check-file
+                if command == Some(Command::CheckFile) && !other.starts_with('-') && check_file_flags.file_path.is_none() {
+                    check_file_flags.file_path = Some(other.to_string());
+                } else {
+                    return Err(format!("unknown flag: {}", other));
+                }
             }
         }
         i += 1;
     }
 
-    let command = command.unwrap_or(Command::Scan);
+    let command = command.unwrap_or(Command::Help);
+
+    // validate check-file flags
+    if command != Command::CheckFile && check_file_flags.stdin_json {
+        return Err("--stdin-json is only valid with check-file".to_string());
+    }
+    if check_file_flags.stdin_json && check_file_flags.file_path.is_some() {
+        return Err("--stdin-json and file path argument are mutually exclusive".to_string());
+    }
+
+    // validate install flags
+    let is_install_cmd = matches!(
+        command,
+        Command::InstallPreCommit | Command::InstallAgentHook | Command::InstallAll | Command::InstallHelp
+    );
+    if !is_install_cmd && install_flags.global {
+        return Err("--global is only valid with install subcommands".to_string());
+    }
 
     // validate audit-only flags on non-audit commands
     if command != Command::Audit {
@@ -180,13 +301,33 @@ fn parse_cli(args: &[String]) -> Result<(Command, CliOverrides, AuditFlags), Str
         }
     }
 
-    Ok((command, overrides, audit_flags))
+    // validate that config-override flags are only accepted by scan and audit
+    let accepts_config_flags = matches!(command, Command::Scan | Command::Audit);
+    if !accepts_config_flags {
+        if !overrides.config_paths.is_empty() {
+            return Err("--config is only valid with scan or audit".to_string());
+        }
+        if overrides.no_defaults {
+            return Err("--no-defaults is only valid with scan or audit".to_string());
+        }
+        if overrides.entropy_threshold.is_some() {
+            return Err("--entropy-threshold is only valid with scan or audit".to_string());
+        }
+        if !overrides.allowlist_paths.is_empty() {
+            return Err("--allowlist-path is only valid with scan or audit".to_string());
+        }
+        if !overrides.stopwords.is_empty() {
+            return Err("--stopword is only valid with scan or audit".to_string());
+        }
+    }
+
+    Ok((command, overrides, audit_flags, check_file_flags, install_flags))
 }
 
 fn run() -> i32 {
     let args: Vec<String> = std::env::args().skip(1).collect();
 
-    let (command, overrides, audit_flags) = match parse_cli(&args) {
+    let (command, overrides, audit_flags, check_file_flags, install_flags) = match parse_cli(&args) {
         Ok(parsed) => parsed,
         Err(e) => {
             eprintln!("[ERROR] {}", e);
@@ -201,9 +342,20 @@ fn run() -> i32 {
             print_usage();
             0
         }
-        Command::Install => run_install(),
+        Command::InstallPreCommit => run_install_pre_commit(install_flags.global),
+        Command::InstallAgentHook => run_install_agent_hook(install_flags.global),
+        Command::InstallAll => run_install_all(install_flags.global),
+        Command::InstallHelp => {
+            print_install_usage();
+            0
+        }
         Command::Scan => run_scan(&overrides),
         Command::Audit => run_audit_cmd(&overrides, &audit_flags),
+        Command::CheckFile => agent::run_check_file(
+            check_file_flags.stdin_json,
+            check_file_flags.file_path.as_deref(),
+        ),
+        Command::Doctor => doctor::run_doctor(),
     }
 }
 
@@ -211,10 +363,11 @@ fn print_usage() {
     eprintln!("sekretbarilo - secret scanner for git repositories");
     eprintln!();
     eprintln!("usage:");
-    eprintln!("  sekretbarilo              scan staged changes (default)");
     eprintln!("  sekretbarilo scan         scan staged changes");
-    eprintln!("  sekretbarilo install      install git pre-commit hook");
+    eprintln!("  sekretbarilo install      install hooks (see: sekretbarilo install --help)");
     eprintln!("  sekretbarilo audit        scan all tracked files in working tree");
+    eprintln!("  sekretbarilo check-file   scan a single file for secrets (agent hook mode)");
+    eprintln!("  sekretbarilo doctor       diagnose hook installation and configuration");
     eprintln!("  sekretbarilo --help       show this help");
     eprintln!();
     eprintln!("common flags:");
@@ -233,33 +386,46 @@ fn print_usage() {
     eprintln!("  --exclude-pattern <pat>   add exclude pattern for audit (repeatable)");
     eprintln!("  --include-pattern <pat>   add include pattern for audit (repeatable)");
     eprintln!();
+    eprintln!("check-file flags:");
+    eprintln!("  --stdin-json              read file path from JSON on stdin (agent hook mode)");
+    eprintln!();
     eprintln!("examples:");
-    eprintln!("  sekretbarilo scan --config rules.toml       scan with explicit config");
-    eprintln!("  sekretbarilo scan --no-defaults              scan without built-in rules");
-    eprintln!("  sekretbarilo scan --stopword mytoken         add a stopword");
-    eprintln!("  sekretbarilo audit                           scan working tree");
-    eprintln!("  sekretbarilo audit --history                 scan all commits");
-    eprintln!("  sekretbarilo audit --history --branch main   scan main branch history");
+    eprintln!("  sekretbarilo scan --config rules.toml              scan with explicit config");
+    eprintln!("  sekretbarilo scan --no-defaults                    scan without built-in rules");
+    eprintln!("  sekretbarilo scan --stopword mytoken               add a stopword");
+    eprintln!("  sekretbarilo install pre-commit                    install git pre-commit hook");
+    eprintln!("  sekretbarilo install agent-hook claude              install claude code hook");
+    eprintln!("  sekretbarilo install all --global                  install all hooks globally");
+    eprintln!("  sekretbarilo audit                                 scan working tree");
+    eprintln!("  sekretbarilo audit --history                       scan all commits");
+    eprintln!("  sekretbarilo audit --history --branch main         scan main branch history");
     eprintln!("  sekretbarilo audit --history --since 2024-01-01");
     eprintln!("  sekretbarilo audit --exclude-pattern '^vendor/'");
-    eprintln!("  sekretbarilo audit --config a.toml --config b.toml");
+    eprintln!("  sekretbarilo check-file src/config.rs              scan a single file");
+    eprintln!("  sekretbarilo check-file --stdin-json               read path from hook payload");
+    eprintln!("  sekretbarilo doctor                                check installation health");
 }
 
-/// resolve the git repository root directory.
-/// returns None if we can't determine it (non-fatal, falls back to defaults).
-fn resolve_repo_root() -> Option<PathBuf> {
-    let output = std::process::Command::new("git")
-        .args(["rev-parse", "--show-toplevel"])
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let root = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if root.is_empty() {
-        return None;
-    }
-    Some(PathBuf::from(root))
+fn print_install_usage() {
+    eprintln!("sekretbarilo install - install hooks for secret scanning");
+    eprintln!();
+    eprintln!("usage:");
+    eprintln!("  sekretbarilo install pre-commit          install git pre-commit hook");
+    eprintln!("  sekretbarilo install agent-hook claude    install claude code agent hook");
+    eprintln!("  sekretbarilo install all                  install all available hooks");
+    eprintln!();
+    eprintln!("flags:");
+    eprintln!("  --global    install globally instead of locally");
+    eprintln!("              pre-commit: uses git config --global core.hooksPath directory");
+    eprintln!("              agent-hook: modifies ~/.claude/settings.json");
+    eprintln!();
+    eprintln!("examples:");
+    eprintln!("  sekretbarilo install pre-commit              install local pre-commit hook");
+    eprintln!("  sekretbarilo install pre-commit --global     install global pre-commit hook");
+    eprintln!("  sekretbarilo install agent-hook claude        install local claude code hook");
+    eprintln!("  sekretbarilo install agent-hook claude --global");
+    eprintln!("  sekretbarilo install all                      install all hooks locally");
+    eprintln!("  sekretbarilo install all --global             install all hooks globally");
 }
 
 /// apply cli overrides on top of a loaded project config.
@@ -329,8 +495,34 @@ fn build_scan_context(
     Ok((project_config, compiled, allowlist))
 }
 
-fn run_install() -> i32 {
-    match hook::install(None) {
+fn run_install_pre_commit(global: bool) -> i32 {
+    if global {
+        match hook::install_global() {
+            Ok(result) => {
+                eprintln!("[OK] {}", result);
+                0
+            }
+            Err(e) => {
+                eprintln!("[ERROR] {}", e);
+                2
+            }
+        }
+    } else {
+        match hook::install(None) {
+            Ok(result) => {
+                eprintln!("[OK] {}", result);
+                0
+            }
+            Err(e) => {
+                eprintln!("[ERROR] {}", e);
+                2
+            }
+        }
+    }
+}
+
+fn run_install_agent_hook(global: bool) -> i32 {
+    match agent::install_claude_hook(global) {
         Ok(result) => {
             eprintln!("[OK] {}", result);
             0
@@ -340,6 +532,22 @@ fn run_install() -> i32 {
             2
         }
     }
+}
+
+fn run_install_all(global: bool) -> i32 {
+    // install pre-commit hook
+    eprintln!("installing pre-commit hook...");
+    let pre_commit_result = run_install_pre_commit(global);
+
+    // install claude code agent hook
+    eprintln!("installing claude code agent hook...");
+    let agent_result = run_install_agent_hook(global);
+
+    // return non-zero if either install failed
+    if pre_commit_result != 0 || agent_result != 0 {
+        return 2;
+    }
+    0
 }
 
 fn run_scan(overrides: &CliOverrides) -> i32 {
@@ -435,46 +643,44 @@ mod tests {
     }
 
     #[test]
-    fn parse_cli_default_scan() {
-        let (cmd, overrides, _) = parse_cli(&args("")).unwrap();
-        assert_eq!(cmd, Command::Scan);
-        assert!(!overrides.no_defaults);
-        assert!(overrides.config_paths.is_empty());
+    fn parse_cli_default_help() {
+        let (cmd, _, _, _, _) = parse_cli(&args("")).unwrap();
+        assert_eq!(cmd, Command::Help);
     }
 
     #[test]
     fn parse_cli_explicit_scan() {
-        let (cmd, _, _) = parse_cli(&args("scan")).unwrap();
+        let (cmd, _, _, _, _) = parse_cli(&args("scan")).unwrap();
         assert_eq!(cmd, Command::Scan);
     }
 
     #[test]
     fn parse_cli_audit() {
-        let (cmd, _, _) = parse_cli(&args("audit")).unwrap();
+        let (cmd, _, _, _, _) = parse_cli(&args("audit")).unwrap();
         assert_eq!(cmd, Command::Audit);
     }
 
     #[test]
-    fn parse_cli_install() {
-        let (cmd, _, _) = parse_cli(&args("install")).unwrap();
-        assert_eq!(cmd, Command::Install);
+    fn parse_cli_install_bare_shows_help() {
+        let (cmd, _, _, _, _) = parse_cli(&args("install")).unwrap();
+        assert_eq!(cmd, Command::InstallHelp);
     }
 
     #[test]
     fn parse_cli_help() {
-        let (cmd, _, _) = parse_cli(&args("--help")).unwrap();
+        let (cmd, _, _, _, _) = parse_cli(&args("--help")).unwrap();
         assert_eq!(cmd, Command::Help);
     }
 
     #[test]
     fn parse_cli_help_short() {
-        let (cmd, _, _) = parse_cli(&args("-h")).unwrap();
+        let (cmd, _, _, _, _) = parse_cli(&args("-h")).unwrap();
         assert_eq!(cmd, Command::Help);
     }
 
     #[test]
     fn parse_cli_config_paths() {
-        let (_, overrides, _) =
+        let (_, overrides, _, _, _) =
             parse_cli(&args("scan --config a.toml --config b.toml")).unwrap();
         assert_eq!(overrides.config_paths.len(), 2);
         assert_eq!(overrides.config_paths[0], PathBuf::from("a.toml"));
@@ -483,13 +689,13 @@ mod tests {
 
     #[test]
     fn parse_cli_no_defaults() {
-        let (_, overrides, _) = parse_cli(&args("scan --no-defaults")).unwrap();
+        let (_, overrides, _, _, _) = parse_cli(&args("scan --no-defaults")).unwrap();
         assert!(overrides.no_defaults);
     }
 
     #[test]
     fn parse_cli_entropy_threshold() {
-        let (_, overrides, _) =
+        let (_, overrides, _, _, _) =
             parse_cli(&args("scan --entropy-threshold 4.5")).unwrap();
         assert_eq!(overrides.entropy_threshold, Some(4.5));
     }
@@ -508,21 +714,21 @@ mod tests {
 
     #[test]
     fn parse_cli_allowlist_paths_repeatable() {
-        let (_, overrides, _) =
+        let (_, overrides, _, _, _) =
             parse_cli(&args("scan --allowlist-path vendor/.* --allowlist-path test/.*")).unwrap();
         assert_eq!(overrides.allowlist_paths, vec!["vendor/.*", "test/.*"]);
     }
 
     #[test]
     fn parse_cli_stopwords_repeatable() {
-        let (_, overrides, _) =
+        let (_, overrides, _, _, _) =
             parse_cli(&args("scan --stopword foo --stopword bar")).unwrap();
         assert_eq!(overrides.stopwords, vec!["foo", "bar"]);
     }
 
     #[test]
     fn parse_cli_audit_flags() {
-        let (cmd, overrides, flags) = parse_cli(&args(
+        let (cmd, overrides, flags, _, _) = parse_cli(&args(
             "audit --history --branch main --since 2024-01-01 --until 2024-12-31 --include-ignored",
         ))
         .unwrap();
@@ -542,7 +748,7 @@ mod tests {
         .into_iter()
         .map(String::from)
         .collect();
-        let (_, overrides, _) = parse_cli(&a).unwrap();
+        let (_, overrides, _, _, _) = parse_cli(&a).unwrap();
         assert_eq!(overrides.exclude_patterns, vec!["^vendor/"]);
         assert_eq!(overrides.include_patterns, vec![r"\.rs$"]);
     }
@@ -603,7 +809,7 @@ mod tests {
 
     #[test]
     fn parse_cli_all_common_flags_with_audit() {
-        let (cmd, overrides, _) = parse_cli(&args(
+        let (cmd, overrides, _, _, _) = parse_cli(&args(
             "audit --config rules.toml --no-defaults --entropy-threshold 3.5 --allowlist-path test/.* --stopword safe",
         )).unwrap();
         assert_eq!(cmd, Command::Audit);
@@ -616,9 +822,45 @@ mod tests {
 
     #[test]
     fn parse_cli_duplicate_scalar_last_wins() {
-        let (_, overrides, _) =
+        let (_, overrides, _, _, _) =
             parse_cli(&args("scan --entropy-threshold 3.0 --entropy-threshold 4.5")).unwrap();
         assert_eq!(overrides.entropy_threshold, Some(4.5));
+    }
+
+    #[test]
+    fn parse_cli_check_file() {
+        let (cmd, _, _, _, _) = parse_cli(&args("check-file")).unwrap();
+        assert_eq!(cmd, Command::CheckFile);
+    }
+
+    #[test]
+    fn parse_cli_check_file_with_path() {
+        let (cmd, _, _, cf_flags, _) =
+            parse_cli(&args("check-file src/main.rs")).unwrap();
+        assert_eq!(cmd, Command::CheckFile);
+        assert_eq!(cf_flags.file_path, Some("src/main.rs".to_string()));
+        assert!(!cf_flags.stdin_json);
+    }
+
+    #[test]
+    fn parse_cli_check_file_stdin_json() {
+        let (cmd, _, _, cf_flags, _) =
+            parse_cli(&args("check-file --stdin-json")).unwrap();
+        assert_eq!(cmd, Command::CheckFile);
+        assert!(cf_flags.stdin_json);
+        assert!(cf_flags.file_path.is_none());
+    }
+
+    #[test]
+    fn parse_cli_stdin_json_on_scan_rejected() {
+        let err = parse_cli(&args("scan --stdin-json")).unwrap_err();
+        assert!(err.contains("only valid with check-file"));
+    }
+
+    #[test]
+    fn parse_cli_stdin_json_and_file_path_mutually_exclusive() {
+        let err = parse_cli(&args("check-file --stdin-json src/main.rs")).unwrap_err();
+        assert!(err.contains("mutually exclusive"));
     }
 
     #[test]
@@ -648,5 +890,145 @@ mod tests {
         };
         let result = build_scan_context(&overrides, None);
         assert!(result.is_err());
+    }
+
+    // -- install subcommand tests --
+
+    #[test]
+    fn parse_cli_install_pre_commit() {
+        let (cmd, _, _, _, flags) = parse_cli(&args("install pre-commit")).unwrap();
+        assert_eq!(cmd, Command::InstallPreCommit);
+        assert!(!flags.global);
+    }
+
+    #[test]
+    fn parse_cli_install_pre_commit_global() {
+        let (cmd, _, _, _, flags) = parse_cli(&args("install pre-commit --global")).unwrap();
+        assert_eq!(cmd, Command::InstallPreCommit);
+        assert!(flags.global);
+    }
+
+    #[test]
+    fn parse_cli_install_agent_hook_claude() {
+        let (cmd, _, _, _, flags) = parse_cli(&args("install agent-hook claude")).unwrap();
+        assert_eq!(cmd, Command::InstallAgentHook);
+        assert!(!flags.global);
+    }
+
+    #[test]
+    fn parse_cli_install_agent_hook_claude_global() {
+        let (cmd, _, _, _, flags) =
+            parse_cli(&args("install agent-hook claude --global")).unwrap();
+        assert_eq!(cmd, Command::InstallAgentHook);
+        assert!(flags.global);
+    }
+
+    #[test]
+    fn parse_cli_install_all() {
+        let (cmd, _, _, _, _) = parse_cli(&args("install all")).unwrap();
+        assert_eq!(cmd, Command::InstallAll);
+    }
+
+    #[test]
+    fn parse_cli_install_all_global() {
+        let (cmd, _, _, _, flags) = parse_cli(&args("install all --global")).unwrap();
+        assert_eq!(cmd, Command::InstallAll);
+        assert!(flags.global);
+    }
+
+    #[test]
+    fn parse_cli_install_unknown_target() {
+        let err = parse_cli(&args("install bogus")).unwrap_err();
+        assert!(err.contains("unknown install target"));
+    }
+
+    #[test]
+    fn parse_cli_install_agent_hook_missing_target() {
+        let err = parse_cli(&args("install agent-hook")).unwrap_err();
+        assert!(err.contains("requires a target"));
+    }
+
+    #[test]
+    fn parse_cli_install_agent_hook_codex_not_yet_supported() {
+        let err = parse_cli(&args("install agent-hook codex")).unwrap_err();
+        assert!(err.contains("not yet supported"));
+    }
+
+    #[test]
+    fn parse_cli_install_agent_hook_unknown_agent() {
+        let err = parse_cli(&args("install agent-hook bogus")).unwrap_err();
+        assert!(err.contains("unknown agent hook target"));
+    }
+
+    #[test]
+    fn parse_cli_global_on_scan_rejected() {
+        let err = parse_cli(&args("scan --global")).unwrap_err();
+        assert!(err.contains("only valid with install"));
+    }
+
+    #[test]
+    fn parse_cli_install_help_flag() {
+        let (cmd, _, _, _, _) = parse_cli(&args("install --help")).unwrap();
+        assert_eq!(cmd, Command::InstallHelp);
+    }
+
+    #[test]
+    fn parse_cli_install_help_short_flag() {
+        let (cmd, _, _, _, _) = parse_cli(&args("install -h")).unwrap();
+        assert_eq!(cmd, Command::InstallHelp);
+    }
+
+    #[test]
+    fn parse_cli_doctor() {
+        let (cmd, _, _, _, _) = parse_cli(&args("doctor")).unwrap();
+        assert_eq!(cmd, Command::Doctor);
+    }
+
+    #[test]
+    fn parse_cli_doctor_rejects_audit_flags() {
+        let err = parse_cli(&args("doctor --history")).unwrap_err();
+        assert!(err.contains("only valid with audit"));
+    }
+
+    #[test]
+    fn parse_cli_doctor_rejects_global() {
+        let err = parse_cli(&args("doctor --global")).unwrap_err();
+        assert!(err.contains("only valid with install"));
+    }
+
+    #[test]
+    fn parse_cli_doctor_rejects_config_flags() {
+        let err = parse_cli(&args("doctor --config rules.toml")).unwrap_err();
+        assert!(err.contains("only valid with scan or audit"));
+    }
+
+    #[test]
+    fn parse_cli_doctor_rejects_no_defaults() {
+        let err = parse_cli(&args("doctor --no-defaults")).unwrap_err();
+        assert!(err.contains("only valid with scan or audit"));
+    }
+
+    #[test]
+    fn parse_cli_doctor_rejects_entropy_threshold() {
+        let err = parse_cli(&args("doctor --entropy-threshold 4.0")).unwrap_err();
+        assert!(err.contains("only valid with scan or audit"));
+    }
+
+    #[test]
+    fn parse_cli_install_rejects_config_flags() {
+        let err = parse_cli(&args("install pre-commit --config rules.toml")).unwrap_err();
+        assert!(err.contains("only valid with scan or audit"));
+    }
+
+    #[test]
+    fn parse_cli_install_rejects_stopword() {
+        let err = parse_cli(&args("install pre-commit --stopword foo")).unwrap_err();
+        assert!(err.contains("only valid with scan or audit"));
+    }
+
+    #[test]
+    fn parse_cli_check_file_rejects_config_flags() {
+        let err = parse_cli(&args("check-file --config rules.toml src/main.rs")).unwrap_err();
+        assert!(err.contains("only valid with scan or audit"));
     }
 }

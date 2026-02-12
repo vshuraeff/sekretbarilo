@@ -151,6 +151,16 @@ pub(crate) fn compile_patterns(patterns: &[String]) -> Result<Vec<regex::Regex>,
         .collect()
 }
 
+/// result of attempting to read a file for scanning
+pub enum ReadFileResult {
+    /// file was read and converted to a DiffFile
+    Ok(DiffFile),
+    /// file is binary (null bytes detected) - not a scanning concern
+    Binary,
+    /// file could not be read due to I/O error
+    ReadError(String),
+}
+
 /// read a file and convert it into a DiffFile where every line is treated as "added".
 /// returns None if the file cannot be read (e.g. binary, missing).
 /// if `error_count` is provided, increments it on read errors.
@@ -159,22 +169,37 @@ pub fn read_file_to_diff(
     repo_root: &Path,
     error_count: Option<&std::sync::atomic::AtomicUsize>,
 ) -> Option<DiffFile> {
-    let full_path = repo_root.join(path);
-    let content = match std::fs::read(&full_path) {
-        Ok(c) => c,
-        Err(e) => {
+    match read_file_to_diff_result(path, repo_root) {
+        ReadFileResult::Ok(df) => Some(df),
+        ReadFileResult::Binary => None,
+        ReadFileResult::ReadError(e) => {
             eprintln!("[WARN] failed to read {}: {} (skipping)", path, e);
             if let Some(counter) = error_count {
                 counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             }
-            return None;
+            None
+        }
+    }
+}
+
+/// read a file and convert it into a DiffFile, distinguishing binary files from read errors.
+/// use this when the caller needs to handle read errors differently from binary skips.
+pub fn read_file_to_diff_result(
+    path: &str,
+    repo_root: &Path,
+) -> ReadFileResult {
+    let full_path = repo_root.join(path);
+    let content = match std::fs::read(&full_path) {
+        Ok(c) => c,
+        Err(e) => {
+            return ReadFileResult::ReadError(e.to_string());
         }
     };
 
     // skip binary files (check for null bytes in first 8KB)
     let check_len = content.len().min(8192);
     if content[..check_len].contains(&0) {
-        return None;
+        return ReadFileResult::Binary;
     }
 
     let added_lines: Vec<AddedLine> = content
@@ -195,7 +220,7 @@ pub fn read_file_to_diff(
         })
         .collect();
 
-    Some(DiffFile {
+    ReadFileResult::Ok(DiffFile {
         path: path.to_string(),
         is_new: false,
         is_deleted: false,

@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 /// marker comment used to identify our hook content
-const HOOK_MARKER: &str = "# sekretbarilo pre-commit hook";
+pub const HOOK_MARKER: &str = "# sekretbarilo pre-commit hook";
 
 /// the hook script content that invokes sekretbarilo scan
 fn hook_script() -> String {
@@ -112,6 +112,97 @@ fn find_hooks_dir() -> Result<PathBuf, InstallError> {
     } else {
         Ok(path)
     }
+}
+
+/// find the global hooks directory.
+/// uses `git config --global core.hooksPath` if set, otherwise defaults to `~/.config/git/hooks/`.
+fn find_global_hooks_dir() -> Result<PathBuf, InstallError> {
+    // check if core.hooksPath is configured globally
+    let output = Command::new("git")
+        .args(["config", "--global", "core.hooksPath"])
+        .output()
+        .map_err(|e| {
+            if e.kind() == io::ErrorKind::NotFound {
+                InstallError::GitNotFound
+            } else {
+                InstallError::IoError(e)
+            }
+        })?;
+
+    if output.status.success() {
+        let hooks_path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if !hooks_path.is_empty() {
+            let path = PathBuf::from(&hooks_path);
+            // expand ~ if present
+            if let Ok(stripped) = path.strip_prefix("~") {
+                let home = home_dir().ok_or_else(|| {
+                    InstallError::IoError(io::Error::new(
+                        io::ErrorKind::NotFound,
+                        "core.hooksPath contains ~ but home directory could not be determined",
+                    ))
+                })?;
+                return Ok(home.join(stripped));
+            }
+            return Ok(path);
+        }
+    }
+
+    // default to ~/.config/git/hooks/
+    let home = home_dir().ok_or_else(|| {
+        InstallError::IoError(io::Error::new(
+            io::ErrorKind::NotFound,
+            "could not determine home directory",
+        ))
+    })?;
+    Ok(home.join(".config").join("git").join("hooks"))
+}
+
+/// get the user's home directory
+fn home_dir() -> Option<PathBuf> {
+    std::env::var_os("HOME").map(PathBuf::from)
+}
+
+/// install the pre-commit hook globally.
+/// uses `git config --global core.hooksPath` or defaults to `~/.config/git/hooks/`.
+/// sets core.hooksPath if not already configured.
+pub fn install_global() -> Result<InstallResult, InstallError> {
+    let hooks_dir = find_global_hooks_dir()?;
+
+    // ensure core.hooksPath is set so git uses this directory
+    let check = Command::new("git")
+        .args(["config", "--global", "core.hooksPath"])
+        .output()
+        .map_err(|e| {
+            if e.kind() == io::ErrorKind::NotFound {
+                InstallError::GitNotFound
+            } else {
+                InstallError::IoError(e)
+            }
+        })?;
+
+    if !check.status.success()
+        || String::from_utf8_lossy(&check.stdout).trim().is_empty()
+    {
+        // set core.hooksPath to our directory
+        let dir_str = hooks_dir.to_str().ok_or_else(|| {
+            InstallError::IoError(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "hooks directory path contains non-UTF-8 characters",
+            ))
+        })?;
+        let set_result = Command::new("git")
+            .args(["config", "--global", "core.hooksPath", dir_str])
+            .output()
+            .map_err(InstallError::IoError)?;
+
+        if !set_result.status.success() {
+            return Err(InstallError::IoError(io::Error::other(
+                "failed to set git config --global core.hooksPath",
+            )));
+        }
+    }
+
+    install(Some(&hooks_dir))
 }
 
 /// install the pre-commit hook into the given hooks directory.
@@ -387,5 +478,24 @@ mod tests {
         let result = insert_before_trailing_exit(existing, script);
         // hook should be appended at end
         assert!(result.ends_with("# end test\n"));
+    }
+
+    #[test]
+    fn test_find_global_hooks_dir_default() {
+        // when HOME is set and no core.hooksPath configured,
+        // should return ~/.config/git/hooks/ (or the configured path)
+        let result = find_global_hooks_dir();
+        // this should succeed as long as HOME is set
+        assert!(result.is_ok());
+        let path = result.unwrap();
+        // path should either be from core.hooksPath or the default
+        assert!(path.to_str().unwrap().contains("hooks") || path.to_str().unwrap().contains("git"));
+    }
+
+    #[test]
+    fn test_home_dir() {
+        // HOME should be set in test environment
+        let home = home_dir();
+        assert!(home.is_some());
     }
 }

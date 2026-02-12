@@ -92,8 +92,9 @@ pub fn check_env_files(files: &[DiffFile]) -> EnvFileCheck {
 }
 
 /// determine if a file path is a blocked .env file (case-insensitive)
-fn is_blocked_env_file(path: &str) -> bool {
-    let filename = match path.rsplit('/').next() {
+pub fn is_blocked_env_file(path: &str) -> bool {
+    // split on both / and \ to handle windows-style paths
+    let filename = match path.rsplit(['/', '\\']).next() {
         Some(f) => f,
         None => path,
     };
@@ -169,6 +170,13 @@ mod tests {
         assert!(!is_blocked_env_file("config.toml"));
         assert!(!is_blocked_env_file(".envrc")); // direnv file, not .env
         assert!(!is_blocked_env_file("environment.yml"));
+    }
+
+    #[test]
+    fn env_file_backslash_separator() {
+        assert!(is_blocked_env_file("config\\.env"));
+        assert!(is_blocked_env_file("path\\to\\.env.local"));
+        assert!(!is_blocked_env_file("path\\to\\.env.example"));
     }
 
     #[test]
