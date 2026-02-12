@@ -51,11 +51,9 @@ fn is_git_context(line: &[u8]) -> bool {
             if !w.eq_ignore_ascii_case(kw) {
                 return false;
             }
-            let before_ok =
-                pos == 0 || !line[pos - 1].is_ascii_alphanumeric();
+            let before_ok = pos == 0 || !line[pos - 1].is_ascii_alphanumeric();
             let after_pos = pos + kw.len();
-            let after_ok =
-                after_pos >= line.len() || !line[after_pos].is_ascii_alphanumeric();
+            let after_ok = after_pos >= line.len() || !line[after_pos].is_ascii_alphanumeric();
             before_ok && after_ok
         })
     })
@@ -96,10 +94,8 @@ mod tests {
 
     #[test]
     fn detect_sha256_with_context() {
-        let hash =
-            b"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
-        let line =
-            b"sha256: e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+        let hash = b"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+        let line = b"sha256: e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
         assert!(is_hash_in_context(hash, line));
     }
 
@@ -142,10 +138,8 @@ mod tests {
 
     #[test]
     fn sha256_in_checksum_context() {
-        let hash =
-            b"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
-        let line =
-            b"checksum: e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+        let hash = b"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+        let line = b"checksum: e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
         assert!(is_hash_in_context(hash, line));
     }
 }

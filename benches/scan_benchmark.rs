@@ -1,4 +1,4 @@
-use criterion::{criterion_group, criterion_main, Criterion, BenchmarkId};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 
 use aho_corasick::AhoCorasick;
 use sekretbarilo::config::allowlist::CompiledAllowlist;
@@ -56,7 +56,10 @@ fn generate_files_with_secrets(num_files: usize, lines_per_file: usize) -> Vec<D
                 .map(|j| {
                     let content = match j % 10 {
                         0 => format!("let key = \"AKIAIOSFODNN7ABCDE{:02}\"", i),
-                        1 => format!("token = \"ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ{}bcdefghij\"", (b'a' + (i as u8 % 26)) as char),
+                        1 => format!(
+                            "token = \"ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ{}bcdefghij\"",
+                            (b'a' + (i as u8 % 26)) as char
+                        ),
                         _ => format!("let x_{} = {} * 2;", j, j),
                     };
                     (j, content.into_bytes())
@@ -173,9 +176,7 @@ fn bench_scan_with_secrets(c: &mut Criterion) {
     let files = generate_files_with_secrets(10, 50);
 
     c.bench_function("scan_with_secrets_10files", |b| {
-        b.iter(|| {
-            scan(&files, &scanner, &allowlist)
-        })
+        b.iter(|| scan(&files, &scanner, &allowlist))
     });
 }
 
@@ -188,15 +189,21 @@ fn bench_entropy(c: &mut Criterion) {
     let medium = b"aB3dEf7hIj1kLmN0pQrStUvWxYz0123456789ABCDEFGHIJKL";
     let long_data: Vec<u8> = (0..1000).map(|i| (i % 256) as u8).collect();
 
-    group.bench_with_input(BenchmarkId::new("short", 20), short.as_slice(), |b, data| {
-        b.iter(|| shannon_entropy(data))
-    });
-    group.bench_with_input(BenchmarkId::new("medium", 50), medium.as_slice(), |b, data| {
-        b.iter(|| shannon_entropy(data))
-    });
-    group.bench_with_input(BenchmarkId::new("long", 1000), long_data.as_slice(), |b, data| {
-        b.iter(|| shannon_entropy(data))
-    });
+    group.bench_with_input(
+        BenchmarkId::new("short", 20),
+        short.as_slice(),
+        |b, data| b.iter(|| shannon_entropy(data)),
+    );
+    group.bench_with_input(
+        BenchmarkId::new("medium", 50),
+        medium.as_slice(),
+        |b, data| b.iter(|| shannon_entropy(data)),
+    );
+    group.bench_with_input(
+        BenchmarkId::new("long", 1000),
+        long_data.as_slice(),
+        |b, data| b.iter(|| shannon_entropy(data)),
+    );
 
     group.finish();
 }
@@ -222,9 +229,7 @@ fn bench_aho_corasick_prefilter(c: &mut Criterion) {
     );
 
     c.bench_function("prefilter_no_keywords_100lines", |b| {
-        b.iter(|| {
-            scan(std::slice::from_ref(&no_match_file), &scanner, &allowlist)
-        })
+        b.iter(|| scan(std::slice::from_ref(&no_match_file), &scanner, &allowlist))
     });
 }
 

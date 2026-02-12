@@ -61,14 +61,9 @@ fn merge_allowlist_rules(
     for rule in overlay {
         if let Some(pos) = merged.iter().position(|r| r.id == rule.id) {
             // merge regexes and paths for same id
-            merged[pos].regexes = dedup_strings(
-                std::mem::take(&mut merged[pos].regexes),
-                rule.regexes,
-            );
-            merged[pos].paths = dedup_strings(
-                std::mem::take(&mut merged[pos].paths),
-                rule.paths,
-            );
+            merged[pos].regexes =
+                dedup_strings(std::mem::take(&mut merged[pos].regexes), rule.regexes);
+            merged[pos].paths = dedup_strings(std::mem::take(&mut merged[pos].paths), rule.paths);
         } else {
             merged.push(rule);
         }
@@ -285,10 +280,7 @@ mod tests {
             merged.allowlist.paths,
             vec!["vendor/.*", "generated/.*", "tmp/.*"]
         );
-        assert_eq!(
-            merged.allowlist.stopwords,
-            vec!["safe", "internal", "dev"]
-        );
+        assert_eq!(merged.allowlist.stopwords, vec!["safe", "internal", "dev"]);
 
         // rules: all appended (different ids)
         assert_eq!(merged.rules.len(), 3);
@@ -319,10 +311,7 @@ mod tests {
             merged.allowlist.paths,
             vec!["vendor/.*", "test/.*", "new/.*"]
         );
-        assert_eq!(
-            merged.allowlist.stopwords,
-            vec!["safe", "example", "dev"]
-        );
+        assert_eq!(merged.allowlist.stopwords, vec!["safe", "example", "dev"]);
     }
 
     #[test]
@@ -360,11 +349,21 @@ mod tests {
 
         assert_eq!(merged.allowlist.rules.len(), 2);
         // aws-key should have both regexes merged
-        let aws = merged.allowlist.rules.iter().find(|r| r.id == "aws-key").unwrap();
+        let aws = merged
+            .allowlist
+            .rules
+            .iter()
+            .find(|r| r.id == "aws-key")
+            .unwrap();
         assert_eq!(aws.regexes.len(), 2);
         assert_eq!(aws.paths.len(), 1);
         // github-token is new
-        let gh = merged.allowlist.rules.iter().find(|r| r.id == "github-token").unwrap();
+        let gh = merged
+            .allowlist
+            .rules
+            .iter()
+            .find(|r| r.id == "github-token")
+            .unwrap();
         assert_eq!(gh.regexes.len(), 1);
     }
 
@@ -421,14 +420,8 @@ mod tests {
             ..Default::default()
         };
         let merged = merge_two(base, overlay);
-        assert_eq!(
-            merged.audit.exclude_patterns,
-            vec!["^vendor/", "^build/"]
-        );
-        assert_eq!(
-            merged.audit.include_patterns,
-            vec![r"\.rs$", r"\.toml$"]
-        );
+        assert_eq!(merged.audit.exclude_patterns, vec!["^vendor/", "^build/"]);
+        assert_eq!(merged.audit.include_patterns, vec![r"\.rs$", r"\.toml$"]);
     }
 
     #[test]
@@ -448,9 +441,6 @@ mod tests {
             ..Default::default()
         };
         let merged = merge_two(base, overlay);
-        assert_eq!(
-            merged.audit.exclude_patterns,
-            vec!["^vendor/", "^build/"]
-        );
+        assert_eq!(merged.audit.exclude_patterns, vec!["^vendor/", "^build/"]);
     }
 }

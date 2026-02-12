@@ -24,3 +24,20 @@ serial_test = "3"
 [[bench]]
 name = "scan_benchmark"
 harness = false
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+strip = true
+panic = "abort"
+
+[package.metadata.deb]
+maintainer = "Valentin Shuraeff <vshuraeff@users.noreply.github.com>"
+section = "devel"
+priority = "optional"
+depends = "git"
+extended-description = """\
+High-performance secret scanner for git workflows \
+and AI coding agents. Catches API keys, credentials, \
+and secrets before they leak."""

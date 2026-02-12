@@ -184,10 +184,7 @@ pub fn read_file_to_diff(
 
 /// read a file and convert it into a DiffFile, distinguishing binary files from read errors.
 /// use this when the caller needs to handle read errors differently from binary skips.
-pub fn read_file_to_diff_result(
-    path: &str,
-    repo_root: &Path,
-) -> ReadFileResult {
+pub fn read_file_to_diff_result(path: &str, repo_root: &Path) -> ReadFileResult {
     let full_path = repo_root.join(path);
     let content = match std::fs::read(&full_path) {
         Ok(c) => c,
@@ -232,11 +229,7 @@ pub fn read_file_to_diff_result(
 
 /// report audit findings to stderr.
 /// returns the total number of findings.
-pub fn report_audit_findings(
-    findings: &[Finding],
-    file_count: usize,
-    error_count: usize,
-) -> usize {
+pub fn report_audit_findings(findings: &[Finding], file_count: usize, error_count: usize) -> usize {
     let total = findings.len();
     let error_suffix = if error_count > 0 {
         format!(" ({} file(s) skipped or unreadable)", error_count)
@@ -404,10 +397,7 @@ pub fn run_audit(
 
 /// read tracked files in parallel and convert to DiffFile structs.
 /// returns (diff_files, error_count).
-fn read_tracked_files(
-    file_paths: &[String],
-    repo_root: &Path,
-) -> (Vec<DiffFile>, usize) {
+fn read_tracked_files(file_paths: &[String], repo_root: &Path) -> (Vec<DiffFile>, usize) {
     let error_count = std::sync::atomic::AtomicUsize::new(0);
     let files: Vec<DiffFile> = file_paths
         .par_iter()
@@ -473,14 +463,12 @@ mod tests {
 
     #[test]
     fn report_audit_findings_with_secrets() {
-        let findings = vec![
-            Finding {
-                file: "config.py".to_string(),
-                line: 10,
-                rule_id: "aws-access-key-id".to_string(),
-                matched_value: b"AKIAIOSFODNN7ABCDEFG".to_vec(),
-            },
-        ];
+        let findings = vec![Finding {
+            file: "config.py".to_string(),
+            line: 10,
+            rule_id: "aws-access-key-id".to_string(),
+            matched_value: b"AKIAIOSFODNN7ABCDEFG".to_vec(),
+        }];
         let count = report_audit_findings(&findings, 3, 0);
         assert_eq!(count, 1);
     }

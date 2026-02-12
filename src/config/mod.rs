@@ -91,11 +91,7 @@ pub fn load_single_config(path: &Path) -> Option<ProjectConfig> {
             }
         }
         Err(e) => {
-            eprintln!(
-                "[WARN] failed to read {}: {} (skipping)",
-                path.display(),
-                e
-            );
+            eprintln!("[WARN] failed to read {}: {} (skipping)", path.display(), e);
             None
         }
     }
@@ -207,7 +203,10 @@ pub fn build_allowlist(
 
     // then, merge/add from config file overrides
     for override_rule in &config.allowlist.rules {
-        if let Some(existing) = per_rule.iter_mut().find(|(id, _, _)| id == &override_rule.id) {
+        if let Some(existing) = per_rule
+            .iter_mut()
+            .find(|(id, _, _)| id == &override_rule.id)
+        {
             existing.1.extend(override_rule.regexes.clone());
             existing.2.extend(override_rule.paths.clone());
         } else {
@@ -350,11 +349,7 @@ entropy_threshold = 3.5
         assert!(al.is_path_skipped("test/fixtures/key.txt"));
         assert!(al.contains_stopword(b"safe_token_here"));
         assert_eq!(al.entropy_threshold_override, Some(4.0));
-        assert!(al.is_rule_allowlisted(
-            "aws-access-key-id",
-            b"AKIAIOSFODNN7EXAMPLE",
-            "config.py"
-        ));
+        assert!(al.is_rule_allowlisted("aws-access-key-id", b"AKIAIOSFODNN7EXAMPLE", "config.py"));
     }
 
     #[test]

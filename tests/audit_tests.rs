@@ -82,7 +82,10 @@ fn create_test_repo(files: &[(&str, &str)]) -> tempfile::TempDir {
 fn audit_finds_secrets_in_tracked_files() {
     // create a repo with a file containing an AWS key
     let dir = create_test_repo(&[
-        ("config.py", "AWS_ACCESS_KEY_ID = \"AKIAIOSFODNN7ABCDEFG\"\n"),
+        (
+            "config.py",
+            "AWS_ACCESS_KEY_ID = \"AKIAIOSFODNN7ABCDEFG\"\n",
+        ),
         ("readme.txt", "this is a readme\n"),
     ]);
 
@@ -186,10 +189,7 @@ fn audit_empty_repo() {
 fn audit_exit_codes_match_scan_convention() {
     // 0 = no secrets, 1 = secrets found, 2 = incomplete scan / error
     // test the "secrets found" case
-    let dir = create_test_repo(&[(
-        "secrets.py",
-        "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij\n",
-    )]);
+    let dir = create_test_repo(&[("secrets.py", "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij\n")]);
 
     let options = audit::AuditOptions::default();
     let exit_code = run_audit_with_defaults(dir.path(), &options);
@@ -242,10 +242,7 @@ fn audit_read_file_to_diff_produces_valid_difffile() {
 
 #[test]
 fn audit_list_tracked_files_works() {
-    let dir = create_test_repo(&[
-        ("src/main.rs", "fn main() {}\n"),
-        ("readme.md", "hello\n"),
-    ]);
+    let dir = create_test_repo(&[("src/main.rs", "fn main() {}\n"), ("readme.md", "hello\n")]);
 
     let (files, skipped) = audit::list_tracked_files(dir.path()).unwrap();
     assert!(files.contains(&"src/main.rs".to_string()));
@@ -257,8 +254,14 @@ fn audit_list_tracked_files_works() {
 fn audit_skips_vendor_and_generated_files() {
     // the existing path filter should skip vendor files during audit
     let dir = create_test_repo(&[
-        ("vendor/lib/secret.py", "AWS_SECRET = \"AKIAIOSFODNN7ABCDEFG\"\n"),
-        ("node_modules/pkg/index.js", "const key = \"ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij\";\n"),
+        (
+            "vendor/lib/secret.py",
+            "AWS_SECRET = \"AKIAIOSFODNN7ABCDEFG\"\n",
+        ),
+        (
+            "node_modules/pkg/index.js",
+            "const key = \"ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij\";\n",
+        ),
         ("src/clean.rs", "fn main() {}\n"),
     ]);
 
@@ -364,7 +367,10 @@ fn history_scan_handles_root_commits() {
     // a repo with a single commit (root commit with a secret)
     let (dir, _hashes) = create_multi_commit_repo(&[(
         "initial with secret",
-        &[("secret.py", "TOKEN = \"ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij\"\n")],
+        &[(
+            "secret.py",
+            "TOKEN = \"ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij\"\n",
+        )],
     )]);
 
     let options = audit::AuditOptions {
@@ -372,10 +378,7 @@ fn history_scan_handles_root_commits() {
         ..Default::default()
     };
     let exit_code = run_audit_with_defaults(dir.path(), &options);
-    assert_eq!(
-        exit_code, 1,
-        "should find secret in root commit"
-    );
+    assert_eq!(exit_code, 1, "should find secret in root commit");
 }
 
 #[test]
@@ -389,7 +392,10 @@ fn history_scan_deduplication() {
         ),
         (
             "keep secret, add line",
-            &[("config.py", "KEY = \"AKIAIOSFODNN7ABCDEFG\"\nother = true\n")],
+            &[(
+                "config.py",
+                "KEY = \"AKIAIOSFODNN7ABCDEFG\"\nother = true\n",
+            )],
         ),
     ]);
 
@@ -477,9 +483,8 @@ fn history_list_commits_returns_correct_info() {
 
 #[test]
 fn history_get_commit_diff_returns_diff() {
-    let (dir, hashes) = create_multi_commit_repo(&[
-        ("add file", &[("test.txt", "line1\nline2\n")]),
-    ]);
+    let (dir, hashes) =
+        create_multi_commit_repo(&[("add file", &[("test.txt", "line1\nline2\n")])]);
 
     let diff = history::get_commit_diff(&hashes[0], true, dir.path()).unwrap();
     // root commit with a file should produce some diff output
@@ -631,8 +636,7 @@ fn history_output_includes_branch_and_email() {
     assert_eq!(feature_commit.email, "alice@example.com");
 
     // verify branch resolution includes feature/auth
-    let branch_map =
-        history::get_branches_for_commits(&[feature_commit.hash.clone()], root);
+    let branch_map = history::get_branches_for_commits(&[feature_commit.hash.clone()], root);
     let branches = branch_map.get(&feature_commit.hash).unwrap();
     assert!(
         branches.contains(&"feature/auth".to_string()),
@@ -718,11 +722,7 @@ fn filter_branch_limits_commits_to_specified_branch() {
         .current_dir(root)
         .output()
         .unwrap();
-    std::fs::write(
-        root.join("secret.py"),
-        "KEY = \"AKIAIOSFODNN7ABCDEFG\"\n",
-    )
-    .unwrap();
+    std::fs::write(root.join("secret.py"), "KEY = \"AKIAIOSFODNN7ABCDEFG\"\n").unwrap();
     Command::new("git")
         .args(["add", "."])
         .current_dir(root)
@@ -760,10 +760,7 @@ fn filter_branch_limits_commits_to_specified_branch() {
         ..Default::default()
     };
     let exit_feature = run_audit_with_defaults(root, &options_feature);
-    assert_eq!(
-        exit_feature, 1,
-        "feature branch should contain the secret"
-    );
+    assert_eq!(exit_feature, 1, "feature branch should contain the secret");
 }
 
 #[test]
@@ -828,10 +825,7 @@ fn filter_date_range_limits_commits() {
         ..Default::default()
     };
     let exit_2025 = run_audit_with_defaults(root, &options_2025);
-    assert_eq!(
-        exit_2025, 0,
-        "2025 commits only should be clean"
-    );
+    assert_eq!(exit_2025, 0, "2025 commits only should be clean");
 
     // scan only 2023 commits: should find the secret
     let options_2023 = audit::AuditOptions {
@@ -841,10 +835,7 @@ fn filter_date_range_limits_commits() {
         ..Default::default()
     };
     let exit_2023 = run_audit_with_defaults(root, &options_2023);
-    assert_eq!(
-        exit_2023, 1,
-        "2023 commits should contain the secret"
-    );
+    assert_eq!(exit_2023, 1, "2023 commits should contain the secret");
 }
 
 #[test]
@@ -1023,10 +1014,7 @@ fn history_exit_code_2_on_commit_diff_failure() {
     let tree_hash = String::from_utf8_lossy(&output.stdout).trim().to_string();
 
     // find the loose object file for this tree (objects/<first2>/<rest>)
-    let obj_dir = dir
-        .path()
-        .join(".git/objects")
-        .join(&tree_hash[..2]);
+    let obj_dir = dir.path().join(".git/objects").join(&tree_hash[..2]);
     let obj_file = obj_dir.join(&tree_hash[2..]);
 
     // git makes loose objects read-only; fix permissions before corrupting

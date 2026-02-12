@@ -32,10 +32,7 @@ pub fn report_findings(findings: &[Finding], blocked_env_files: &[String]) -> us
         eprintln!();
     }
 
-    eprintln!(
-        "commit blocked. {} secret(s) found.",
-        total
-    );
+    eprintln!("commit blocked. {} secret(s) found.", total);
     eprintln!("use `git commit --no-verify` to bypass (not recommended).");
     eprintln!();
 
@@ -62,14 +59,12 @@ mod tests {
 
     #[test]
     fn report_findings_only() {
-        let findings = vec![
-            Finding {
-                file: "src/config.rs".to_string(),
-                line: 42,
-                rule_id: "aws-access-key-id".to_string(),
-                matched_value: b"AKIAIOSFODNN7ABCDEFG".to_vec(),
-            },
-        ];
+        let findings = vec![Finding {
+            file: "src/config.rs".to_string(),
+            line: 42,
+            rule_id: "aws-access-key-id".to_string(),
+            matched_value: b"AKIAIOSFODNN7ABCDEFG".to_vec(),
+        }];
         let count = report_findings(&findings, &[]);
         assert_eq!(count, 1);
     }

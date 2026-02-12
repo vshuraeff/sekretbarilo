@@ -38,19 +38,31 @@ struct CheckResult {
 
 impl CheckResult {
     fn ok(msg: impl Into<String>) -> Self {
-        Self { status: Status::Ok, message: msg.into() }
+        Self {
+            status: Status::Ok,
+            message: msg.into(),
+        }
     }
 
     fn warn(msg: impl Into<String>) -> Self {
-        Self { status: Status::Warn, message: msg.into() }
+        Self {
+            status: Status::Warn,
+            message: msg.into(),
+        }
     }
 
     fn error(msg: impl Into<String>) -> Self {
-        Self { status: Status::Error, message: msg.into() }
+        Self {
+            status: Status::Error,
+            message: msg.into(),
+        }
     }
 
     fn not_installed(msg: impl Into<String>) -> Self {
-        Self { status: Status::NotInstalled, message: msg.into() }
+        Self {
+            status: Status::NotInstalled,
+            message: msg.into(),
+        }
     }
 }
 
@@ -88,7 +100,11 @@ pub fn run_doctor() -> i32 {
         eprintln!();
     }
 
-    if has_issues { 1 } else { 0 }
+    if has_issues {
+        1
+    } else {
+        0
+    }
 }
 
 /// check git pre-commit hook status (local and global)
@@ -219,9 +235,7 @@ fn check_claude_hooks() -> Vec<CheckResult> {
 
     // global: ~/.claude/settings.json
     if let Some(home) = std::env::var_os("HOME") {
-        let global_path = PathBuf::from(home)
-            .join(".claude")
-            .join("settings.json");
+        let global_path = PathBuf::from(home).join(".claude").join("settings.json");
         results.push(check_claude_hook_at(&global_path, "global"));
     } else {
         results.push(CheckResult::warn(
@@ -241,11 +255,7 @@ fn check_claude_hook_at(config_path: &Path, scope: &str) -> CheckResult {
     let content = match std::fs::read_to_string(config_path) {
         Ok(c) => c,
         Err(e) => {
-            return CheckResult::error(format!(
-                "cannot read {}: {}",
-                config_path.display(),
-                e
-            ))
+            return CheckResult::error(format!("cannot read {}: {}", config_path.display(), e))
         }
     };
 
@@ -273,12 +283,7 @@ fn check_claude_hook_at(config_path: &Path, scope: &str) -> CheckResult {
 
     let entries = match pre_tool_use.as_array() {
         Some(a) => a,
-        None => {
-            return CheckResult::error(format!(
-                "{} hooks.PreToolUse is not an array",
-                scope
-            ))
-        }
+        None => return CheckResult::error(format!("{} hooks.PreToolUse is not an array", scope)),
     };
 
     // look for Read matcher with sekretbarilo command
@@ -366,18 +371,12 @@ fn check_config() -> Vec<CheckResult> {
                     }
                 }
                 Err(e) => {
-                    results.push(CheckResult::error(format!(
-                        "failed to load rules: {}",
-                        e
-                    )));
+                    results.push(CheckResult::error(format!("failed to load rules: {}", e)));
                 }
             }
         }
         Err(e) => {
-            results.push(CheckResult::error(format!(
-                "failed to load config: {}",
-                e
-            )));
+            results.push(CheckResult::error(format!("failed to load config: {}", e)));
         }
     }
 
@@ -399,8 +398,12 @@ fn check_binary() -> Vec<CheckResult> {
         results.push(CheckResult::ok("sekretbarilo found in PATH"));
     } else {
         // check ~/.cargo/bin
-        let cargo_bin = std::env::var_os("HOME")
-            .map(|h| PathBuf::from(h).join(".cargo").join("bin").join("sekretbarilo"));
+        let cargo_bin = std::env::var_os("HOME").map(|h| {
+            PathBuf::from(h)
+                .join(".cargo")
+                .join("bin")
+                .join("sekretbarilo")
+        });
 
         if let Some(ref path) = cargo_bin {
             if path.exists() {

@@ -1,11 +1,11 @@
 mod agent;
 mod audit;
+mod config;
 mod diff;
 mod doctor;
-mod scanner;
-mod config;
-mod output;
 mod hook;
+mod output;
+mod scanner;
 
 use std::path::{Path, PathBuf};
 
@@ -71,7 +71,18 @@ struct AuditFlags {
 
 /// parse cli arguments into (command, overrides, audit_flags, check_file_flags, install_flags).
 /// first positional arg is the subcommand. no subcommand shows help.
-fn parse_cli(args: &[String]) -> Result<(Command, CliOverrides, AuditFlags, CheckFileFlags, InstallFlags), String> {
+fn parse_cli(
+    args: &[String],
+) -> Result<
+    (
+        Command,
+        CliOverrides,
+        AuditFlags,
+        CheckFileFlags,
+        InstallFlags,
+    ),
+    String,
+> {
     let args_str: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
     let mut opts = getargs::Options::new(args_str.into_iter());
 
@@ -172,7 +183,10 @@ fn parse_cli(args: &[String]) -> Result<(Command, CliOverrides, AuditFlags, Chec
     // validate install flags
     let is_install_cmd = matches!(
         command,
-        Command::InstallPreCommit | Command::InstallAgentHook | Command::InstallAll | Command::InstallHelp
+        Command::InstallPreCommit
+            | Command::InstallAgentHook
+            | Command::InstallAll
+            | Command::InstallHelp
     );
     if !is_install_cmd && install_flags.global {
         return Err("--global is only valid with install subcommands".to_string());
@@ -223,7 +237,13 @@ fn parse_cli(args: &[String]) -> Result<(Command, CliOverrides, AuditFlags, Chec
         }
     }
 
-    Ok((command, overrides, audit_flags, check_file_flags, install_flags))
+    Ok((
+        command,
+        overrides,
+        audit_flags,
+        check_file_flags,
+        install_flags,
+    ))
 }
 
 /// parse the install subcommand target from the remaining args.
@@ -233,23 +253,17 @@ fn parse_install_subcommand<'a, I: Iterator<Item = &'a str>>(
     match opts.next_arg().map_err(|e| e.to_string())? {
         Some(Arg::Positional("pre-commit")) => Ok(Command::InstallPreCommit),
         Some(Arg::Positional("all")) => Ok(Command::InstallAll),
-        Some(Arg::Positional("agent-hook")) => {
-            match opts.next_arg().map_err(|e| e.to_string())? {
-                Some(Arg::Positional("claude")) => Ok(Command::InstallAgentHook),
-                Some(Arg::Positional("codex")) => Err(
-                    "codex agent hooks are not yet supported. \
+        Some(Arg::Positional("agent-hook")) => match opts.next_arg().map_err(|e| e.to_string())? {
+            Some(Arg::Positional("claude")) => Ok(Command::InstallAgentHook),
+            Some(Arg::Positional("codex")) => Err("codex agent hooks are not yet supported. \
                      codex cli does not currently provide a hooks api"
-                        .to_string(),
-                ),
-                Some(Arg::Positional(other)) => Err(format!(
-                    "unknown agent hook target: '{}'. supported: claude",
-                    other
-                )),
-                _ => Err(
-                    "install agent-hook requires a target. supported: claude".to_string(),
-                ),
-            }
-        }
+                .to_string()),
+            Some(Arg::Positional(other)) => Err(format!(
+                "unknown agent hook target: '{}'. supported: claude",
+                other
+            )),
+            _ => Err("install agent-hook requires a target. supported: claude".to_string()),
+        },
         Some(Arg::Long("help")) | Some(Arg::Short('h')) => Ok(Command::InstallHelp),
         Some(Arg::Positional(other)) => Err(format!(
             "unknown install target: '{}'. supported: pre-commit, agent-hook, all",
@@ -270,7 +284,8 @@ fn parse_install_subcommand<'a, I: Iterator<Item = &'a str>>(
 fn run() -> i32 {
     let args: Vec<String> = std::env::args().skip(1).collect();
 
-    let (command, overrides, audit_flags, check_file_flags, install_flags) = match parse_cli(&args) {
+    let (command, overrides, audit_flags, check_file_flags, install_flags) = match parse_cli(&args)
+    {
         Ok(parsed) => parsed,
         Err(e) => {
             eprintln!("[ERROR] {}", e);
@@ -322,7 +337,9 @@ fn print_usage() {
     eprintln!();
     eprintln!("audit flags:");
     eprintln!("  --history                 scan full git history (all commits)");
-    eprintln!("  --branch <name>           limit to commits reachable from branch (requires --history)");
+    eprintln!(
+        "  --branch <name>           limit to commits reachable from branch (requires --history)"
+    );
     eprintln!("  --since <date>            only commits after date (requires --history)");
     eprintln!("  --until <date>            only commits before date (requires --history)");
     eprintln!("  --include-ignored         include untracked ignored files");
@@ -373,10 +390,7 @@ fn print_install_usage() {
 
 /// apply cli overrides on top of a loaded project config.
 /// scalars override, lists are appended and deduplicated via merge_two.
-fn apply_cli_overrides(
-    base: ProjectConfig,
-    overrides: &CliOverrides,
-) -> ProjectConfig {
+fn apply_cli_overrides(base: ProjectConfig, overrides: &CliOverrides) -> ProjectConfig {
     let cli_config = ProjectConfig {
         allowlist: config::AllowlistConfig {
             paths: overrides.allowlist_paths.clone(),
@@ -638,8 +652,7 @@ mod tests {
 
     #[test]
     fn parse_cli_entropy_threshold() {
-        let (_, overrides, _, _, _) =
-            parse_cli(&args("scan --entropy-threshold 4.5")).unwrap();
+        let (_, overrides, _, _, _) = parse_cli(&args("scan --entropy-threshold 4.5")).unwrap();
         assert_eq!(overrides.entropy_threshold, Some(4.5));
     }
 
@@ -657,8 +670,10 @@ mod tests {
 
     #[test]
     fn parse_cli_allowlist_paths_repeatable() {
-        let (_, overrides, _, _, _) =
-            parse_cli(&args("scan --allowlist-path vendor/.* --allowlist-path test/.*")).unwrap();
+        let (_, overrides, _, _, _) = parse_cli(&args(
+            "scan --allowlist-path vendor/.* --allowlist-path test/.*",
+        ))
+        .unwrap();
         assert_eq!(overrides.allowlist_paths, vec!["vendor/.*", "test/.*"]);
     }
 
@@ -686,7 +701,11 @@ mod tests {
     #[test]
     fn parse_cli_audit_exclude_include_patterns() {
         let a: Vec<String> = vec![
-            "audit", "--exclude-pattern", "^vendor/", "--include-pattern", r"\.rs$",
+            "audit",
+            "--exclude-pattern",
+            "^vendor/",
+            "--include-pattern",
+            r"\.rs$",
         ]
         .into_iter()
         .map(String::from)
@@ -765,8 +784,10 @@ mod tests {
 
     #[test]
     fn parse_cli_duplicate_scalar_last_wins() {
-        let (_, overrides, _, _, _) =
-            parse_cli(&args("scan --entropy-threshold 3.0 --entropy-threshold 4.5")).unwrap();
+        let (_, overrides, _, _, _) = parse_cli(&args(
+            "scan --entropy-threshold 3.0 --entropy-threshold 4.5",
+        ))
+        .unwrap();
         assert_eq!(overrides.entropy_threshold, Some(4.5));
     }
 
@@ -778,8 +799,7 @@ mod tests {
 
     #[test]
     fn parse_cli_check_file_with_path() {
-        let (cmd, _, _, cf_flags, _) =
-            parse_cli(&args("check-file src/main.rs")).unwrap();
+        let (cmd, _, _, cf_flags, _) = parse_cli(&args("check-file src/main.rs")).unwrap();
         assert_eq!(cmd, Command::CheckFile);
         assert_eq!(cf_flags.file_path, Some("src/main.rs".to_string()));
         assert!(!cf_flags.stdin_json);
@@ -787,8 +807,7 @@ mod tests {
 
     #[test]
     fn parse_cli_check_file_stdin_json() {
-        let (cmd, _, _, cf_flags, _) =
-            parse_cli(&args("check-file --stdin-json")).unwrap();
+        let (cmd, _, _, cf_flags, _) = parse_cli(&args("check-file --stdin-json")).unwrap();
         assert_eq!(cmd, Command::CheckFile);
         assert!(cf_flags.stdin_json);
         assert!(cf_flags.file_path.is_none());
@@ -860,8 +879,7 @@ mod tests {
 
     #[test]
     fn parse_cli_install_agent_hook_claude_global() {
-        let (cmd, _, _, _, flags) =
-            parse_cli(&args("install agent-hook claude --global")).unwrap();
+        let (cmd, _, _, _, flags) = parse_cli(&args("install agent-hook claude --global")).unwrap();
         assert_eq!(cmd, Command::InstallAgentHook);
         assert!(flags.global);
     }

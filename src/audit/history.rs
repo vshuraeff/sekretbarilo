@@ -238,11 +238,7 @@ fn list_root_commits(repo_root: &Path) -> Result<HashSet<String>, String> {
 
 /// get the diff for a single commit.
 /// for root commits (no parent), uses --root flag.
-pub fn get_commit_diff(
-    hash: &str,
-    is_root: bool,
-    repo_root: &Path,
-) -> Result<Vec<u8>, String> {
+pub fn get_commit_diff(hash: &str, is_root: bool, repo_root: &Path) -> Result<Vec<u8>, String> {
     let mut args = vec![
         "diff-tree".to_string(),
         "-p".to_string(),
@@ -386,7 +382,13 @@ pub fn report_history_findings(
     error_count: usize,
     branch_map: &HashMap<String, Vec<String>>,
 ) -> usize {
-    write_history_findings(findings, commit_count, error_count, branch_map, &mut std::io::stderr())
+    write_history_findings(
+        findings,
+        commit_count,
+        error_count,
+        branch_map,
+        &mut std::io::stderr(),
+    )
 }
 
 /// write history findings to the given writer.
@@ -439,8 +441,7 @@ pub(crate) fn write_history_findings(
             // show branch containment if available
             if let Some(branches) = branch_map.get(&current_hash) {
                 if !branches.is_empty() {
-                    let safe: Vec<String> =
-                        branches.iter().map(|b| sanitize_display(b)).collect();
+                    let safe: Vec<String> = branches.iter().map(|b| sanitize_display(b)).collect();
                     let _ = writeln!(out, "    branches: {}", safe.join(", "));
                 }
             }
@@ -529,10 +530,7 @@ pub fn run_history_audit(
             // report progress every 50 commits (approximate due to parallel execution)
             #[allow(clippy::manual_is_multiple_of)]
             if done % 50 == 0 {
-                eprintln!(
-                    "[AUDIT] scanned {}/{} commits...",
-                    done, commit_count
-                );
+                eprintln!("[AUDIT] scanned {}/{} commits...", done, commit_count);
             }
 
             findings
@@ -546,10 +544,7 @@ pub fn run_history_audit(
             commit_count, commit_count, errors
         );
     } else {
-        eprintln!(
-            "[AUDIT] scanned {}/{} commits.",
-            commit_count, commit_count
-        );
+        eprintln!("[AUDIT] scanned {}/{} commits.", commit_count, commit_count);
     }
 
     // step 5: deduplicate
@@ -837,8 +832,7 @@ mod tests {
             .unwrap();
         let feature_hash = String::from_utf8_lossy(&output.stdout).trim().to_string();
 
-        let branch_map =
-            get_branches_for_commits(&[init_hash.clone(), feature_hash.clone()], root);
+        let branch_map = get_branches_for_commits(&[init_hash.clone(), feature_hash.clone()], root);
 
         // initial commit is on both main and feature
         let init_branches = branch_map.get(&init_hash).unwrap();
@@ -879,10 +873,22 @@ mod tests {
         assert_eq!(count, 1);
 
         let output = String::from_utf8(buf).unwrap();
-        assert!(output.contains("alice@example.com"), "output should contain email");
-        assert!(output.contains("Alice"), "output should contain author name");
-        assert!(output.contains("branches: feature/auth, main"), "output should contain branches");
-        assert!(output.contains("commit: deadbeef"), "output should contain short hash");
+        assert!(
+            output.contains("alice@example.com"),
+            "output should contain email"
+        );
+        assert!(
+            output.contains("Alice"),
+            "output should contain author name"
+        );
+        assert!(
+            output.contains("branches: feature/auth, main"),
+            "output should contain branches"
+        );
+        assert!(
+            output.contains("commit: deadbeef"),
+            "output should contain short hash"
+        );
     }
 
     #[test]
@@ -911,7 +917,13 @@ mod tests {
         assert_eq!(count, 1);
 
         let output = String::from_utf8(buf).unwrap();
-        assert!(!output.contains("branches:"), "output should not contain branches line when empty");
-        assert!(output.contains("bob@test.com"), "output should contain email");
+        assert!(
+            !output.contains("branches:"),
+            "output should not contain branches line when empty"
+        );
+        assert!(
+            output.contains("bob@test.com"),
+            "output should contain email"
+        );
     }
 }

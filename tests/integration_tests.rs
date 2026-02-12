@@ -7,7 +7,7 @@
 
 use sekretbarilo::config;
 use sekretbarilo::diff::check_env_files;
-use sekretbarilo::diff::parser::{parse_diff, DiffFile, AddedLine};
+use sekretbarilo::diff::parser::{parse_diff, AddedLine, DiffFile};
 use sekretbarilo::scanner::engine::{scan, Finding};
 use sekretbarilo::scanner::rules::{compile_rules, load_default_rules};
 
@@ -70,11 +70,14 @@ fn scan_diff(raw_diff: &[u8]) -> (Vec<DiffFile>, Vec<Finding>) {
 
 #[test]
 fn integration_env_file_blocked() {
-    let diff = make_new_file_diff(".env", &[
-        "DB_HOST=localhost",
-        "DB_PASSWORD=supersecret123",
-        "API_KEY=sk-1234567890",
-    ]);
+    let diff = make_new_file_diff(
+        ".env",
+        &[
+            "DB_HOST=localhost",
+            "DB_PASSWORD=supersecret123",
+            "API_KEY=sk-1234567890",
+        ],
+    );
     let files = parse_diff(&diff);
     let env_check = check_env_files(&files);
 
@@ -84,9 +87,7 @@ fn integration_env_file_blocked() {
 
 #[test]
 fn integration_env_local_blocked() {
-    let diff = make_new_file_diff(".env.local", &[
-        "SECRET=mysecret",
-    ]);
+    let diff = make_new_file_diff(".env.local", &["SECRET=mysecret"]);
     let files = parse_diff(&diff);
     let env_check = check_env_files(&files);
 
@@ -96,9 +97,10 @@ fn integration_env_local_blocked() {
 
 #[test]
 fn integration_env_production_blocked() {
-    let diff = make_new_file_diff(".env.production", &[
-        "DATABASE_URL=postgres://prod:pass@db:5432/app",
-    ]);
+    let diff = make_new_file_diff(
+        ".env.production",
+        &["DATABASE_URL=postgres://prod:pass@db:5432/app"],
+    );
     let files = parse_diff(&diff);
     let env_check = check_env_files(&files);
 
@@ -111,11 +113,14 @@ fn integration_env_production_blocked() {
 
 #[test]
 fn integration_env_example_allowed() {
-    let diff = make_new_file_diff(".env.example", &[
-        "DB_HOST=localhost",
-        "DB_PASSWORD=changeme",
-        "API_KEY=your_api_key_here",
-    ]);
+    let diff = make_new_file_diff(
+        ".env.example",
+        &[
+            "DB_HOST=localhost",
+            "DB_PASSWORD=changeme",
+            "API_KEY=your_api_key_here",
+        ],
+    );
     let files = parse_diff(&diff);
     let env_check = check_env_files(&files);
 
@@ -149,9 +154,11 @@ fn integration_env_template_allowed() {
 
 #[test]
 fn integration_aws_key_in_source_blocked() {
-    let diff = make_modified_file_diff("src/config.py", 15, &[
-        "AWS_ACCESS_KEY_ID = \"AKIAIOSFODNN7ABCDEFG\"",
-    ]);
+    let diff = make_modified_file_diff(
+        "src/config.py",
+        15,
+        &["AWS_ACCESS_KEY_ID = \"AKIAIOSFODNN7ABCDEFG\""],
+    );
     let (_, findings) = scan_diff(&diff);
 
     assert!(
@@ -163,12 +170,15 @@ fn integration_aws_key_in_source_blocked() {
 
 #[test]
 fn integration_aws_key_in_deploy_script_blocked() {
-    let diff = make_new_file_diff("deploy.sh", &[
-        "#!/bin/bash",
-        "export AWS_ACCESS_KEY_ID=AKIAIOSFODNN7XYZWTUV",
-        "export AWS_SECRET_ACCESS_KEY='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'",
-        "aws s3 sync . s3://mybucket",
-    ]);
+    let diff = make_new_file_diff(
+        "deploy.sh",
+        &[
+            "#!/bin/bash",
+            "export AWS_ACCESS_KEY_ID=AKIAIOSFODNN7XYZWTUV",
+            "export AWS_SECRET_ACCESS_KEY='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'",
+            "aws s3 sync . s3://mybucket",
+        ],
+    );
     let (_, findings) = scan_diff(&diff);
 
     assert!(
@@ -176,7 +186,9 @@ fn integration_aws_key_in_deploy_script_blocked() {
         "AWS key in deploy script should be detected"
     );
     assert!(
-        findings.iter().any(|f| f.rule_id == "aws-secret-access-key"),
+        findings
+            .iter()
+            .any(|f| f.rule_id == "aws-secret-access-key"),
         "AWS secret key in deploy script should be detected"
     );
 }
@@ -187,10 +199,14 @@ fn integration_aws_key_in_deploy_script_blocked() {
 
 #[test]
 fn integration_aws_example_key_allowed() {
-    let diff = make_modified_file_diff("src/config.py", 10, &[
-        "# use the example key for testing",
-        "AWS_KEY = \"AKIAIOSFODNN7EXAMPLE\"",
-    ]);
+    let diff = make_modified_file_diff(
+        "src/config.py",
+        10,
+        &[
+            "# use the example key for testing",
+            "AWS_KEY = \"AKIAIOSFODNN7EXAMPLE\"",
+        ],
+    );
     let (_, findings) = scan_diff(&diff);
 
     assert!(
@@ -206,14 +222,17 @@ fn integration_aws_example_key_allowed() {
 
 #[test]
 fn integration_strong_password_blocked() {
-    let diff = make_modified_file_diff("config/database.yml", 5, &[
-        "production:",
-        "  password: \"Kj8mP2xQ9vL4nR5tB7wY\"",
-    ]);
+    let diff = make_modified_file_diff(
+        "config/database.yml",
+        5,
+        &["production:", "  password: \"Kj8mP2xQ9vL4nR5tB7wY\""],
+    );
     let (_, findings) = scan_diff(&diff);
 
     assert!(
-        findings.iter().any(|f| f.rule_id == "generic-password-assignment"),
+        findings
+            .iter()
+            .any(|f| f.rule_id == "generic-password-assignment"),
         "strong password should be detected, got: {:?}",
         findings.iter().map(|f| &f.rule_id).collect::<Vec<_>>()
     );
@@ -221,9 +240,11 @@ fn integration_strong_password_blocked() {
 
 #[test]
 fn integration_password_in_url_blocked() {
-    let diff = make_modified_file_diff("src/db.rs", 20, &[
-        "let url = \"postgres://admin:Kj8mP2xQ9vL4nR5tB7wY@db.prod-host.com:5432/mydb\";",
-    ]);
+    let diff = make_modified_file_diff(
+        "src/db.rs",
+        20,
+        &["let url = \"postgres://admin:Kj8mP2xQ9vL4nR5tB7wY@db.prod-host.com:5432/mydb\";"],
+    );
     let (_, findings) = scan_diff(&diff);
 
     // should trigger either database-connection-string-postgres or password-in-url
@@ -239,9 +260,11 @@ fn integration_password_in_url_blocked() {
 
 #[test]
 fn integration_password_changeme_allowed() {
-    let diff = make_modified_file_diff("config/settings.py", 8, &[
-        "password = \"changeme_please_update_this\"",
-    ]);
+    let diff = make_modified_file_diff(
+        "config/settings.py",
+        8,
+        &["password = \"changeme_please_update_this\""],
+    );
     let (_, findings) = scan_diff(&diff);
 
     assert!(
@@ -253,9 +276,11 @@ fn integration_password_changeme_allowed() {
 
 #[test]
 fn integration_password_placeholder_allowed() {
-    let diff = make_modified_file_diff("config/app.toml", 3, &[
-        "password = \"placeholder_value_replace_me\"",
-    ]);
+    let diff = make_modified_file_diff(
+        "config/app.toml",
+        3,
+        &["password = \"placeholder_value_replace_me\""],
+    );
     let (_, findings) = scan_diff(&diff);
 
     assert!(
@@ -284,28 +309,26 @@ fn integration_sha256_hash_allowed() {
 
 #[test]
 fn integration_sha1_hash_allowed() {
-    let diff = make_modified_file_diff("src/checksum.py", 10, &[
-        "sha1 = \"da39a3ee5e6b4b0d3255bfef95601890afd80709\"",
-    ]);
+    let diff = make_modified_file_diff(
+        "src/checksum.py",
+        10,
+        &["sha1 = \"da39a3ee5e6b4b0d3255bfef95601890afd80709\""],
+    );
     let (_, findings) = scan_diff(&diff);
 
-    assert!(
-        findings.is_empty(),
-        "SHA-1 hash should not be flagged"
-    );
+    assert!(findings.is_empty(), "SHA-1 hash should not be flagged");
 }
 
 #[test]
 fn integration_md5_hash_allowed() {
-    let diff = make_modified_file_diff("checksums.txt", 1, &[
-        "md5 checksum = \"d41d8cd98f00b204e9800998ecf8427e\"",
-    ]);
+    let diff = make_modified_file_diff(
+        "checksums.txt",
+        1,
+        &["md5 checksum = \"d41d8cd98f00b204e9800998ecf8427e\""],
+    );
     let (_, findings) = scan_diff(&diff);
 
-    assert!(
-        findings.is_empty(),
-        "MD5 hash should not be flagged"
-    );
+    assert!(findings.is_empty(), "MD5 hash should not be flagged");
 }
 
 // ============================================================================
@@ -314,11 +337,15 @@ fn integration_md5_hash_allowed() {
 
 #[test]
 fn integration_git_commit_hash_allowed() {
-    let diff = make_modified_file_diff("CHANGELOG.md", 5, &[
-        "## v1.2.0",
-        "",
-        "- fix: resolve login issue (commit da39a3ee5e6b4b0d3255bfef95601890afd80709)",
-    ]);
+    let diff = make_modified_file_diff(
+        "CHANGELOG.md",
+        5,
+        &[
+            "## v1.2.0",
+            "",
+            "- fix: resolve login issue (commit da39a3ee5e6b4b0d3255bfef95601890afd80709)",
+        ],
+    );
     let (_, findings) = scan_diff(&diff);
 
     assert!(
@@ -334,12 +361,15 @@ fn integration_git_commit_hash_allowed() {
 
 #[test]
 fn integration_pem_private_key_blocked() {
-    let diff = make_new_file_diff("certs/server.key", &[
-        "-----BEGIN RSA PRIVATE KEY-----",
-        "MIIEowIBAAKCAQEA2a2rwplBQLSgHBFNPOL+NX/qJY0GN9fUbdC8W76EYVTaIR1O",
-        "jYQWJLCp7GnfP6hnRj7g9v3KwM4cMpZ/8zNzEXample1234567890abcdefghijkl",
-        "-----END RSA PRIVATE KEY-----",
-    ]);
+    let diff = make_new_file_diff(
+        "certs/server.key",
+        &[
+            "-----BEGIN RSA PRIVATE KEY-----",
+            "MIIEowIBAAKCAQEA2a2rwplBQLSgHBFNPOL+NX/qJY0GN9fUbdC8W76EYVTaIR1O",
+            "jYQWJLCp7GnfP6hnRj7g9v3KwM4cMpZ/8zNzEXample1234567890abcdefghijkl",
+            "-----END RSA PRIVATE KEY-----",
+        ],
+    );
     let (_, findings) = scan_diff(&diff);
 
     assert!(
@@ -351,11 +381,14 @@ fn integration_pem_private_key_blocked() {
 
 #[test]
 fn integration_pem_ec_private_key_blocked() {
-    let diff = make_new_file_diff("keys/ec.pem", &[
-        "-----BEGIN EC PRIVATE KEY-----",
-        "MHQCAQEEIBkg0P+hafLzMFnG+Gmc1F0ixQxaK1EJLeJhJxMqw2OfoAcGBSuBBAAi",
-        "-----END EC PRIVATE KEY-----",
-    ]);
+    let diff = make_new_file_diff(
+        "keys/ec.pem",
+        &[
+            "-----BEGIN EC PRIVATE KEY-----",
+            "MHQCAQEEIBkg0P+hafLzMFnG+Gmc1F0ixQxaK1EJLeJhJxMqw2OfoAcGBSuBBAAi",
+            "-----END EC PRIVATE KEY-----",
+        ],
+    );
     let (_, findings) = scan_diff(&diff);
 
     assert!(
@@ -372,15 +405,19 @@ fn integration_pem_ec_private_key_blocked() {
 fn integration_password_in_readme_example_allowed() {
     // documentation files get an entropy bonus that raises the threshold,
     // plus "example" is a stopword. passwords in docs should not block.
-    let diff = make_modified_file_diff("README.md", 50, &[
-        "## Configuration",
-        "",
-        "Set your database password in the config file:",
-        "",
-        "```yaml",
-        "password: \"your_example_password_here\"",
-        "```",
-    ]);
+    let diff = make_modified_file_diff(
+        "README.md",
+        50,
+        &[
+            "## Configuration",
+            "",
+            "Set your database password in the config file:",
+            "",
+            "```yaml",
+            "password: \"your_example_password_here\"",
+            "```",
+        ],
+    );
     let (_, findings) = scan_diff(&diff);
 
     assert!(
@@ -392,10 +429,11 @@ fn integration_password_in_readme_example_allowed() {
 
 #[test]
 fn integration_api_key_in_docs_with_sample_allowed() {
-    let diff = make_modified_file_diff("docs/setup.md", 10, &[
-        "Set your API key:",
-        "api_key = \"sample_api_key_for_docs\"",
-    ]);
+    let diff = make_modified_file_diff(
+        "docs/setup.md",
+        10,
+        &["Set your API key:", "api_key = \"sample_api_key_for_docs\""],
+    );
     let (_, findings) = scan_diff(&diff);
 
     assert!(
@@ -410,10 +448,11 @@ fn integration_api_key_in_docs_with_sample_allowed() {
 
 #[test]
 fn integration_variable_reference_dollar_brace_allowed() {
-    let diff = make_modified_file_diff("docker-compose.yml", 12, &[
-        "    environment:",
-        "      - password=\"${DB_PASSWORD}\"",
-    ]);
+    let diff = make_modified_file_diff(
+        "docker-compose.yml",
+        12,
+        &["    environment:", "      - password=\"${DB_PASSWORD}\""],
+    );
     let (_, findings) = scan_diff(&diff);
 
     assert!(
@@ -425,9 +464,11 @@ fn integration_variable_reference_dollar_brace_allowed() {
 
 #[test]
 fn integration_variable_reference_process_env_allowed() {
-    let diff = make_modified_file_diff("src/config.js", 5, &[
-        "const secret = process.env.SECRET_KEY;",
-    ]);
+    let diff = make_modified_file_diff(
+        "src/config.js",
+        5,
+        &["const secret = process.env.SECRET_KEY;"],
+    );
     let (_, findings) = scan_diff(&diff);
 
     // the value "process.env.SECRET_KEY" is bare code (no quotes), so
@@ -441,9 +482,7 @@ fn integration_variable_reference_process_env_allowed() {
 
 #[test]
 fn integration_variable_reference_in_quotes_allowed() {
-    let diff = make_modified_file_diff("config.py", 10, &[
-        "secret = \"${SECRET_KEY}\"",
-    ]);
+    let diff = make_modified_file_diff("config.py", 10, &["secret = \"${SECRET_KEY}\""]);
     let (_, findings) = scan_diff(&diff);
 
     assert!(
@@ -459,11 +498,15 @@ fn integration_variable_reference_in_quotes_allowed() {
 
 #[test]
 fn integration_bearer_token_blocked() {
-    let diff = make_modified_file_diff("src/api_client.py", 25, &[
-        "headers = {",
-        "    \"Authorization\": \"Bearer aB3dEf7hIj1kLmN0pQrStUvW\"",
-        "}",
-    ]);
+    let diff = make_modified_file_diff(
+        "src/api_client.py",
+        25,
+        &[
+            "headers = {",
+            "    \"Authorization\": \"Bearer aB3dEf7hIj1kLmN0pQrStUvW\"",
+            "}",
+        ],
+    );
     let (_, findings) = scan_diff(&diff);
 
     assert!(
@@ -475,9 +518,11 @@ fn integration_bearer_token_blocked() {
 
 #[test]
 fn integration_basic_auth_blocked() {
-    let diff = make_modified_file_diff("src/http_client.rs", 18, &[
-        "let auth = \"Authorization: Basic dXNlcm5hbWU6cGFzc3dvcmQxMjM0NQ==\";",
-    ]);
+    let diff = make_modified_file_diff(
+        "src/http_client.rs",
+        18,
+        &["let auth = \"Authorization: Basic dXNlcm5hbWU6cGFzc3dvcmQxMjM0NQ==\";"],
+    );
     let (_, findings) = scan_diff(&diff);
 
     assert!(
@@ -508,7 +553,10 @@ diff --git a/src/main.rs b/src/main.rs
 
     // binary file should be parsed as binary
     assert!(files[0].is_binary, "logo.png should be detected as binary");
-    assert!(files[0].added_lines.is_empty(), "binary file should have no added lines");
+    assert!(
+        files[0].added_lines.is_empty(),
+        "binary file should have no added lines"
+    );
 
     // no findings from the binary file or the clean source file
     assert!(
@@ -582,13 +630,17 @@ Binary files /dev/null and b/assets/logo.png differ
 
     // AWS key in src/config.py should be detected
     assert!(
-        findings.iter().any(|f| f.rule_id == "aws-access-key-id" && f.file == "src/config.py"),
+        findings
+            .iter()
+            .any(|f| f.rule_id == "aws-access-key-id" && f.file == "src/config.py"),
         "AWS key in config.py should be detected"
     );
 
     // password=changeme in src/config.py should be skipped (stopword)
     assert!(
-        !findings.iter().any(|f| f.file == "src/config.py" && f.rule_id == "generic-password-assignment"),
+        !findings
+            .iter()
+            .any(|f| f.file == "src/config.py" && f.rule_id == "generic-password-assignment"),
         "password=changeme should be skipped"
     );
 
@@ -657,20 +709,26 @@ diff --git a/src/config.rs b/src/config.rs
 
 #[test]
 fn integration_multiple_secrets_single_file() {
-    let diff = make_new_file_diff("leaked_config.py", &[
-        "# production credentials (DO NOT COMMIT)",
-        "AWS_KEY = \"AKIAIOSFODNN7ABCDEFG\"",
-        "GITHUB_TOKEN = \"ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij\"",
-        "-----BEGIN RSA PRIVATE KEY-----",
-        "STRIPE_KEY = \"sk_live_4eC39HqLyjWDarjtT1zdp7dc\"",
-    ]);
+    let diff = make_new_file_diff(
+        "leaked_config.py",
+        &[
+            "# production credentials (DO NOT COMMIT)",
+            "AWS_KEY = \"AKIAIOSFODNN7ABCDEFG\"",
+            "GITHUB_TOKEN = \"ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij\"",
+            "-----BEGIN RSA PRIVATE KEY-----",
+            "STRIPE_KEY = \"sk_live_4eC39HqLyjWDarjtT1zdp7dc\"",
+        ],
+    );
     let (_, findings) = scan_diff(&diff);
 
     assert!(
         findings.len() >= 3,
         "expected at least 3 different secrets detected, got {}: {:?}",
         findings.len(),
-        findings.iter().map(|f| format!("{}:{}", f.rule_id, f.line)).collect::<Vec<_>>()
+        findings
+            .iter()
+            .map(|f| format!("{}:{}", f.rule_id, f.line))
+            .collect::<Vec<_>>()
     );
 
     let rule_ids: Vec<&str> = findings.iter().map(|f| f.rule_id.as_str()).collect();
@@ -703,13 +761,17 @@ fn integration_jwt_token_blocked() {
 
 #[test]
 fn integration_postgres_connection_string_blocked() {
-    let diff = make_modified_file_diff("src/db.py", 5, &[
-        "db_url = \"postgres://admin:s3cur3Pa55w0rd@db.prod-host.com:5432/mydb\"",
-    ]);
+    let diff = make_modified_file_diff(
+        "src/db.py",
+        5,
+        &["db_url = \"postgres://admin:s3cur3Pa55w0rd@db.prod-host.com:5432/mydb\""],
+    );
     let (_, findings) = scan_diff(&diff);
 
     assert!(
-        findings.iter().any(|f| f.rule_id == "database-connection-string-postgres"),
+        findings
+            .iter()
+            .any(|f| f.rule_id == "database-connection-string-postgres"),
         "postgres connection string should be detected, got: {:?}",
         findings.iter().map(|f| &f.rule_id).collect::<Vec<_>>()
     );
@@ -717,13 +779,17 @@ fn integration_postgres_connection_string_blocked() {
 
 #[test]
 fn integration_mongodb_connection_string_blocked() {
-    let diff = make_modified_file_diff("src/db.js", 8, &[
-        "const uri = \"mongodb://admin:s3cur3Pa55w0rd@mongo.prod-host.com:27017/app\";",
-    ]);
+    let diff = make_modified_file_diff(
+        "src/db.js",
+        8,
+        &["const uri = \"mongodb://admin:s3cur3Pa55w0rd@mongo.prod-host.com:27017/app\";"],
+    );
     let (_, findings) = scan_diff(&diff);
 
     assert!(
-        findings.iter().any(|f| f.rule_id == "database-connection-string-mongodb"),
+        findings
+            .iter()
+            .any(|f| f.rule_id == "database-connection-string-mongodb"),
         "mongodb connection string should be detected"
     );
 }
@@ -734,9 +800,10 @@ fn integration_mongodb_connection_string_blocked() {
 
 #[test]
 fn integration_vendor_directory_skipped() {
-    let diff = make_new_file_diff("node_modules/some-pkg/config.js", &[
-        "module.exports = { key: \"AKIAIOSFODNN7ABCDEFG\" };",
-    ]);
+    let diff = make_new_file_diff(
+        "node_modules/some-pkg/config.js",
+        &["module.exports = { key: \"AKIAIOSFODNN7ABCDEFG\" };"],
+    );
     let (_, findings) = scan_diff(&diff);
 
     assert!(
@@ -747,9 +814,10 @@ fn integration_vendor_directory_skipped() {
 
 #[test]
 fn integration_lockfile_skipped() {
-    let diff = make_new_file_diff("package-lock.json", &[
-        "\"resolved\": \"https://registry.npmjs.org/secret/-/secret-1.0.0.tgz\"",
-    ]);
+    let diff = make_new_file_diff(
+        "package-lock.json",
+        &["\"resolved\": \"https://registry.npmjs.org/secret/-/secret-1.0.0.tgz\""],
+    );
     let (_, findings) = scan_diff(&diff);
 
     assert!(

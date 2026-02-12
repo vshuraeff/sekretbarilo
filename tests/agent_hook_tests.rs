@@ -62,22 +62,14 @@ fn e2e_check_file_clean_file() {
         .output()
         .expect("failed to run sekretbarilo");
 
-    assert_eq!(
-        output.status.code(),
-        Some(0),
-        "clean file should exit 0"
-    );
+    assert_eq!(output.status.code(), Some(0), "clean file should exit 0");
 }
 
 #[test]
 fn e2e_check_file_with_secret() {
     let dir = tempfile::tempdir().unwrap();
     let file_path = dir.path().join("secret.py");
-    std::fs::write(
-        &file_path,
-        "aws_key = \"AKIAIOSFODNN7REALKEYZ\"\n",
-    )
-    .unwrap();
+    std::fs::write(&file_path, "aws_key = \"AKIAIOSFODNN7REALKEYZ\"\n").unwrap();
 
     let output = Command::new(bin())
         .args(["check-file", file_path.to_str().unwrap()])
@@ -105,11 +97,7 @@ fn e2e_check_file_with_secret() {
 fn e2e_check_file_stdin_json() {
     let dir = tempfile::tempdir().unwrap();
     let file_path = dir.path().join("secret.py");
-    std::fs::write(
-        &file_path,
-        "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij\n",
-    )
-    .unwrap();
+    std::fs::write(&file_path, "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij\n").unwrap();
 
     let payload = serde_json::json!({
         "session_id": "test-session",
@@ -225,10 +213,7 @@ fn e2e_check_file_malformed_stdin_json() {
     );
 
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("[ERROR]"),
-        "should output error message"
-    );
+    assert!(stderr.contains("[ERROR]"), "should output error message");
 }
 
 #[test]
@@ -258,11 +243,7 @@ fn e2e_check_file_vendor_path_skipped() {
     let vendor_dir = dir.path().join("node_modules").join("pkg");
     std::fs::create_dir_all(&vendor_dir).unwrap();
     let file_path = vendor_dir.join("secret.js");
-    std::fs::write(
-        &file_path,
-        "const key = \"AKIAIOSFODNN7REALKEYZ\";\n",
-    )
-    .unwrap();
+    std::fs::write(&file_path, "const key = \"AKIAIOSFODNN7REALKEYZ\";\n").unwrap();
 
     // use stdin-json with cwd context so vendor path is resolved
     let payload = serde_json::json!({
@@ -316,10 +297,7 @@ fn e2e_install_agent_hook_claude_local() {
     );
 
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("[OK]"),
-        "should output OK status"
-    );
+    assert!(stderr.contains("[OK]"), "should output OK status");
 
     // verify the config was created
     let config_path = dir.path().join(".claude").join("settings.json");
@@ -376,10 +354,7 @@ fn e2e_install_pre_commit_local() {
     );
 
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("[OK]"),
-        "should output OK status"
-    );
+    assert!(stderr.contains("[OK]"), "should output OK status");
 
     // verify hook file exists
     let hook_file = dir.path().join(".git").join("hooks").join("pre-commit");
@@ -402,19 +377,21 @@ fn e2e_install_all_installs_both() {
         .output()
         .expect("failed to run sekretbarilo");
 
-    assert_eq!(
-        output.status.code(),
-        Some(0),
-        "install all should exit 0"
-    );
+    assert_eq!(output.status.code(), Some(0), "install all should exit 0");
 
     // verify pre-commit hook
     let hook_file = dir.path().join(".git").join("hooks").join("pre-commit");
-    assert!(hook_file.exists(), "pre-commit hook should exist after install all");
+    assert!(
+        hook_file.exists(),
+        "pre-commit hook should exist after install all"
+    );
 
     // verify claude hook config
     let config_path = dir.path().join(".claude").join("settings.json");
-    assert!(config_path.exists(), ".claude/settings.json should exist after install all");
+    assert!(
+        config_path.exists(),
+        ".claude/settings.json should exist after install all"
+    );
 }
 
 // -- install + doctor workflow tests --
