@@ -1,15 +1,17 @@
 # sekretbarilo
 
-High-performance Rust git pre-commit hook that scans staged changes for secrets, API keys, and credentials before they reach your repository.
+Secret scanner for git repositories. Scans staged commits, working trees, and full git history for API keys, credentials, and secrets.
 
 *sekretbarilo* means "secret keeper" in Esperanto.
 
 ## Features
 
-- **Fast**: typical commits scan in ~2.5 µs; even 400-file diffs complete in under 4 ms
+- **Fast**: a typical commit scans in ~2.5 µs, a 400-file diff in ~3.7 ms; audits run files and commits in parallel via rayon
 - **Three-tier rule system**: 42 built-in rules organized by precision (prefix-based, context-aware, catch-all)
 - **Low false positives**: Shannon entropy analysis, stopword filtering, hash detection, variable reference detection
-- **Audit mode**: scan all tracked files or full git history for secrets (`sekretbarilo audit`)
+- **Pre-commit hook**: automatic scanning of staged changes on every commit
+- **Working tree audit**: scan all tracked (and optionally ignored) files for secrets
+- **Git history audit**: scan every commit across all branches with deduplication, author tracking, and branch resolution
 - **Configurable**: hierarchical `.sekretbarilo.toml` (system, user, project) for allowlists, custom rules, and overrides
 - **Zero config needed**: works out of the box with sensible defaults
 - **Blocks .env files**: automatically prevents committing `.env`, `.env.local`, `.env.production` etc.
@@ -25,13 +27,15 @@ cargo install --path .
 ### Build from repository
 
 ```sh
-git clone https://github.com/your-org/sekretbarilo.git
+git clone https://github.com/vshuraeff/sekretbarilo.git
 cd sekretbarilo
 cargo build --release
 # binary is at target/release/sekretbarilo
 ```
 
 ## Quick start
+
+### Pre-commit hook
 
 Install the git pre-commit hook in your repository:
 
@@ -54,9 +58,9 @@ Or simply:
 sekretbarilo
 ```
 
-## Audit mode
+### Audit your repository
 
-Scan all tracked files in the working tree for secrets:
+Scan all tracked files in the working tree:
 
 ```sh
 sekretbarilo audit
@@ -83,9 +87,76 @@ Include untracked ignored files in the audit:
 sekretbarilo audit --include-ignored
 ```
 
-Audit findings use `[AUDIT]` prefix and the same exit codes as scan mode.
+## CLI flags
 
-History audit output includes author email and branch containment per commit:
+Both `scan` and `audit` commands accept the following flags:
+
+| Flag | Description |
+|------|-------------|
+| `--config <path>` | Use explicit config file instead of hierarchical discovery. Repeatable; multiple configs are merged in order (last wins for scalars, lists are combined). |
+| `--no-defaults` | Skip embedded default rules. Only use rules from config file(s). |
+| `--entropy-threshold <n>` | Override the global entropy threshold. |
+| `--allowlist-path <pattern>` | Add a path pattern to the allowlist. Repeatable. |
+| `--stopword <word>` | Add a stopword. Repeatable. |
+
+Audit-only flags:
+
+| Flag | Description |
+|------|-------------|
+| `--history` | Scan full git history instead of working tree. |
+| `--branch <name>` | Limit to commits reachable from branch (requires `--history`). |
+| `--since <date>` | Only commits after date (requires `--history`). |
+| `--until <date>` | Only commits before date (requires `--history`). |
+| `--include-ignored` | Include untracked ignored files. |
+| `--exclude-pattern <pattern>` | Add an exclude pattern for audit. Repeatable. |
+| `--include-pattern <pattern>` | Add an include pattern for audit (overrides excludes). Repeatable. |
+
+### Examples
+
+```sh
+# scan with a custom config file (skips hierarchical discovery)
+sekretbarilo scan --config my-rules.toml
+
+# scan with only custom rules, no built-in defaults
+sekretbarilo scan --no-defaults --config my-rules.toml
+
+# merge two config files (b.toml overrides a.toml for scalars)
+sekretbarilo audit --config a.toml --config b.toml
+
+# override entropy threshold for a one-off scan
+sekretbarilo scan --entropy-threshold 4.5
+
+# add a stopword to suppress known-safe values
+sekretbarilo scan --stopword my-known-safe-token
+
+# skip a directory from audit
+sekretbarilo audit --exclude-pattern '^vendor/'
+
+# combine CLI flags with config files
+sekretbarilo audit --config ci-rules.toml --stopword test-token --exclude-pattern '^fixtures/'
+```
+
+## Audit mode
+
+Audit mode scans the entire working tree or full git history for secrets, reusing the same scanning engine as the pre-commit hook.
+
+### Working tree audit
+
+Scans all tracked files in the current working tree using the same scanning engine as the pre-commit hook. Files are read and processed in parallel via rayon.
+
+```sh
+sekretbarilo audit
+```
+
+### Git history audit
+
+Scans every commit in the repository (or a filtered subset) without checking out any branches. Commits are processed in parallel, findings are deduplicated (same secret in the same file keeps the earliest introducing commit), and branches containing each finding are resolved automatically.
+
+```sh
+sekretbarilo audit --history
+```
+
+History audit output includes author, email, date, and branch containment per commit:
 
 ```
   commit: abc12345 (John Doe <john@example.com>, 2024-01-15T10:30:00+00:00)
@@ -95,6 +166,8 @@ History audit output includes author email and branch containment per commit:
     rule: aws-access-key-id
     match: AK**************QA
 ```
+
+Audit findings use `[AUDIT]` prefix and the same exit codes as scan mode.
 
 ### Audit configuration
 
@@ -107,6 +180,8 @@ include_patterns = ["\\.rs$"]            # regex patterns to force-include (over
 
 ## How it works
 
+### Pre-commit scan pipeline
+
 1. Runs `git diff --cached --unified=0 --diff-filter=d` to get staged changes
 2. Parses the unified diff into per-file blocks with line numbers
 3. Blocks `.env` files immediately (except `.env.example`, `.env.sample`, `.env.template`)
@@ -118,12 +193,19 @@ include_patterns = ["\\.rs$"]            # regex patterns to force-include (over
 9. Applies stopword and allowlist filtering
 10. Reports findings with masked secret values
 
+### Audit pipeline
+
+1. **Working tree**: `git ls-files` enumerates tracked files, reads them in parallel, and feeds them through the same scanning engine
+2. **History**: `git rev-list` enumerates commits, `git diff-tree` extracts per-commit diffs (with `--root` for root commits), commits are scanned in parallel via rayon, findings are deduplicated, and branches are resolved via `git branch --contains`
+
+Both modes share the same scanner engine, rules, allowlists, and output formatting.
+
 ## Exit codes
 
 | Code | Meaning |
 |------|---------|
-| 0 | No secrets found, commit allowed |
-| 1 | Secrets detected, commit blocked |
+| 0 | No secrets found |
+| 1 | Secrets detected |
 | 2 | Internal error (config parse failure, git not found, etc.) |
 
 ## Output format
@@ -147,11 +229,11 @@ commit blocked. 2 secret(s) found.
 use `git commit --no-verify` to bypass (not recommended).
 ```
 
-Secret values are always masked - only the first 2 and last 2 characters are shown.
+Secret values are always masked — only the first 2 and last 2 characters are shown.
 
 ## Configuration
 
-Create a `.sekretbarilo.toml` file in your repository root to customize behavior.
+Create a `.sekretbarilo.toml` file in your repository root to customize behavior. Alternatively, use `--config <path>` to specify config files explicitly (this skips hierarchical discovery entirely).
 
 ### Config file lookup order
 
@@ -350,24 +432,46 @@ sekretbarilo uses several techniques to minimize false positives:
 
 ## Performance
 
-sekretbarilo is designed for speed — a pre-commit hook should never slow down your workflow.
+Benchmark environment: 
+- `MacOS 15.7`
+- `Intel(R) Core(TM) i9-9900 CPU @ 3.60GHz`
+- `criterion`
+ 
+### Scan benchmarks
 
-| scenario | scale | time |
+| Scenario | Scale | Time |
 |---|---|---|
-| typical commit | 1 file, 10 lines | ~2.5 µs |
-| medium commit | 10 files, 500 lines | ~170 µs |
-| large commit | 100 files, 5000 lines | ~680 µs |
-| very large commit | 400 files, 40000 lines | ~3.7 ms |
+| Empty diff | 0 lines | ~48 ns |
+| Typical commit | 1 file, 10 lines | ~2.5 µs |
+| Medium commit | 10 files, 500 lines | ~168 µs |
+| With secrets | 10 files | ~199 µs |
+| Large commit | 100 files, 5000 lines | ~679 µs |
+| Very large commit | 400 files, 40000 lines | ~3.7 ms |
 
-Throughput scales sub-linearly — the aho-corasick pre-filter skips clean lines, reaching ~10.7M lines/sec on large diffs. Aho-corasick keyword matching is **~96x faster** than naive string search.
+### Diff parsing
 
-Key optimizations:
+| Scale | Time |
+|---|---|
+| 1 file, 10 lines | ~1.4 µs |
+| 10 files, 50 lines each | ~37 µs |
+| 100 files, 50 lines each | ~435 µs |
+
+### Keyword matching
+
+| Method | Time | Ratio |
+|---|---|---|
+| Aho-corasick | ~44 µs | 1x |
+| Naive contains | ~4.2 ms | ~96x slower |
+
+### Key optimizations
+
 - Aho-corasick automaton for single-pass keyword matching across all rules
 - Regex compilation happens once at startup
 - Only rules whose keywords match are evaluated (skipping most regex checks)
 - Byte-level processing (`&[u8]`) avoids UTF-8 conversion overhead
-- Parallel file processing with rayon for large diffs
+- Parallel file processing with rayon for working tree audits and history scans
 - Early exit on binary files and allowlisted paths
+- History audit deduplicates findings and only resolves branches for commits with secrets
 
 Run benchmarks:
 

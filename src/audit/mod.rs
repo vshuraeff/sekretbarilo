@@ -9,11 +9,12 @@ use std::process::Command;
 use rayon::prelude::*;
 use regex::RegexBuilder;
 
-use crate::config;
-use crate::config::AuditConfig;
+use crate::config::allowlist::CompiledAllowlist;
+use crate::config::{AuditConfig, ProjectConfig};
 use crate::diff::parser::{AddedLine, DiffFile};
 use crate::output::masking::mask_secret;
 use crate::scanner::engine::{scan, Finding};
+use crate::scanner::rules::CompiledScanner;
 
 /// options for the audit command
 #[derive(Default)]
@@ -271,55 +272,28 @@ pub fn validate_filter_options(options: &AuditOptions) -> Result<(), String> {
 }
 
 /// run the audit: scan all tracked files in the working tree, or history if --history is set.
+/// accepts pre-loaded config, scanner, and allowlist from the caller.
 /// returns exit code: 0 = clean, 1 = secrets found, 2 = internal error.
-pub fn run_audit(repo_root: &Path, options: &AuditOptions) -> i32 {
+pub fn run_audit(
+    repo_root: &Path,
+    options: &AuditOptions,
+    project_config: &ProjectConfig,
+    compiled: &CompiledScanner,
+    allowlist: &CompiledAllowlist,
+) -> i32 {
     // step 0: validate filter options
     if let Err(e) = validate_filter_options(options) {
         eprintln!("[ERROR] {}", e);
         return 2;
     }
 
-    // step 1: load config (needed early for audit filters and scanner)
-    let project_config = match config::load_project_config(Some(repo_root)) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("[ERROR] failed to load config: {}", e);
-            return 2;
-        }
-    };
-
-    // load rules and compile scanner (shared by both working-tree and history modes)
-    let rules = match config::load_rules_with_config(&project_config) {
-        Ok(r) => r,
-        Err(e) => {
-            eprintln!("[ERROR] failed to load rules: {}", e);
-            return 2;
-        }
-    };
-
-    let compiled = match crate::scanner::rules::compile_rules(&rules) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("[ERROR] failed to compile rules: {}", e);
-            return 2;
-        }
-    };
-
-    let allowlist = match config::build_allowlist(&project_config, &rules) {
-        Ok(a) => a,
-        Err(e) => {
-            eprintln!("[ERROR] failed to build allowlist: {}", e);
-            return 2;
-        }
-    };
-
     // history mode: delegate to history scanner
     if options.history {
         return history::run_history_audit(
             repo_root,
             options,
-            &compiled,
-            &allowlist,
+            compiled,
+            allowlist,
             &project_config.audit,
         );
     }
@@ -388,7 +362,7 @@ pub fn run_audit(repo_root: &Path, options: &AuditOptions) -> i32 {
     let file_count = diff_files.len();
 
     // step 6: scan
-    let findings = scan(&diff_files, &compiled, &allowlist);
+    let findings = scan(&diff_files, compiled, allowlist);
 
     // step 7: report
     let total = report_audit_findings(&findings, file_count, total_errors);

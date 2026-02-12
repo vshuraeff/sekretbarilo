@@ -162,6 +162,28 @@ pub fn load_rules_with_config(config: &ProjectConfig) -> Result<Vec<Rule>, Strin
     Ok(rules::merge_rules(defaults, config.rules.clone()))
 }
 
+/// load config from explicit paths (strict mode: errors on missing/invalid files).
+/// when paths is empty, returns default config.
+pub fn load_project_config_from_paths(paths: &[PathBuf]) -> Result<ProjectConfig, String> {
+    if paths.is_empty() {
+        return Ok(ProjectConfig::default());
+    }
+
+    let mut configs = Vec::with_capacity(paths.len());
+    for path in paths {
+        if !path.is_file() {
+            return Err(format!("config file not found: {}", path.display()));
+        }
+        let content = std::fs::read_to_string(path)
+            .map_err(|e| format!("failed to read {}: {}", path.display(), e))?;
+        let config: ProjectConfig = toml::from_str(&content)
+            .map_err(|e| format!("failed to parse {}: {}", path.display(), e))?;
+        configs.push(config);
+    }
+
+    Ok(merge::merge_all(configs))
+}
+
 /// build a compiled allowlist from project config, incorporating both global
 /// and per-rule allowlist settings. also merges per-rule allowlists from the
 /// rules themselves with overrides from the config file.
@@ -382,5 +404,88 @@ entropy_threshold = 3.5
             b"AKIAANYVALUEHERE123",
             "test/fixtures/keys.yml"
         ));
+    }
+
+    #[test]
+    fn load_from_paths_empty_returns_default() {
+        let config = load_project_config_from_paths(&[]).unwrap();
+        assert!(config.rules.is_empty());
+        assert!(config.settings.entropy_threshold.is_none());
+    }
+
+    #[test]
+    fn load_from_paths_missing_file_errors() {
+        let result =
+            load_project_config_from_paths(&[PathBuf::from("/tmp/nonexistent_sb_test.toml")]);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("not found"));
+    }
+
+    #[test]
+    fn load_from_paths_single_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.toml");
+        std::fs::write(
+            &path,
+            r#"
+[settings]
+entropy_threshold = 4.0
+
+[allowlist]
+stopwords = ["safe"]
+"#,
+        )
+        .unwrap();
+
+        let config = load_project_config_from_paths(&[path]).unwrap();
+        assert_eq!(config.settings.entropy_threshold, Some(4.0));
+        assert_eq!(config.allowlist.stopwords, vec!["safe"]);
+    }
+
+    #[test]
+    fn load_from_paths_merge_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = dir.path().join("a.toml");
+        let b = dir.path().join("b.toml");
+
+        std::fs::write(
+            &a,
+            r#"
+[settings]
+entropy_threshold = 3.0
+
+[allowlist]
+stopwords = ["from_a"]
+"#,
+        )
+        .unwrap();
+        std::fs::write(
+            &b,
+            r#"
+[settings]
+entropy_threshold = 5.0
+
+[allowlist]
+stopwords = ["from_b"]
+"#,
+        )
+        .unwrap();
+
+        let config = load_project_config_from_paths(&[a, b]).unwrap();
+        // b overrides scalar
+        assert_eq!(config.settings.entropy_threshold, Some(5.0));
+        // lists merged
+        assert_eq!(config.allowlist.stopwords, vec!["from_a", "from_b"]);
+    }
+
+    #[test]
+    fn load_from_paths_invalid_toml_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bad.toml");
+        std::fs::write(&path, "this is not valid toml [[[").unwrap();
+
+        let result = load_project_config_from_paths(&[path]);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("failed to parse"));
     }
 }

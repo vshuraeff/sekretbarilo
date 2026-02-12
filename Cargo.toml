@@ -2,7 +2,7 @@
 name = "sekretbarilo"
 version = "0.1.2"
 edition = "2021"
-description = "High-performance Rust git pre-commit secret scanner"
+description = "Secret scanner for git repositories"
 license = "MIT"
 
 [dependencies]

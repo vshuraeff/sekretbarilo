@@ -1,5 +1,6 @@
 // audit mode integration tests
 
+use std::path::Path;
 use std::process::Command;
 
 use sekretbarilo::audit;
@@ -17,6 +18,15 @@ fn default_scanner_and_allowlist() -> (
     let scanner = compile_rules(&rules).unwrap();
     let al = config::build_allowlist(&config::ProjectConfig::default(), &rules).unwrap();
     (scanner, al)
+}
+
+/// helper: load default config/rules and call run_audit
+fn run_audit_with_defaults(repo_root: &Path, options: &audit::AuditOptions) -> i32 {
+    let config = config::load_project_config(Some(repo_root)).unwrap_or_default();
+    let rules = config::load_rules_with_config(&config).unwrap();
+    let compiled = sekretbarilo::scanner::rules::compile_rules(&rules).unwrap();
+    let allowlist = config::build_allowlist(&config, &rules).unwrap();
+    audit::run_audit(repo_root, options, &config, &compiled, &allowlist)
 }
 
 /// create a temp git repo with some tracked files.
@@ -77,7 +87,7 @@ fn audit_finds_secrets_in_tracked_files() {
     ]);
 
     let options = audit::AuditOptions::default();
-    let exit_code = audit::run_audit(dir.path(), &options);
+    let exit_code = run_audit_with_defaults(dir.path(), &options);
     assert_eq!(exit_code, 1, "should detect secrets and return exit code 1");
 }
 
@@ -89,7 +99,7 @@ fn audit_clean_repo_returns_zero() {
     ]);
 
     let options = audit::AuditOptions::default();
-    let exit_code = audit::run_audit(dir.path(), &options);
+    let exit_code = run_audit_with_defaults(dir.path(), &options);
     assert_eq!(exit_code, 0, "clean repo should return exit code 0");
 }
 
@@ -135,7 +145,7 @@ fn audit_skips_binary_files() {
         .unwrap();
 
     let options = audit::AuditOptions::default();
-    let exit_code = audit::run_audit(root, &options);
+    let exit_code = run_audit_with_defaults(root, &options);
     assert_eq!(exit_code, 0, "binary files should be skipped");
 }
 
@@ -168,7 +178,7 @@ fn audit_empty_repo() {
         .unwrap();
 
     let options = audit::AuditOptions::default();
-    let exit_code = audit::run_audit(root, &options);
+    let exit_code = run_audit_with_defaults(root, &options);
     assert_eq!(exit_code, 0, "empty repo should return 0");
 }
 
@@ -182,13 +192,13 @@ fn audit_exit_codes_match_scan_convention() {
     )]);
 
     let options = audit::AuditOptions::default();
-    let exit_code = audit::run_audit(dir.path(), &options);
+    let exit_code = run_audit_with_defaults(dir.path(), &options);
     assert_eq!(exit_code, 1);
 
     // test the "clean" case
     let clean_dir = create_test_repo(&[("clean.txt", "nothing secret here\n")]);
 
-    let clean_code = audit::run_audit(clean_dir.path(), &audit::AuditOptions::default());
+    let clean_code = run_audit_with_defaults(clean_dir.path(), &audit::AuditOptions::default());
     assert_eq!(clean_code, 0);
 }
 
@@ -204,7 +214,7 @@ fn audit_exit_code_2_on_unreadable_file() {
     std::fs::remove_file(dir.path().join("will_delete.txt")).unwrap();
 
     let options = audit::AuditOptions::default();
-    let exit_code = audit::run_audit(dir.path(), &options);
+    let exit_code = run_audit_with_defaults(dir.path(), &options);
     assert_eq!(
         exit_code, 2,
         "should return 2 when files are unreadable (incomplete scan)"
@@ -253,7 +263,7 @@ fn audit_skips_vendor_and_generated_files() {
     ]);
 
     let options = audit::AuditOptions::default();
-    let exit_code = audit::run_audit(dir.path(), &options);
+    let exit_code = run_audit_with_defaults(dir.path(), &options);
     // vendor and node_modules paths should be skipped by the default path allowlist
     assert_eq!(exit_code, 0, "vendor/generated paths should be skipped");
 }
@@ -342,7 +352,7 @@ fn history_scan_finds_secret_in_past_commit() {
         history: true,
         ..Default::default()
     };
-    let exit_code = audit::run_audit(dir.path(), &options);
+    let exit_code = run_audit_with_defaults(dir.path(), &options);
     assert_eq!(
         exit_code, 1,
         "history scan should find the secret in the first commit"
@@ -361,7 +371,7 @@ fn history_scan_handles_root_commits() {
         history: true,
         ..Default::default()
     };
-    let exit_code = audit::run_audit(dir.path(), &options);
+    let exit_code = run_audit_with_defaults(dir.path(), &options);
     assert_eq!(
         exit_code, 1,
         "should find secret in root commit"
@@ -494,7 +504,7 @@ fn history_clean_repo_returns_zero() {
         history: true,
         ..Default::default()
     };
-    let exit_code = audit::run_audit(dir.path(), &options);
+    let exit_code = run_audit_with_defaults(dir.path(), &options);
     assert_eq!(exit_code, 0, "history scan of clean repo should return 0");
 }
 
@@ -737,7 +747,7 @@ fn filter_branch_limits_commits_to_specified_branch() {
         branch: Some("main".to_string()),
         ..Default::default()
     };
-    let exit_main = audit::run_audit(root, &options_main);
+    let exit_main = run_audit_with_defaults(root, &options_main);
     assert_eq!(
         exit_main, 0,
         "main branch should be clean (secret is on feature branch)"
@@ -749,7 +759,7 @@ fn filter_branch_limits_commits_to_specified_branch() {
         branch: Some("feature".to_string()),
         ..Default::default()
     };
-    let exit_feature = audit::run_audit(root, &options_feature);
+    let exit_feature = run_audit_with_defaults(root, &options_feature);
     assert_eq!(
         exit_feature, 1,
         "feature branch should contain the secret"
@@ -817,7 +827,7 @@ fn filter_date_range_limits_commits() {
         since: Some("2025-01-01".to_string()),
         ..Default::default()
     };
-    let exit_2025 = audit::run_audit(root, &options_2025);
+    let exit_2025 = run_audit_with_defaults(root, &options_2025);
     assert_eq!(
         exit_2025, 0,
         "2025 commits only should be clean"
@@ -830,7 +840,7 @@ fn filter_date_range_limits_commits() {
         until: Some("2023-12-31".to_string()),
         ..Default::default()
     };
-    let exit_2023 = audit::run_audit(root, &options_2023);
+    let exit_2023 = run_audit_with_defaults(root, &options_2023);
     assert_eq!(
         exit_2023, 1,
         "2023 commits should contain the secret"
@@ -917,7 +927,7 @@ fn filter_combined_branch_and_date() {
         until: Some("2024-12-31".to_string()),
         ..Default::default()
     };
-    let exit_code = audit::run_audit(root, &options);
+    let exit_code = run_audit_with_defaults(root, &options);
     assert_eq!(
         exit_code, 1,
         "combined filter should find the secret on feature in 2024"
@@ -930,7 +940,7 @@ fn filter_combined_branch_and_date() {
         since: Some("2025-01-01".to_string()),
         ..Default::default()
     };
-    let exit_miss = audit::run_audit(root, &options_miss);
+    let exit_miss = run_audit_with_defaults(root, &options_miss);
     assert_eq!(
         exit_miss, 0,
         "combined filter with wrong date should miss the secret"
@@ -946,7 +956,7 @@ fn filter_invalid_branch_produces_error() {
         branch: Some("nonexistent-branch-xyz".to_string()),
         ..Default::default()
     };
-    let exit_code = audit::run_audit(dir.path(), &options);
+    let exit_code = run_audit_with_defaults(dir.path(), &options);
     assert_eq!(
         exit_code, 2,
         "invalid branch should return error exit code 2"
@@ -963,7 +973,7 @@ fn filter_without_history_produces_error() {
         branch: Some("main".to_string()),
         ..Default::default()
     };
-    let exit_branch = audit::run_audit(dir.path(), &options_branch);
+    let exit_branch = run_audit_with_defaults(dir.path(), &options_branch);
     assert_eq!(
         exit_branch, 2,
         "branch filter without --history should return error"
@@ -975,7 +985,7 @@ fn filter_without_history_produces_error() {
         since: Some("2024-01-01".to_string()),
         ..Default::default()
     };
-    let exit_since = audit::run_audit(dir.path(), &options_since);
+    let exit_since = run_audit_with_defaults(dir.path(), &options_since);
     assert_eq!(
         exit_since, 2,
         "since filter without --history should return error"
@@ -987,7 +997,7 @@ fn filter_without_history_produces_error() {
         until: Some("2024-12-31".to_string()),
         ..Default::default()
     };
-    let exit_until = audit::run_audit(dir.path(), &options_until);
+    let exit_until = run_audit_with_defaults(dir.path(), &options_until);
     assert_eq!(
         exit_until, 2,
         "until filter without --history should return error"
@@ -1032,7 +1042,7 @@ fn history_exit_code_2_on_commit_diff_failure() {
         history: true,
         ..Default::default()
     };
-    let exit_code = audit::run_audit(dir.path(), &options);
+    let exit_code = run_audit_with_defaults(dir.path(), &options);
     assert_eq!(
         exit_code, 2,
         "should return 2 when commit diffs fail (incomplete history scan)"
