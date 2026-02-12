@@ -636,7 +636,7 @@ checksum = "490dcfcbfef26be6800d11870ff2df8774fa6e86d047e3e8c8a76b25655e41ca"
 
 [[package]]
 name = "sekretbarilo"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "aho-corasick",
  "bstr",
