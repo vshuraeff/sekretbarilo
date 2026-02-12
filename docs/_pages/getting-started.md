@@ -37,7 +37,7 @@ Get started with sekretbarilo in under a minute:
 
 ```sh
 # step 1: install sekretbarilo
-cargo install --path .
+brew install vshuraeff/tap/sekretbarilo
 
 # step 2: set up pre-commit hook in your project
 cd your-project

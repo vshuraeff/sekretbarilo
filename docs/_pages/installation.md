@@ -10,9 +10,31 @@ This guide covers everything you need to install and configure sekretbarilo for 
 
 ## Installing sekretbarilo
 
-### From source (recommended)
+### Homebrew (recommended)
 
-If you have the sekretbarilo repository:
+```sh
+brew install vshuraeff/tap/sekretbarilo
+```
+
+Pre-built binaries for macOS (Intel + Apple Silicon) and Linux (x86_64 + ARM64). To update:
+
+```sh
+brew upgrade vshuraeff/tap/sekretbarilo
+```
+
+### GitHub Releases
+
+Download pre-built binaries from the [releases page](https://github.com/vshuraeff/sekretbarilo/releases). Available targets:
+
+- `aarch64-apple-darwin` (macOS Apple Silicon)
+- `x86_64-apple-darwin` (macOS Intel)
+- `x86_64-unknown-linux-gnu` (Linux x86_64)
+- `aarch64-unknown-linux-gnu` (Linux ARM64)
+- `.deb` packages for Debian/Ubuntu (amd64 + arm64)
+
+### From source
+
+If you have the Rust toolchain installed:
 
 ```sh
 cd /path/to/sekretbarilo
@@ -43,14 +65,13 @@ cargo install --path .
 Confirm sekretbarilo is installed and accessible:
 
 ```sh
-sekretbarilo --help
+sekretbarilo --version
 ```
 
-You should see the help output with available commands and options.
+You should see the version number. You can also check the help output:
 
 ```sh
-# check version
-sekretbarilo --version
+sekretbarilo --help
 ```
 
 ## Installing git hooks
@@ -229,9 +250,7 @@ Here's a complete setup for a new development environment:
 
 ```sh
 # step 1: install sekretbarilo
-git clone https://github.com/vshuraeff/sekretbarilo.git
-cd sekretbarilo
-cargo install --path .
+brew install vshuraeff/tap/sekretbarilo
 
 # step 2: install global hooks for all projects
 sekretbarilo install all --global

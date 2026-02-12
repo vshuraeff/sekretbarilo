@@ -24,8 +24,8 @@ High-performance secret scanner for git workflows and AI coding agents. Catches 
 ## Quick start
 
 ```sh
-# install from source
-cargo install --path .
+# install via homebrew
+brew install vshuraeff/tap/sekretbarilo
 
 # set up pre-commit hook
 cd your-project

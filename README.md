@@ -20,6 +20,24 @@ High-performance secret scanner for git workflows and AI coding agents. Catches 
 
 ## Installation
 
+### Homebrew (macOS and Linux)
+
+```sh
+brew install vshuraeff/tap/sekretbarilo
+```
+
+Pre-built binaries for macOS (Intel + Apple Silicon) and Linux (x86_64 + ARM64).
+
+### GitHub Releases
+
+Download pre-built binaries from the [releases page](https://github.com/vshuraeff/sekretbarilo/releases). Available targets:
+
+- `aarch64-apple-darwin` (macOS Apple Silicon)
+- `x86_64-apple-darwin` (macOS Intel)
+- `x86_64-unknown-linux-gnu` (Linux x86_64)
+- `aarch64-unknown-linux-gnu` (Linux ARM64)
+- `.deb` packages for Debian/Ubuntu (amd64 + arm64)
+
 ### From source
 
 ```sh

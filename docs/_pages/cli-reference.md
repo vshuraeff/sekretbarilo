@@ -235,6 +235,18 @@ sekretbarilo binary:
 
 ---
 
+### `sekretbarilo --version`
+
+displays the installed version.
+
+**examples:**
+```sh
+sekretbarilo --version
+sekretbarilo -V
+```
+
+---
+
 ### `sekretbarilo --help`
 
 displays usage information and examples.
