@@ -103,6 +103,21 @@ sekretbarilo install agent-hook claude --global
 
 This adds a `PreToolUse` hook for the `Read` tool. When Claude Code reads a file, sekretbarilo scans it first and blocks the read if secrets are found, preventing accidental exposure of credentials to the agent.
 
+**How the hook works:**
+- Hook type: `PreToolUse` on the `Read` tool
+- Command: `sekretbarilo check-file --stdin-json`
+- Timeout: 10 seconds
+- Status message shown in Claude Code: "Scanning file for secrets..."
+- Claude Code sends a JSON payload on stdin with the file path and working directory
+
+**Idempotent installation:** running `install` again detects existing hooks and skips if already installed. If an older sekretbarilo command is found, it updates the hook in place.
+
+**.env file blocking:** `check-file` blocks `.env` files unconditionally (same policy as the pre-commit hook). `.env.example`, `.env.sample`, and `.env.template` are allowed through.
+
+**Fast-path skipping:** binary files (`.png`, `.jpg`, `.exe`, etc.), vendor directories (`node_modules/`, `vendor/`), and lock files (`package-lock.json`, `Cargo.lock`, etc.) are rejected immediately without loading config or reading the file.
+
+**Full config support:** `check-file` respects all hierarchical config — allowlists, stopwords, custom rules, entropy thresholds, and audit exclude patterns.
+
 You can also scan a single file directly:
 
 ```sh
@@ -112,6 +127,19 @@ sekretbarilo check-file src/config.rs
 # read file path from Claude Code hook JSON payload on stdin
 sekretbarilo check-file --stdin-json
 ```
+
+**Stdin JSON payload schema** (sent by Claude Code automatically):
+
+```json
+{
+  "tool_input": { "file_path": "path/to/file" },
+  "cwd": "/optional/working/directory"
+}
+```
+
+- `cwd` is optional (defaults to the current directory)
+- stdin is limited to 1 MB
+- extra fields (e.g. `session_id`, `tool_name`) are tolerated and ignored
 
 Install all hooks at once (pre-commit + agent hooks):
 
@@ -133,6 +161,13 @@ The `doctor` command checks:
 - Claude Code hook (local and global): installed, correct matcher and command
 - Configuration: config files found, rules compile successfully
 - Binary availability: sekretbarilo is findable in PATH
+
+For Claude Code hooks specifically, doctor validates:
+- both local (`.claude/settings.json`) and global (`~/.claude/settings.json`)
+- JSON structure is valid
+- `hooks.PreToolUse` array contains a `Read` matcher entry
+- hook command matches `sekretbarilo check-file --stdin-json`
+- detects outdated sekretbarilo commands from older versions
 
 ### Note on Codex CLI
 
@@ -275,6 +310,19 @@ include_patterns = ["\\.rs$"]            # regex patterns to force-include (over
 
 Both modes share the same scanner engine, rules, allowlists, and output formatting.
 
+### Check-file pipeline (agent hooks)
+
+1. Parse stdin JSON payload or direct file path argument
+2. Resolve file path (absolute or relative, using `cwd` from hook payload)
+3. Block `.env` files unconditionally (same policy as pre-commit)
+4. Fast-path rejection: binary extensions, vendor directories, lock files (no config loading needed)
+5. Load hierarchical config and compile rules
+6. Apply user-configured allowlists and audit exclude patterns
+7. Read file and convert to synthetic DiffFile
+8. Run scanner engine (aho-corasick pre-filter + regex + entropy + hash detection)
+9. Report findings to stderr with `[AGENT]` prefix and masked values
+10. Exit 0 (clean) or 2 (secrets found / error)
+
 ## Exit codes
 
 ### `scan`, `audit`, `doctor`
@@ -291,6 +339,8 @@ Both modes share the same scanner engine, rules, allowlists, and output formatti
 |------|---------|
 | 0 | Clean (no secrets found, or file skipped as binary/allowlisted) |
 | 2 | Secrets found or error (Claude Code blocks the read on exit 2) |
+
+Exit code 2 is used for both secrets and errors (file not found, config failure, JSON parse error) because failing open would let secrets through. Claude Code treats any non-zero exit as a block.
 
 ## Output format
 
@@ -314,6 +364,22 @@ use `git commit --no-verify` to bypass (not recommended).
 ```
 
 Secret values are always masked — only the first 2 and last 2 characters are shown.
+
+### Agent hook output
+
+When `check-file` detects secrets, output goes to stderr (not stdout) with an `[AGENT]` prefix:
+
+```
+[AGENT] secret(s) detected in src/config.rs
+
+  line: 42
+  rule: aws-access-key-id
+  match: AK**************QA
+
+file contains 1 secret(s). reading blocked to prevent secret exposure.
+```
+
+Secrets are masked the same way as in scan and audit output.
 
 ## Configuration
 
