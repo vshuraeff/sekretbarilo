@@ -11,7 +11,7 @@ High-performance secret scanner for git workflows and AI coding agents. Catches 
 
 ## Why sekretbarilo?
 
-- **Fast**: a typical commit scans in ~2.5 us, a 400-file diff in ~3.7 ms
+- **Fast**: a typical commit scans in ~2.5 µs, a 400-file diff in ~3.7 ms
 - **43 built-in rules** organized by precision (prefix-based, context-aware, catch-all)
 - **Low false positives**: Shannon entropy, stopwords, hash detection, variable reference detection
 - **Pre-commit hook**: automatic scanning of staged changes on every commit
