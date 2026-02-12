@@ -1,0 +1,70 @@
+# site settings
+title: sekretbarilo
+description: High-performance secret scanner for git workflows and AI coding agents
+author: vshuraeff
+
+# build settings
+markdown: kramdown
+theme: null
+
+# deployment settings
+baseurl: "/sekretbarilo"
+url: "https://vshuraeff.github.io"
+
+# plugins
+plugins:
+  - jekyll-seo-tag
+
+# kramdown settings
+kramdown:
+  input: GFM
+  syntax_highlighter: rouge
+  syntax_highlighter_opts:
+    block:
+      line_numbers: false
+
+# collections
+collections:
+  pages:
+    output: true
+    permalink: /:name/
+
+# defaults
+defaults:
+  - scope:
+      path: ""
+    values:
+      layout: default
+
+# exclude from build
+exclude:
+  - Gemfile
+  - Gemfile.lock
+  - vendor
+  - .bundle
+
+# navigation structure
+navigation:
+  - title: Home
+    url: /
+  - title: Getting Started
+    url: /getting-started
+  - title: Installation
+    url: /installation
+  - title: Configuration
+    url: /configuration
+  - title: CLI Reference
+    url: /cli-reference
+  - title: Agent Hooks
+    url: /agent-hooks
+  - title: Rules Reference
+    url: /rules-reference
+  - title: Performance
+    url: /performance
+  - title: Architecture
+    url: /architecture
+  - title: Examples
+    url: /examples
+
+# repository
+repository: vshuraeff/sekretbarilo
