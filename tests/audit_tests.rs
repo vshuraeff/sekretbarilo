@@ -68,7 +68,7 @@ fn create_test_repo(files: &[(&str, &str)]) -> tempfile::TempDir {
         .unwrap();
 
     Command::new("git")
-        .args(["commit", "-m", "initial"])
+        .args(["commit", "--no-verify", "-m", "initial"])
         .current_dir(root)
         .output()
         .unwrap();
@@ -142,7 +142,7 @@ fn audit_skips_binary_files() {
         .output()
         .unwrap();
     Command::new("git")
-        .args(["commit", "-m", "initial"])
+        .args(["commit", "--no-verify", "-m", "initial"])
         .current_dir(root)
         .output()
         .unwrap();
@@ -318,7 +318,7 @@ fn create_multi_commit_repo(
             .unwrap();
 
         Command::new("git")
-            .args(["commit", "-m", message])
+            .args(["commit", "--no-verify", "-m", message])
             .current_dir(root)
             .output()
             .unwrap();
@@ -547,7 +547,7 @@ fn create_branched_repo_with_secret() -> tempfile::TempDir {
         .output()
         .unwrap();
     Command::new("git")
-        .args(["commit", "-m", "init"])
+        .args(["commit", "--no-verify", "-m", "init"])
         .current_dir(root)
         .output()
         .unwrap();
@@ -587,7 +587,7 @@ fn create_branched_repo_with_secret() -> tempfile::TempDir {
         .output()
         .unwrap();
     Command::new("git")
-        .args(["commit", "-m", "add secret on feature"])
+        .args(["commit", "--no-verify", "-m", "add secret on feature"])
         .current_dir(root)
         .output()
         .unwrap();
@@ -636,7 +636,8 @@ fn history_output_includes_branch_and_email() {
     assert_eq!(feature_commit.email, "alice@example.com");
 
     // verify branch resolution includes feature/auth
-    let branch_map = history::get_branches_for_commits(&[feature_commit.hash.clone()], root);
+    let branch_map =
+        history::get_branches_for_commits(std::slice::from_ref(&feature_commit.hash), root);
     let branches = branch_map.get(&feature_commit.hash).unwrap();
     assert!(
         branches.contains(&"feature/auth".to_string()),
@@ -704,7 +705,7 @@ fn filter_branch_limits_commits_to_specified_branch() {
         .output()
         .unwrap();
     Command::new("git")
-        .args(["commit", "-m", "clean main"])
+        .args(["commit", "--no-verify", "-m", "clean main"])
         .current_dir(root)
         .output()
         .unwrap();
@@ -729,7 +730,7 @@ fn filter_branch_limits_commits_to_specified_branch() {
         .output()
         .unwrap();
     Command::new("git")
-        .args(["commit", "-m", "add secret on feature"])
+        .args(["commit", "--no-verify", "-m", "add secret on feature"])
         .current_dir(root)
         .output()
         .unwrap();
@@ -796,7 +797,7 @@ fn filter_date_range_limits_commits() {
         .output()
         .unwrap();
     Command::new("git")
-        .args(["commit", "-m", "old secret"])
+        .args(["commit", "--no-verify", "-m", "old secret"])
         .current_dir(root)
         .env("GIT_AUTHOR_DATE", "2023-01-15T12:00:00")
         .env("GIT_COMMITTER_DATE", "2023-01-15T12:00:00")
@@ -811,7 +812,7 @@ fn filter_date_range_limits_commits() {
         .output()
         .unwrap();
     Command::new("git")
-        .args(["commit", "-m", "recent clean"])
+        .args(["commit", "--no-verify", "-m", "recent clean"])
         .current_dir(root)
         .env("GIT_AUTHOR_DATE", "2025-06-01T12:00:00")
         .env("GIT_COMMITTER_DATE", "2025-06-01T12:00:00")
@@ -867,7 +868,7 @@ fn filter_combined_branch_and_date() {
         .output()
         .unwrap();
     Command::new("git")
-        .args(["commit", "-m", "init"])
+        .args(["commit", "--no-verify", "-m", "init"])
         .current_dir(root)
         .env("GIT_AUTHOR_DATE", "2023-01-01T12:00:00")
         .env("GIT_COMMITTER_DATE", "2023-01-01T12:00:00")
@@ -897,7 +898,7 @@ fn filter_combined_branch_and_date() {
         .output()
         .unwrap();
     Command::new("git")
-        .args(["commit", "-m", "secret on feature"])
+        .args(["commit", "--no-verify", "-m", "secret on feature"])
         .current_dir(root)
         .env("GIT_AUTHOR_DATE", "2024-06-15T12:00:00")
         .env("GIT_COMMITTER_DATE", "2024-06-15T12:00:00")
