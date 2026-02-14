@@ -145,3 +145,77 @@ jobs:
             artifacts/*.deb
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  bump-homebrew:
+    name: Update Homebrew Formula
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download release tarballs
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          gh release download "$GITHUB_REF_NAME" \
+            --repo vshuraeff/sekretbarilo \
+            --pattern '*.tar.gz' \
+            --dir tarballs/
+
+      - name: Generate formula and push to tap
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          TAG="$GITHUB_REF_NAME"
+          VERSION="${TAG#v}"
+
+          SHA_AARCH64_MACOS=$(sha256sum "tarballs/sekretbarilo-${TAG}-aarch64-apple-darwin.tar.gz" | cut -d' ' -f1)
+          SHA_X86_64_MACOS=$(sha256sum "tarballs/sekretbarilo-${TAG}-x86_64-apple-darwin.tar.gz" | cut -d' ' -f1)
+          SHA_AARCH64_LINUX=$(sha256sum "tarballs/sekretbarilo-${TAG}-aarch64-unknown-linux-gnu.tar.gz" | cut -d' ' -f1)
+          SHA_X86_64_LINUX=$(sha256sum "tarballs/sekretbarilo-${TAG}-x86_64-unknown-linux-gnu.tar.gz" | cut -d' ' -f1)
+
+          cat > formula.rb <<RUBY
+          class Sekretbarilo < Formula
+            desc "High-performance secret scanner for git workflows and AI coding agents"
+            homepage "https://github.com/vshuraeff/sekretbarilo"
+            version "${VERSION}"
+            license "MIT"
+
+            on_macos do
+              if Hardware::CPU.arm?
+                url "https://github.com/vshuraeff/sekretbarilo/releases/download/${TAG}/sekretbarilo-${TAG}-aarch64-apple-darwin.tar.gz"
+                sha256 "${SHA_AARCH64_MACOS}"
+              else
+                url "https://github.com/vshuraeff/sekretbarilo/releases/download/${TAG}/sekretbarilo-${TAG}-x86_64-apple-darwin.tar.gz"
+                sha256 "${SHA_X86_64_MACOS}"
+              end
+            end
+
+            on_linux do
+              if Hardware::CPU.arm?
+                url "https://github.com/vshuraeff/sekretbarilo/releases/download/${TAG}/sekretbarilo-${TAG}-aarch64-unknown-linux-gnu.tar.gz"
+                sha256 "${SHA_AARCH64_LINUX}"
+              else
+                url "https://github.com/vshuraeff/sekretbarilo/releases/download/${TAG}/sekretbarilo-${TAG}-x86_64-unknown-linux-gnu.tar.gz"
+                sha256 "${SHA_X86_64_LINUX}"
+              end
+            end
+
+            def install
+              bin.install "sekretbarilo"
+            end
+
+            test do
+              assert_match "sekretbarilo #{version}", shell_output("#{bin}/sekretbarilo --version 2>&1")
+            end
+          end
+          RUBY
+
+          sed -i 's/^          //' formula.rb
+
+          git clone "https://x-access-token:${GH_TOKEN}@github.com/vshuraeff/homebrew-tap.git" tap
+          cp formula.rb tap/Formula/sekretbarilo.rb
+          cd tap
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/sekretbarilo.rb
+          git commit -m "sekretbarilo ${VERSION}"
+          git push
