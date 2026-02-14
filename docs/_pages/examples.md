@@ -294,7 +294,7 @@ Claude code hook (local):
 
 Configuration:
   ✓ config loaded from .sekretbarilo.toml
-  ✓ 43 built-in rules + 2 custom rules
+  ✓ 109 built-in rules + 2 custom rules
   ✓ entropy threshold: 3.5
 
 Binary:
@@ -315,7 +315,7 @@ Claude code hook (local):
 
 Configuration:
   ✓ config loaded from .sekretbarilo.toml
-  ✓ 43 built-in rules
+  ✓ 109 built-in rules
 
 Binary:
   ✓ sekretbarilo found in PATH
@@ -638,7 +638,7 @@ Claude code hook (global):
 Configuration:
   ✓ config loaded from .sekretbarilo.toml
   ✓ config loaded from ~/.config/sekretbarilo/sekretbarilo.toml
-  ✓ 43 built-in rules + 5 custom rules
+  ✓ 109 built-in rules + 5 custom rules
   ✓ entropy threshold: 3.5
   ✓ 12 allowlist paths
   ✓ 3 stopwords (+ defaults)
@@ -672,7 +672,7 @@ Claude code hook (global):
 Configuration:
   ✓ config loaded from .sekretbarilo.toml
   ⚠ config parse warning: unknown field 'invalid_key' in .sekretbarilo.toml
-  ✓ 43 built-in rules + 1 custom rule
+  ✓ 109 built-in rules + 1 custom rule
   ✗ rule 'custom-broken-rule' failed to compile: invalid regex pattern
 
 Binary:

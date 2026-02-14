@@ -868,3 +868,270 @@ fn clean_code_no_findings() {
         findings.iter().map(|f| &f.rule_id).collect::<Vec<_>>()
     );
 }
+
+// ============================================================================
+// tier 1: additional prefix-based rules
+// ============================================================================
+
+#[test]
+fn tier1_gcp_api_key() {
+    assert_detected(
+        "src/config.rs",
+        b"let key = \"AIzaSyA1234567890abcdefghijklmnopqrstuvwx\";",
+        "gcp-api-key",
+    );
+}
+
+#[test]
+fn tier1_gcp_oauth_client_secret() {
+    assert_detected(
+        "src/config.rs",
+        b"client_secret = \"GOCSPX-abcdefghijklmnopqrstuvwxyzAB\";",
+        "gcp-oauth-client-secret",
+    );
+}
+
+#[test]
+fn tier1_alibaba_access_key_id() {
+    assert_detected(
+        "src/config.rs",
+        b"key = \"LTAI5t1234567890abcde\";",
+        "alibaba-access-key-id",
+    );
+}
+
+#[test]
+fn tier1_gitlab_pipeline_trigger_token() {
+    assert_detected(
+        "src/config.rs",
+        b"token = \"glptt-abcdefghijklmnopqrstuv\";",
+        "gitlab-pipeline-trigger-token",
+    );
+}
+
+#[test]
+fn tier1_huggingface_access_token() {
+    assert_detected(
+        "src/config.rs",
+        b"token = \"hf_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefgh\";",
+        "huggingface-access-token",
+    );
+}
+
+#[test]
+fn tier1_replicate_api_token() {
+    assert_detected(
+        "src/config.rs",
+        b"token = \"r8_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijkl\";",
+        "replicate-api-token",
+    );
+}
+
+#[test]
+fn tier1_discord_webhook_url() {
+    assert_detected(
+        "src/config.rs",
+        b"url = \"https://discord.com/api/webhooks/123456789012345678/abcdefghijklmnopqrstuvwxyz123456\";",
+        "discord-webhook-url",
+    );
+}
+
+#[test]
+fn tier1_stripe_restricted_key_live() {
+    assert_detected(
+        "src/config.rs",
+        b"key = \"rk_live_abcdefghijklmnopqrstuvwxyz\";",
+        "stripe-restricted-key-live",
+    );
+}
+
+#[test]
+fn tier1_square_access_token() {
+    assert_detected(
+        "src/config.rs",
+        b"token = \"sq0atp-abcdefghijklmnopqrstuv\";",
+        "square-access-token",
+    );
+}
+
+#[test]
+fn tier1_planetscale_password() {
+    assert_detected(
+        "src/config.rs",
+        b"pw = \"pscale_pw_abcdefghijklmnopqrstuvwxyz123456\";",
+        "planetscale-password",
+    );
+}
+
+#[test]
+fn tier1_sendinblue_api_key() {
+    assert_detected(
+        "src/config.rs",
+        b"key = \"xkeysib-abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789-abcdefghijklmnop\";",
+        "sendinblue-api-key",
+    );
+}
+
+#[test]
+fn tier1_sentry_auth_token() {
+    assert_detected(
+        "src/config.rs",
+        b"token = \"sntrys_eyJpYXQiOjE2OTQwMTY1NzQuNzMsInVybCI6I\";",
+        "sentry-auth-token",
+    );
+}
+
+#[test]
+fn tier1_grafana_service_account_token() {
+    assert_detected(
+        "src/config.rs",
+        b"token = \"glsa_abcdefghijklmnopqrstuvwxyz123456\";",
+        "grafana-service-account-token",
+    );
+}
+
+#[test]
+fn tier1_age_secret_key() {
+    assert_detected(
+        "src/config.rs",
+        b"key = \"AGE-SECRET-KEY-1abcdefghijklmnopqrstuvwxyz0123456789abcdefghijklmnopqrstuv\";",
+        "age-secret-key",
+    );
+}
+
+#[test]
+fn tier1_pgp_private_key_block() {
+    assert_detected(
+        "src/config.rs",
+        b"-----BEGIN PGP PRIVATE KEY BLOCK-----",
+        "pgp-private-key-block",
+    );
+}
+
+#[test]
+fn tier1_fly_io_api_token() {
+    assert_detected(
+        "src/config.rs",
+        b"token = \"fo1_abcdefghijklmnopqrstuvwxyz01234567891234\";",
+        "fly-io-api-token",
+    );
+}
+
+#[test]
+fn tier1_linear_api_key() {
+    assert_detected(
+        "src/config.rs",
+        b"key = \"lin_api_abcdefghijklmnopqrstuvwxyz01234567890123\";",
+        "linear-api-key",
+    );
+}
+
+#[test]
+fn tier1_shopify_admin_token() {
+    assert_detected(
+        "src/config.rs",
+        b"token = \"shpat_abcdef0123456789abcdef0123456789\";",
+        "shopify-access-token-admin",
+    );
+}
+
+#[test]
+fn tier1_hashicorp_vault_service_token() {
+    assert_detected(
+        "src/config.rs",
+        b"token = \"hvs.abcdefghijklmnopqrstuvwx\";",
+        "hashicorp-vault-service-token",
+    );
+}
+
+#[test]
+fn tier1_sourcegraph_access_token() {
+    assert_detected(
+        "src/config.rs",
+        b"token = \"sgp_abcdef0123456789abcdef0123456789abcdef01\";",
+        "sourcegraph-access-token",
+    );
+}
+
+#[test]
+fn tier1_notion_api_token() {
+    assert_detected(
+        "src/config.rs",
+        b"token = \"ntn_abcdefghijklmnopqrstuvwxyz01234567890123\";",
+        "notion-api-token",
+    );
+}
+
+#[test]
+fn tier1_databricks_api_token() {
+    assert_detected(
+        "src/config.rs",
+        b"token = \"dapi0123456789abcdef0123456789abcdef\";",
+        "databricks-api-token",
+    );
+}
+
+#[test]
+fn tier1_sentry_dsn() {
+    assert_detected(
+        "src/config.rs",
+        b"dsn = \"https://abcdef0123456789abcdef0123456789@o123456.ingest.sentry.io/1234567\";",
+        "sentry-dsn",
+    );
+}
+
+#[test]
+fn tier1_mapbox_api_token() {
+    // pk.<60+ chars>.<20+ chars>
+    let part1 = "eyJ1IjoibXl1c2VybmFtZSIsImEiOiJjazFhYmNkZWZnaGlqa2xtbm9wcXJzdHV2d3h5ejAxMjM0NTY3ODkwYWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXowMTIzNDU2Nzg5MGFi";
+    let part2 = "abcdefghijklmnopqrstu";
+    let token = format!("pk.{}.{}", part1, part2);
+    let line = format!("token = \"{}\";", token);
+    assert_detected("src/config.rs", line.as_bytes(), "mapbox-api-token");
+}
+
+// ============================================================================
+// tier 2: additional context-based rules
+// ============================================================================
+
+#[test]
+fn tier2_mssql_connection_string() {
+    assert_detected(
+        "src/config.rs",
+        b"conn = \"Data Source=myserver;Initial Catalog=mydb;User Id=sa;Password=Str0ng!P@ss#2024\";",
+        "mssql-connection-string",
+    );
+}
+
+#[test]
+fn tier2_azure_ad_client_secret() {
+    // regex: (?i)(?:azure|client_secret|client[-_]?secret)\s*[=:]\s*['"]?([0-9a-zA-Z~._-]{34,})['"]?
+    // needs azure/client_secret context, 34+ chars, entropy >= 3.5
+    assert_detected(
+        "src/config.rs",
+        b"azure_client_secret = \"abcD.efgH~ijkL-mnop_qrst.uvwx~yz0123\"",
+        "azure-ad-client-secret",
+    );
+}
+
+#[test]
+fn tier2_okta_api_token() {
+    // regex: (?i)(?:okta)[-_]?(?:api)?[-_]?(?:key|token)\s*[=:]\s*['"]?([0-9a-zA-Z_-]{30,})['"]?
+    // needs "okta" keyword, 30+ alphanumeric chars, entropy >= 3.0
+    assert_detected(
+        "src/config.rs",
+        b"okta_api_token = \"00aBcDeFgHiJkLmNoPqRsTuVwXyZ1234\"",
+        "okta-api-token",
+    );
+}
+
+#[test]
+fn tier2_cohere_api_key() {
+    // regex: (?i)(?:cohere)[-_]?(?:api)?[-_]?(?:key|token)\s*[=:]\s*['"]?([0-9a-zA-Z]{40})['"]?
+    // needs "cohere" keyword, exactly 40 alphanumeric chars, entropy >= 3.5
+    assert_detected(
+        "src/config.rs",
+        b"cohere_api_key = \"aBcDeFgH0123456789iJkLmNoPqRsTuVwXyZ0123\"",
+        "cohere-api-key",
+    );
+}

@@ -210,7 +210,7 @@ include_patterns = [
 
 ### `[[rules]]`
 
-Custom detection rules. These are merged with the 43 built-in rules.
+Custom detection rules. These are merged with the 109 built-in rules.
 
 ```toml
 [[rules]]

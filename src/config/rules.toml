@@ -322,3 +322,501 @@ regex = "(?i)(?:api[-_]?key|apikey|api[-_]?token)\\s*[=:]\\s*['\"]([^'\"]{16,})[
 secret_group = 1
 keywords = ["api_key", "apikey", "api-key", "api_token", "api-token"]
 entropy_threshold = 4.0
+
+# ============================================================================
+# additional tier 1: prefix-based rules (very low false positives)
+# ============================================================================
+
+[[rules]]
+id = "gcp-api-key"
+description = "GCP API key starting with AIza"
+regex = "(AIza[0-9A-Za-z_-]{35})"
+secret_group = 1
+keywords = ["aiza"]
+
+[[rules]]
+id = "gcp-oauth-client-secret"
+description = "GCP OAuth client secret"
+regex = "(GOCSPX-[0-9a-zA-Z_-]{28})"
+secret_group = 1
+keywords = ["gocspx-"]
+
+[[rules]]
+id = "alibaba-access-key-id"
+description = "Alibaba Cloud access key ID"
+regex = "(LTAI[0-9A-Za-z]{12,20})"
+secret_group = 1
+keywords = ["ltai"]
+
+[[rules]]
+id = "gitlab-pipeline-trigger-token"
+description = "GitLab pipeline trigger token"
+regex = "(glptt-[0-9a-zA-Z_-]{20,})"
+secret_group = 1
+keywords = ["glptt-"]
+
+[[rules]]
+id = "gitlab-runner-registration-token"
+description = "GitLab runner registration token"
+regex = "(glrt-[0-9a-zA-Z_-]{20,})"
+secret_group = 1
+keywords = ["glrt-"]
+
+[[rules]]
+id = "gitlab-ci-job-token"
+description = "GitLab CI job token"
+regex = "(glcbt-[0-9a-zA-Z_-]{20,})"
+secret_group = 1
+keywords = ["glcbt-"]
+
+[[rules]]
+id = "huggingface-access-token"
+description = "HuggingFace access token"
+regex = "(hf_[0-9a-zA-Z]{34,})"
+secret_group = 1
+keywords = ["hf_"]
+
+[[rules]]
+id = "replicate-api-token"
+description = "Replicate API token"
+regex = "(r8_[0-9a-zA-Z]{38,})"
+secret_group = 1
+keywords = ["r8_"]
+
+[[rules]]
+id = "discord-bot-token"
+description = "Discord bot token"
+regex = "(?i)(?:discord|bot)[-_]?(?:token)?\\s*[=:]\\s*['\"]?([0-9]{17,20}\\.[A-Za-z0-9_-]{6}\\.[A-Za-z0-9_-]{27,})['\"]?"
+secret_group = 1
+keywords = ["discord", "bot"]
+entropy_threshold = 3.0
+
+[[rules]]
+id = "discord-webhook-url"
+description = "Discord webhook URL"
+regex = "(https://discord(?:app)?\\.com/api/webhooks/[0-9]+/[A-Za-z0-9_-]+)"
+secret_group = 1
+keywords = ["discord.com/api/webhooks", "discordapp.com/api/webhooks"]
+
+[[rules]]
+id = "telegram-bot-token"
+description = "Telegram bot token"
+regex = "(?i)(?:telegram|tg|bot)[-_]?(?:token)?\\s*[=:]\\s*['\"]?([0-9]{8,10}:[A-Za-z0-9_-]{35})['\"]?"
+secret_group = 1
+keywords = ["telegram", "bot"]
+entropy_threshold = 3.0
+
+[[rules]]
+id = "stripe-restricted-key-live"
+description = "Stripe live restricted key"
+regex = "(rk_live_[0-9a-zA-Z]{24,})"
+secret_group = 1
+keywords = ["rk_live_"]
+
+[[rules]]
+id = "stripe-restricted-key-test"
+description = "Stripe test restricted key"
+regex = "(rk_test_[0-9a-zA-Z]{24,})"
+secret_group = 1
+keywords = ["rk_test_"]
+
+[[rules]]
+id = "square-access-token"
+description = "Square access token"
+regex = "(sq0atp-[0-9a-zA-Z_-]{22,})"
+secret_group = 1
+keywords = ["sq0atp-"]
+
+[[rules]]
+id = "square-oauth-secret"
+description = "Square OAuth secret"
+regex = "(sq0csp-[0-9a-zA-Z_-]{40,})"
+secret_group = 1
+keywords = ["sq0csp-"]
+
+[[rules]]
+id = "planetscale-password"
+description = "PlanetScale database password"
+regex = "(pscale_pw_[0-9a-zA-Z_-]{30,})"
+secret_group = 1
+keywords = ["pscale_pw_"]
+
+[[rules]]
+id = "planetscale-api-token"
+description = "PlanetScale API token"
+regex = "(pscale_tkn_[0-9a-zA-Z_-]{30,})"
+secret_group = 1
+keywords = ["pscale_tkn_"]
+
+[[rules]]
+id = "mailgun-private-api-token"
+description = "Mailgun private API token"
+regex = "(key-[0-9a-f]{32})"
+secret_group = 1
+keywords = ["key-"]
+
+[[rules]]
+id = "mailchimp-api-key"
+description = "Mailchimp API key"
+regex = "([0-9a-f]{32}-us[0-9]{1,2})"
+secret_group = 1
+keywords = ["-us"]
+entropy_threshold = 3.5
+
+[[rules]]
+id = "sendinblue-api-key"
+description = "Brevo (Sendinblue) API key"
+regex = "(xkeysib-[0-9a-f]{64}-[0-9a-zA-Z]{16})"
+secret_group = 1
+keywords = ["xkeysib-"]
+
+[[rules]]
+id = "buildkite-api-token"
+description = "Buildkite API token"
+regex = "(bkua_[0-9a-f]{40})"
+secret_group = 1
+keywords = ["bkua_"]
+
+[[rules]]
+id = "grafana-cloud-api-token"
+description = "Grafana Cloud API token"
+regex = "(glc_[0-9a-zA-Z+/=-]{32,})"
+secret_group = 1
+keywords = ["glc_"]
+
+[[rules]]
+id = "grafana-service-account-token"
+description = "Grafana service account token"
+regex = "(glsa_[0-9a-zA-Z_]{32,})"
+secret_group = 1
+keywords = ["glsa_"]
+
+[[rules]]
+id = "sentry-auth-token"
+description = "Sentry auth token"
+regex = "(sntrys_[0-9a-zA-Z_-]{36,})"
+secret_group = 1
+keywords = ["sntrys_"]
+
+[[rules]]
+id = "dynatrace-api-token"
+description = "Dynatrace API token"
+regex = "(dt0c01\\.[0-9A-Z]{24}\\.[0-9A-Z]{64})"
+secret_group = 1
+keywords = ["dt0c01."]
+
+[[rules]]
+id = "rubygems-api-key"
+description = "RubyGems API key"
+regex = "(rubygems_[0-9a-f]{48})"
+secret_group = 1
+keywords = ["rubygems_"]
+
+[[rules]]
+id = "nuget-api-key"
+description = "NuGet API key"
+regex = "(oy2[0-9a-z]{43})"
+secret_group = 1
+keywords = ["oy2"]
+
+[[rules]]
+id = "age-secret-key"
+description = "age encryption secret key"
+regex = "(AGE-SECRET-KEY-1[0-9a-z]{58})"
+secret_group = 1
+keywords = ["age-secret-key-"]
+
+[[rules]]
+id = "pgp-private-key-block"
+description = "PGP private key block"
+regex = "(-----BEGIN PGP PRIVATE KEY BLOCK-----)"
+secret_group = 1
+keywords = ["-----begin pgp", "private key block"]
+
+[[rules]]
+id = "fly-io-api-token"
+description = "Fly.io API token"
+regex = "(fo1_[0-9a-zA-Z_-]{40,})"
+secret_group = 1
+keywords = ["fo1_"]
+
+[[rules]]
+id = "pulumi-access-token"
+description = "Pulumi access token"
+regex = "(pul-[0-9a-f]{40})"
+secret_group = 1
+keywords = ["pul-"]
+
+[[rules]]
+id = "linear-api-key"
+description = "Linear API key"
+regex = "(lin_api_[0-9a-zA-Z]{40,})"
+secret_group = 1
+keywords = ["lin_api_"]
+
+[[rules]]
+id = "airtable-api-key"
+description = "Airtable API key"
+regex = "(?i)(?:airtable)[-_]?(?:api)?[-_]?key\\s*[=:]\\s*['\"]?(key[0-9a-zA-Z]{14})['\"]?"
+secret_group = 1
+keywords = ["airtable"]
+
+[[rules]]
+id = "shopify-access-token-admin"
+description = "Shopify admin API access token"
+regex = "(shpat_[0-9a-fA-F]{32})"
+secret_group = 1
+keywords = ["shpat_"]
+
+[[rules]]
+id = "shopify-access-token-custom-app"
+description = "Shopify custom app access token"
+regex = "(shpca_[0-9a-fA-F]{32})"
+secret_group = 1
+keywords = ["shpca_"]
+
+[[rules]]
+id = "shopify-access-token-private-app"
+description = "Shopify private app access token"
+regex = "(shppa_[0-9a-fA-F]{32})"
+secret_group = 1
+keywords = ["shppa_"]
+
+[[rules]]
+id = "facebook-access-token"
+description = "Facebook access token"
+regex = "(EAA[0-9a-zA-Z]{20,})"
+secret_group = 1
+keywords = ["eaa"]
+entropy_threshold = 3.5
+
+[[rules]]
+id = "hashicorp-vault-service-token"
+description = "HashiCorp Vault service token"
+regex = "(hvs\\.[0-9a-zA-Z_-]{24,})"
+secret_group = 1
+keywords = ["hvs."]
+
+[[rules]]
+id = "hashicorp-vault-batch-token"
+description = "HashiCorp Vault batch token"
+regex = "(hvb\\.[0-9a-zA-Z_-]{24,})"
+secret_group = 1
+keywords = ["hvb."]
+
+[[rules]]
+id = "sourcegraph-access-token"
+description = "Sourcegraph access token"
+regex = "(sgp_[0-9a-fA-F]{40,})"
+secret_group = 1
+keywords = ["sgp_"]
+
+[[rules]]
+id = "figma-personal-access-token"
+description = "Figma personal access token"
+regex = "(figd_[0-9a-zA-Z_-]{40,})"
+secret_group = 1
+keywords = ["figd_"]
+
+[[rules]]
+id = "mapbox-api-token"
+description = "Mapbox API token"
+regex = "(pk\\.[0-9a-zA-Z_-]{60,}\\.[0-9a-zA-Z_-]{20,})"
+secret_group = 1
+keywords = ["pk."]
+
+[[rules]]
+id = "dropbox-api-token"
+description = "Dropbox API token"
+regex = "(sl\\.[0-9a-zA-Z_-]{100,})"
+secret_group = 1
+keywords = ["sl."]
+entropy_threshold = 3.5
+
+[[rules]]
+id = "sentry-dsn"
+description = "Sentry DSN URL"
+regex = "(https://[0-9a-f]{32}@[a-z0-9.-]*\\.ingest\\.sentry\\.io/[0-9]+)"
+secret_group = 1
+keywords = ["ingest.sentry.io"]
+
+[[rules]]
+id = "launchdarkly-sdk-key"
+description = "LaunchDarkly SDK key"
+regex = "(sdk-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})"
+secret_group = 1
+keywords = ["sdk-"]
+entropy_threshold = 3.0
+
+[[rules]]
+id = "notion-api-token"
+description = "Notion API token"
+regex = "(ntn_[0-9a-zA-Z]{40,})"
+secret_group = 1
+keywords = ["ntn_"]
+
+[[rules]]
+id = "databricks-api-token"
+description = "Databricks API token"
+regex = "(dapi[0-9a-f]{32})"
+secret_group = 1
+keywords = ["dapi"]
+
+[[rules]]
+id = "twilio-api-key"
+description = "Twilio API key"
+regex = "(?i)(?:twilio)\\s*.*?(SK[0-9a-fA-F]{32})"
+secret_group = 1
+keywords = ["twilio"]
+
+# ============================================================================
+# additional tier 2: context-based rules (with entropy)
+# ============================================================================
+
+[[rules]]
+id = "azure-ad-client-secret"
+description = "Azure AD client secret"
+regex = "(?i)(?:azure|client_secret|client[-_]?secret)\\s*[=:]\\s*['\"]?([0-9a-zA-Z~._-]{34,})['\"]?"
+secret_group = 1
+keywords = ["azure", "client_secret"]
+entropy_threshold = 3.5
+
+[[rules]]
+id = "azure-devops-pat"
+description = "Azure DevOps personal access token"
+regex = "(?i)(?:azure|devops)[-_]?(?:pat|token)\\s*[=:]\\s*['\"]?([0-9a-z]{52})['\"]?"
+secret_group = 1
+keywords = ["azure", "devops"]
+entropy_threshold = 3.5
+
+[[rules]]
+id = "alibaba-secret-key"
+description = "Alibaba Cloud secret key"
+regex = "(?i)(?:alibaba|aliyun)[-_]?(?:secret|access)[-_]?(?:key)?\\s*[=:]\\s*['\"]?([0-9a-zA-Z]{30})['\"]?"
+secret_group = 1
+keywords = ["alibaba", "aliyun"]
+entropy_threshold = 3.5
+
+[[rules]]
+id = "mssql-connection-string"
+description = "MSSQL connection string with password"
+regex = "(?i)(?:Server|Data Source)\\s*=\\s*[^;]+;\\s*.*?(?:Password|Pwd)\\s*=\\s*([^;'\"]{8,})"
+secret_group = 1
+keywords = ["server", "data source", "password", "pwd"]
+entropy_threshold = 3.0
+
+[[rules]]
+id = "pagerduty-api-key"
+description = "PagerDuty API key"
+regex = "(?i)(?:pagerduty)[-_]?(?:api)?[-_]?(?:key|token)\\s*[=:]\\s*['\"]?([0-9a-zA-Z+/=-]{20,})['\"]?"
+secret_group = 1
+keywords = ["pagerduty"]
+entropy_threshold = 3.0
+
+[[rules]]
+id = "circleci-api-token"
+description = "CircleCI API token"
+regex = "(?i)(?:circleci|circle)[-_]?(?:api)?[-_]?(?:key|token)\\s*[=:]\\s*['\"]?([0-9a-f]{40})['\"]?"
+secret_group = 1
+keywords = ["circleci"]
+entropy_threshold = 3.0
+
+[[rules]]
+id = "vercel-api-token"
+description = "Vercel API token"
+regex = "(?i)(?:vercel)[-_]?(?:api)?[-_]?(?:key|token)\\s*[=:]\\s*['\"]?([0-9a-zA-Z]{24,})['\"]?"
+secret_group = 1
+keywords = ["vercel"]
+entropy_threshold = 3.5
+
+[[rules]]
+id = "netlify-access-token"
+description = "Netlify access token"
+regex = "(?i)(?:netlify)[-_]?(?:api)?[-_]?(?:key|token|auth)\\s*[=:]\\s*['\"]?([0-9a-zA-Z_-]{40,})['\"]?"
+secret_group = 1
+keywords = ["netlify"]
+entropy_threshold = 3.5
+
+[[rules]]
+id = "atlassian-api-token"
+description = "Atlassian/Jira API token"
+regex = "(?i)(?:atlassian|jira)[-_]?(?:api)?[-_]?(?:key|token)\\s*[=:]\\s*['\"]?([0-9a-zA-Z]{24,})['\"]?"
+secret_group = 1
+keywords = ["atlassian", "jira"]
+entropy_threshold = 3.5
+
+[[rules]]
+id = "twitter-bearer-token"
+description = "Twitter/X bearer token"
+regex = "(?i)(?:twitter|tweet)[-_]?(?:bearer)?[-_]?(?:token)\\s*[=:]\\s*['\"]?([0-9a-zA-Z%]{50,})['\"]?"
+secret_group = 1
+keywords = ["twitter", "bearer"]
+entropy_threshold = 3.5
+
+[[rules]]
+id = "okta-api-token"
+description = "Okta API token"
+regex = "(?i)(?:okta)[-_]?(?:api)?[-_]?(?:key|token)\\s*[=:]\\s*['\"]?([0-9a-zA-Z_-]{30,})['\"]?"
+secret_group = 1
+keywords = ["okta"]
+entropy_threshold = 3.0
+
+[[rules]]
+id = "algolia-api-key"
+description = "Algolia API key"
+regex = "(?i)(?:algolia)[-_]?(?:api)?[-_]?(?:key)\\s*[=:]\\s*['\"]?([0-9a-f]{32})['\"]?"
+secret_group = 1
+keywords = ["algolia"]
+entropy_threshold = 3.0
+
+[[rules]]
+id = "elastic-api-key"
+description = "Elastic API key"
+regex = "(?i)(?:elastic|elasticsearch|kibana)[-_]?(?:api)?[-_]?(?:key|token)\\s*[=:]\\s*['\"]?([0-9a-zA-Z_-]{30,})['\"]?"
+secret_group = 1
+keywords = ["elastic"]
+entropy_threshold = 3.5
+
+[[rules]]
+id = "splunk-hec-token"
+description = "Splunk HEC token"
+regex = "(?i)(?:splunk)[-_]?(?:hec)?[-_]?(?:token)\\s*[=:]\\s*['\"]?([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})['\"]?"
+secret_group = 1
+keywords = ["splunk"]
+entropy_threshold = 3.0
+
+[[rules]]
+id = "postmark-server-token"
+description = "Postmark server token"
+regex = "(?i)(?:postmark)[-_]?(?:server)?[-_]?(?:token|key)\\s*[=:]\\s*['\"]?([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})['\"]?"
+secret_group = 1
+keywords = ["postmark"]
+entropy_threshold = 3.0
+
+[[rules]]
+id = "gitlab-deploy-token"
+description = "GitLab deploy token"
+regex = "(?i)(?:gitlab)[-_]?(?:deploy)?[-_]?(?:token)\\s*[=:]\\s*['\"]?([0-9a-zA-Z_-]{20,})['\"]?"
+secret_group = 1
+keywords = ["gitlab", "deploy_token"]
+entropy_threshold = 3.0
+
+[[rules]]
+id = "cohere-api-key"
+description = "Cohere API key"
+regex = "(?i)(?:cohere)[-_]?(?:api)?[-_]?(?:key|token)\\s*[=:]\\s*['\"]?([0-9a-zA-Z]{40})['\"]?"
+secret_group = 1
+keywords = ["cohere"]
+entropy_threshold = 3.5
+
+# ============================================================================
+# additional tier 3: catch-all rules (highest false positive risk)
+# ============================================================================
+
+[[rules]]
+id = "generic-token-assignment"
+description = "Generic token assignment"
+regex = "(?i)(?:auth_token|access_token|secret_token)\\s*[=:]\\s*['\"]([^'\"]{16,})['\"]"
+secret_group = 1
+keywords = ["auth_token", "access_token", "secret_token"]
+entropy_threshold = 4.0

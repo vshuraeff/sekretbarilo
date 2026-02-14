@@ -1,8 +1,9 @@
 // allowlist/whitelist logic
 //
 // provides global path filtering, stopword checking, variable reference
-// detection, and documentation file exception handling.
+// detection, template line detection, and documentation file exception handling.
 
+use memchr::memmem;
 use regex::bytes::{Regex, RegexBuilder};
 
 /// default file extensions to skip (binary and non-source files)
@@ -122,8 +123,34 @@ const VAR_PATTERNS: &[&str] = &[
     r"^\$[A-Za-z_][A-Za-z0-9_]*$",
     // windows: %VAR%
     r"^%[A-Za-z_][A-Za-z0-9_]*%$",
-    // template engines: {{var}}, {{ var }}
-    r"^\{\{\s*[A-Za-z_][A-Za-z0-9_.]*\s*\}\}$",
+    // template engines: {{var}}, {{ var }}, {{ var | filter }}, {{ .Values.x }}
+    // requires first char after {{ to be a letter/dot/underscore (not a quote)
+    // to avoid matching hardcoded secrets in jinja2 literals like {{ 'sk_live_...' }}
+    r"^\{\{-?\s*[A-Za-z_.][^}]*\}\}$",
+    // triple-mustache (unescaped): {{{var}}}
+    r"^\{\{\{\s*[\w.]+\s*\}\}\}$",
+    // github actions: ${{ secrets.X }}, ${{ env.VAR }}
+    r"^\$\{\{\s*[A-Za-z_.][^}]*\}\}$",
+    // erb/ejs: <%= expr %>, <%- expr %>
+    r"^<%[=-]?\s*[A-Za-z_$@][^%]*-?%>$",
+    // php short: <?= $var ?>
+    r"^<\?=\s*\$\w[^?]*\?>$",
+    // terraform: ${var.name}, ${data.x.y}, ${local.x}, ${module.x}
+    r"^\$\{(?:var|data|local|module)\.\w[\w.]*\}$",
+    // shell defaults: ${VAR:-default}, ${VAR:=value}, ${VAR:+alt}, ${VAR:?err}
+    r"^\$\{[A-Za-z_]\w*[:][+\-=?][^}]*\}$",
+    // angle-bracket placeholders: <YOUR_API_KEY>, <token>
+    r"^<[A-Za-z][\w-]*>$",
+    // single-brace placeholders: {password}, {api_key} (max 30 chars to avoid matching random strings)
+    r"^\{[A-Za-z_][\w]{0,30}\}$",
+    // pug/spring: #{var}
+    r"^#\{[\w.]+\}$",
+    // velocity: $!{var}, $!var
+    r"^\$!\{?[\w.]+\}?$",
+    // ognl/struts: %{expr}
+    r"^%\{.+\}$",
+    // c# string format: {0}, {1}
+    r"^\{[0-9]+\}$",
     // javascript/node: process.env.VAR
     r"^process\.env\.[A-Za-z_][A-Za-z0-9_]*$",
     // python: os.environ["VAR"], os.environ.get("VAR"), os.getenv("VAR")
@@ -342,6 +369,30 @@ impl CompiledAllowlist {
             }
         }
 
+        false
+    }
+
+    /// check if a line contains template syntax markers.
+    /// looks for jinja2/django block tags ({%...%}), comment tags ({#...#}),
+    /// erb/ejs tags (<%...%>), and php short echo tags (<?=...?>).
+    /// used to skip tier 2/3 findings on lines that are clearly templates.
+    pub fn is_template_line(&self, line: &[u8]) -> bool {
+        // jinja2/django/twig block tags: {% ... %}
+        if memmem::find(line, b"{%").is_some() && memmem::find(line, b"%}").is_some() {
+            return true;
+        }
+        // jinja2/django comment tags: {# ... #}
+        if memmem::find(line, b"{#").is_some() && memmem::find(line, b"#}").is_some() {
+            return true;
+        }
+        // erb/ejs tags: <% ... %>
+        if memmem::find(line, b"<%").is_some() && memmem::find(line, b"%>").is_some() {
+            return true;
+        }
+        // php short echo tag: <?= ... ?> (template shorthand only, not <?php)
+        if memmem::find(line, b"<?=").is_some() && memmem::find(line, b"?>").is_some() {
+            return true;
+        }
         false
     }
 
@@ -666,5 +717,148 @@ mod tests {
         assert!(!al.is_variable_reference(b"ghp_ABCDEFreal1234567890abcdefgh"));
         assert!(!al.is_variable_reference(b"sk_live_4eC39HqLyjWDarjtT1zdp7dc"));
         assert!(!al.is_variable_reference(b"my-actual-password-123"));
+    }
+
+    // -- expanded template variable reference tests --
+
+    #[test]
+    fn detect_jinja2_helm_templates() {
+        let al = default_al();
+        // jinja2 with filters
+        assert!(al.is_variable_reference(b"{{ password | default('') }}"));
+        // helm: .Values.x
+        assert!(al.is_variable_reference(b"{{ .Values.database.password }}"));
+        // go template function
+        assert!(al.is_variable_reference(b"{{ include \"mychart.name\" . }}"));
+        // trim whitespace markers
+        assert!(al.is_variable_reference(b"{{- .Values.secret -}}"));
+    }
+
+    #[test]
+    fn detect_triple_mustache() {
+        let al = default_al();
+        assert!(al.is_variable_reference(b"{{{password}}}"));
+        assert!(al.is_variable_reference(b"{{{ api.key }}}"));
+    }
+
+    #[test]
+    fn detect_github_actions_refs() {
+        let al = default_al();
+        assert!(al.is_variable_reference(b"${{ secrets.API_KEY }}"));
+        assert!(al.is_variable_reference(b"${{ env.DATABASE_URL }}"));
+        assert!(al.is_variable_reference(b"${{ github.token }}"));
+    }
+
+    #[test]
+    fn detect_erb_ejs_refs() {
+        let al = default_al();
+        assert!(al.is_variable_reference(b"<%= ENV['SECRET_KEY'] %>"));
+        assert!(al.is_variable_reference(b"<%- config.password %>"));
+        assert!(al.is_variable_reference(b"<% db_password %>"));
+    }
+
+    #[test]
+    fn detect_php_short_refs() {
+        let al = default_al();
+        assert!(al.is_variable_reference(b"<?= $db_password ?>"));
+    }
+
+    #[test]
+    fn jinja2_literal_secrets_not_skipped() {
+        let al = default_al();
+        // hardcoded secrets inside {{ }} should NOT be treated as var refs
+        assert!(!al.is_variable_reference(b"{{ 'sk_live_real_secret_key_here' }}"));
+        assert!(!al.is_variable_reference(b"{{ \"ghp_ABCDEFreal1234567890abcde\" }}"));
+    }
+
+    #[test]
+    fn detect_terraform_refs() {
+        let al = default_al();
+        assert!(al.is_variable_reference(b"${var.db_password}"));
+        assert!(al.is_variable_reference(b"${data.aws_ssm.secret}"));
+        assert!(al.is_variable_reference(b"${local.api_key}"));
+        assert!(al.is_variable_reference(b"${module.auth.token}"));
+    }
+
+    #[test]
+    fn detect_shell_defaults() {
+        let al = default_al();
+        assert!(al.is_variable_reference(b"${DB_PASSWORD:-default}"));
+        assert!(al.is_variable_reference(b"${API_KEY:=fallback}"));
+        assert!(al.is_variable_reference(b"${TOKEN:+alternate}"));
+        assert!(al.is_variable_reference(b"${SECRET:?error msg}"));
+    }
+
+    #[test]
+    fn detect_angle_bracket_placeholders() {
+        let al = default_al();
+        assert!(al.is_variable_reference(b"<YOUR_API_KEY>"));
+        assert!(al.is_variable_reference(b"<token>"));
+        assert!(al.is_variable_reference(b"<api-key>"));
+    }
+
+    #[test]
+    fn detect_single_brace_placeholders() {
+        let al = default_al();
+        assert!(al.is_variable_reference(b"{password}"));
+        assert!(al.is_variable_reference(b"{api_key}"));
+    }
+
+    #[test]
+    fn detect_pug_spring_refs() {
+        let al = default_al();
+        assert!(al.is_variable_reference(b"#{db.password}"));
+        assert!(al.is_variable_reference(b"#{apiKey}"));
+    }
+
+    #[test]
+    fn detect_velocity_refs() {
+        let al = default_al();
+        assert!(al.is_variable_reference(b"$!{password}"));
+        assert!(al.is_variable_reference(b"$!apiKey"));
+    }
+
+    #[test]
+    fn detect_ognl_struts_refs() {
+        let al = default_al();
+        assert!(al.is_variable_reference(b"%{secret}"));
+        assert!(al.is_variable_reference(b"%{#session.token}"));
+    }
+
+    #[test]
+    fn detect_csharp_format_refs() {
+        let al = default_al();
+        assert!(al.is_variable_reference(b"{0}"));
+        assert!(al.is_variable_reference(b"{1}"));
+    }
+
+    // -- template line detection tests --
+
+    #[test]
+    fn detect_template_lines() {
+        let al = default_al();
+        // jinja2 block tags
+        assert!(al.is_template_line(b"{% if use_ssl %}password = {{ db_pass }}{% endif %}"));
+        assert!(al.is_template_line(b"{% set api_key = vault_lookup('key') %}"));
+        // jinja2 comment tags
+        assert!(al.is_template_line(b"{# this sets the database password #}"));
+        // erb tags
+        assert!(
+            al.is_template_line(b"<% if Rails.env.production? %>secret = <%= secret %><% end %>")
+        );
+        // php short echo tag (template shorthand)
+        assert!(al.is_template_line(b"<?= $db_password ?>"));
+        // regular <?php ... ?> is NOT a template marker (it's normal PHP code)
+        assert!(!al.is_template_line(b"<?php echo $config['password']; ?>"));
+    }
+
+    #[test]
+    fn non_template_lines_not_detected() {
+        let al = default_al();
+        assert!(!al.is_template_line(b"password = \"my_actual_secret_123\""));
+        assert!(!al.is_template_line(b"api_key = \"sk_live_abc123def456\""));
+        // partial markers should not match
+        assert!(!al.is_template_line(b"x = 5 % 3 # modulo"));
+        assert!(!al.is_template_line(b"price < 100"));
     }
 }

@@ -12,7 +12,7 @@ High-performance secret scanner for git workflows and AI coding agents. Catches 
 ## Why sekretbarilo?
 
 - **Fast**: a typical commit scans in ~2.5 µs, a 400-file diff in ~3.7 ms
-- **43 built-in rules** organized by precision (prefix-based, context-aware, catch-all)
+- **109 built-in rules** organized by precision (prefix-based, context-aware, catch-all)
 - **Low false positives**: Shannon entropy, stopwords, hash detection, variable reference detection
 - **Pre-commit hook**: automatic scanning of staged changes on every commit
 - **Working tree audit**: scan all tracked files for secrets
@@ -69,7 +69,7 @@ When Claude Code tries to read a file containing secrets, the read is blocked be
 | [Configuration](configuration/) | Hierarchical config, allowlists, custom rules |
 | [CLI Reference](cli-reference/) | Complete command and flag reference |
 | [Agent Hooks](agent-hooks/) | Claude Code integration details |
-| [Rules Reference](rules-reference/) | All 43 built-in rules and custom rule syntax |
+| [Rules Reference](rules-reference/) | All 109 built-in rules and custom rule syntax |
 | [Performance](performance/) | Benchmarks and optimization details |
 | [Architecture](architecture/) | Internals and design decisions |
 | [Examples](examples/) | Practical workflows and configuration examples |

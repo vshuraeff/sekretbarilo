@@ -45,6 +45,9 @@ pub struct CompiledRule {
     pub secret_group: usize,
     pub keywords: Vec<String>,
     pub entropy_threshold: Option<f64>,
+    /// true if the rule uses context-dependent matching (case-insensitive
+    /// assignment patterns). set automatically from the regex pattern.
+    pub context_dependent: bool,
 }
 
 impl std::fmt::Debug for CompiledRule {
@@ -108,12 +111,16 @@ pub fn compile_rules(rules: &[Rule]) -> Result<CompiledScanner, String> {
             .size_limit(1 << 20)
             .build()
             .map_err(|e| format!("failed to compile regex for rule '{}': {}", rule.id, e))?;
+        // tier 2/3 rules use (?i) case-insensitive flag with assignment patterns.
+        // tier 1 rules with entropy match distinctive token prefixes directly.
+        let context_dependent = rule.regex_pattern.starts_with("(?i)");
         compiled_rules.push(CompiledRule {
             id: rule.id.clone(),
             regex,
             secret_group: rule.secret_group,
             keywords: rule.keywords.clone(),
             entropy_threshold: rule.entropy_threshold,
+            context_dependent,
         });
     }
 

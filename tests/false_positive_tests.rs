@@ -648,3 +648,155 @@ fn fp_error_messages_with_keywords() {
     );
     assert_no_findings("src/errors.rs", b"\"api_key not found in request headers\"");
 }
+
+// ============================================================================
+// category 9: template syntax false positives
+// ============================================================================
+
+#[test]
+fn fp_helm_values_password_template() {
+    // helm chart: password comes from values, not hardcoded
+    assert_no_findings(
+        "templates/deployment.yaml",
+        b"            - name: DB_PASSWORD\n              value: {{ .Values.database.password }}",
+    );
+}
+
+#[test]
+fn fp_helm_values_secret_ref() {
+    assert_no_findings(
+        "templates/deployment.yaml",
+        b"        password: {{ .Values.auth.password | b64enc }}",
+    );
+}
+
+#[test]
+fn fp_ansible_vault_ref() {
+    assert_no_findings("playbook.yml", b"    api_key: \"{{ vault_api_key }}\"");
+}
+
+#[test]
+fn fp_ansible_lookup_password() {
+    assert_no_findings(
+        "roles/db/tasks/main.yml",
+        b"    password: \"{{ lookup('vault', 'secret/db') }}\"",
+    );
+}
+
+#[test]
+fn fp_terraform_var_password() {
+    assert_no_findings("main.tf", b"  password = ${var.db_password}");
+}
+
+#[test]
+fn fp_terraform_data_secret() {
+    assert_no_findings(
+        "main.tf",
+        b"  secret_key = ${data.aws_ssm_parameter.secret.value}",
+    );
+}
+
+#[test]
+fn fp_erb_env_password() {
+    assert_no_findings(
+        "config/database.yml.erb",
+        b"  password: <%= ENV['DATABASE_PASSWORD'] %>",
+    );
+}
+
+#[test]
+fn fp_angle_bracket_placeholder_api_key() {
+    assert_no_findings("docs/setup.md", b"  api_key: \"<YOUR_API_KEY>\"");
+}
+
+#[test]
+fn fp_angle_bracket_placeholder_token() {
+    assert_no_findings("README.md", b"Authorization: Bearer <token>");
+}
+
+#[test]
+fn fp_jinja2_block_tag_password() {
+    // full line has jinja2 block tags -- tier 2/3 rules should skip
+    assert_no_findings(
+        "templates/config.j2",
+        b"{% if database.password %}password = {{ database.password }}{% endif %}",
+    );
+}
+
+#[test]
+fn fp_jinja2_set_secret() {
+    assert_no_findings(
+        "templates/config.j2",
+        b"{% set api_secret = lookup('vault', 'secret/api') %}",
+    );
+}
+
+#[test]
+fn fp_github_actions_secret_ref() {
+    assert_no_findings(
+        ".github/workflows/deploy.yml",
+        b"  API_KEY: ${{ secrets.API_KEY }}",
+    );
+}
+
+#[test]
+fn fp_github_actions_env_ref() {
+    assert_no_findings(
+        ".github/workflows/ci.yml",
+        b"  DATABASE_URL: ${{ env.DATABASE_URL }}",
+    );
+}
+
+#[test]
+fn fp_erb_config_password() {
+    // erb template with conditional -- template line markers should suppress tier 2
+    assert_no_findings(
+        "config/app.rb.erb",
+        b"<% if production? %>password = '<%= db_password %>'<% end %>",
+    );
+}
+
+#[test]
+fn fp_php_template_password() {
+    assert_no_findings("config.php", b"<?php echo $config['password']; ?>");
+}
+
+#[test]
+fn fp_velocity_template_secret() {
+    assert_no_findings("template.vm", b"secret = $!{apiSecret}");
+}
+
+#[test]
+fn fp_spring_template_password() {
+    assert_no_findings(
+        "application.properties",
+        b"spring.datasource.password = #{db.password}",
+    );
+}
+
+#[test]
+fn fp_shell_default_password() {
+    assert_no_findings("deploy.sh", b"PASSWORD=${DB_PASSWORD:-defaultpass}");
+}
+
+#[test]
+fn fp_csharp_format_placeholder() {
+    assert_no_findings("src/Logger.cs", b"secret = \"{0}\"");
+}
+
+// tier 1 prefix rules should STILL detect secrets on template lines
+#[test]
+fn tp_tier1_on_template_line() {
+    // a real AWS key on a template line should still be detected
+    let (scanner, al) = default_scanner_and_allowlist();
+    let file = make_file(
+        "templates/config.j2",
+        vec![(1, b"{% if use_aws %}key = AKIAIOSFODNN7ABCDEFG{% endif %}")],
+    );
+    let findings = scan(&[file], &scanner, &al);
+    assert!(
+        !findings.is_empty(),
+        "tier 1 AWS key should still be detected on template lines"
+    );
+    assert_eq!(findings[0].rule_id, "aws-access-key-id");
+}
