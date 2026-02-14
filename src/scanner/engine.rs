@@ -31,6 +31,7 @@ pub struct Finding {
 ///   4. extract secret via capture group
 ///   5. per-rule allowlist check (value regex + path match)
 ///   6. variable reference detection (skip $VAR, ${VAR}, etc.)
+///      6b. template line detection (skip tier 2/3 on template lines)
 ///   7. stopword filter (skip if secret contains stopword)
 ///   8. hash detection (skip if it's a hash)
 ///   9. entropy evaluation (with doc file bonus if applicable)
@@ -107,7 +108,9 @@ fn is_password_rule(rule_id: &str) -> bool {
 /// these rules need full stopword filtering but use standard entropy checks,
 /// not the password strength heuristic.
 fn is_credential_rule(rule_id: &str) -> bool {
-    rule_id.starts_with("database-connection-string-") || rule_id == "redis-connection-string"
+    rule_id.starts_with("database-connection-string-")
+        || rule_id == "redis-connection-string"
+        || rule_id == "mssql-connection-string"
 }
 
 /// context for scanning a single line
@@ -129,9 +132,11 @@ fn scan_line(ctx: &ScanLineContext<'_>, candidate_bits: &mut [bool], findings: &
     }
 
     // step 2: aho-corasick keyword pre-filter
-    // find which rules have keywords present in this line
+    // find which rules have keywords present in this line.
+    // uses overlapping iteration to ensure longer keywords (e.g. "age-secret-key-")
+    // are found even when a shorter keyword (e.g. "secret") overlaps with them.
     let mut has_candidates = false;
-    for mat in ctx.scanner.automaton.find_iter(ctx.line) {
+    for mat in ctx.scanner.automaton.find_overlapping_iter(ctx.line) {
         let pattern_idx = mat.pattern().as_usize();
         if let Some(rule_indices) = ctx.scanner.keyword_to_rules.get(pattern_idx) {
             for &rule_idx in rule_indices {
@@ -183,6 +188,19 @@ fn scan_line(ctx: &ScanLineContext<'_>, candidate_bits: &mut [bool], findings: &
 
             // step 6: variable reference detection
             if ctx.allowlist.is_variable_reference(secret) {
+                continue;
+            }
+
+            // step 6.5: template line detection for context-dependent rules.
+            // if the line contains template syntax (jinja2, erb, php block tags),
+            // skip findings from context-dependent rules (tier 2/3). tier 1
+            // prefix rules are NOT affected — a real AKIA... key on a template
+            // line is still a finding, even if the rule uses entropy.
+            if (rule.context_dependent
+                || is_password_rule(&rule.id)
+                || is_credential_rule(&rule.id))
+                && ctx.allowlist.is_template_line(ctx.line)
+            {
                 continue;
             }
 

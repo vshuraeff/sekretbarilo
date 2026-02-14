@@ -62,7 +62,7 @@ sekretbarilo uses Aho-Corasick automaton for keyword pre-filtering instead of na
 
 **Why this matters**: the naive approach checks every keyword against every line (O(keywords × lines)). Aho-Corasick builds a finite automaton that matches all keywords in a single pass (O(lines)).
 
-With 43 built-in rules and hundreds of total keywords, this optimization is critical. Without it, scan performance would degrade from microseconds to milliseconds.
+With 109 built-in rules and hundreds of total keywords, this optimization is critical. Without it, scan performance would degrade from microseconds to milliseconds.
 
 ## Key Optimizations
 
@@ -70,7 +70,7 @@ sekretbarilo achieves microsecond-scale scanning through several architectural o
 
 ### 1. Aho-Corasick Automaton
 
-**What**: single-pass keyword matching across all 43 rules simultaneously
+**What**: single-pass keyword matching across all 109 rules simultaneously
 
 **Why**: instead of checking each rule's keywords against every line (O(rules × keywords × lines)), Aho-Corasick builds a finite automaton that matches all keywords in one pass (O(lines))
 

@@ -652,7 +652,7 @@ claude code agent hook:
 
 configuration:
   [OK] no custom config files found (using defaults)
-  [OK] 43 rules loaded successfully
+  [OK] 109 rules loaded successfully
   [OK] rules compile successfully
 
 sekretbarilo binary:

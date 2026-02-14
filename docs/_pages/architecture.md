@@ -23,7 +23,7 @@ src/
     allowlist.rs    - allowlist compilation
     discovery.rs    - hierarchical config file discovery
     merge.rs        - config merge logic
-    rules.toml      - 43 built-in detection rules
+    rules.toml      - 109 built-in detection rules
   diff/
     mod.rs          - git diff retrieval
     parser.rs       - unified diff parser
@@ -312,7 +312,7 @@ entropy_threshold = 3.5
 
 ### Rule Compilation
 
-1. **load default rules**: embedded `config/rules.toml` (43 rules)
+1. **load default rules**: embedded `config/rules.toml` (109 rules)
 2. **merge user rules**: overrides by `id`, appends new rules
 3. **compile regexes**: `regex::bytes::RegexBuilder` with 1 MB size limit
 4. **build aho-corasick automaton**: all keywords (case-insensitive, deduplicated)
@@ -548,7 +548,7 @@ uses `regex::bytes` and `Vec<u8>` everywhere:
 - allowlist compilation: path patterns, stopwords, per-rule allowlists
 
 ### Integration Tests
-- default rules: all 43 rules compile and detect known secrets
+- default rules: all 109 rules compile and detect known secrets
 - hook installation: idempotency, appending, preservation of existing hooks
 - agent hook: JSON parsing, path resolution, fast-path rejection
 
