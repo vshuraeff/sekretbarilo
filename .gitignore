@@ -3,6 +3,7 @@ progress*.txt
 
 # rust build artifacts
 /target
+/.cargo
 
 # editor swap/backup files
 *.swp
