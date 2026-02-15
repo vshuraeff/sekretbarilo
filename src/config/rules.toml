@@ -820,3 +820,28 @@ regex = "(?i)(?:auth_token|access_token|secret_token)\\s*[=:]\\s*['\"]([^'\"]{16
 secret_group = 1
 keywords = ["auth_token", "access_token", "secret_token"]
 entropy_threshold = 4.0
+
+# ============================================================================
+# public key detection (only active when detect_public_keys = true)
+# ============================================================================
+
+[[rules]]
+id = "pem-public-key"
+description = "PEM public key"
+regex = "(-----BEGIN[A-Z ]*PUBLIC KEY-----)"
+secret_group = 1
+keywords = ["-----begin", "public key"]
+
+[[rules]]
+id = "pgp-public-key-block"
+description = "PGP public key block"
+regex = "(-----BEGIN PGP PUBLIC KEY BLOCK-----)"
+secret_group = 1
+keywords = ["-----begin pgp", "public key block"]
+
+[[rules]]
+id = "openssh-public-key"
+description = "OpenSSH public key"
+regex = "((?:ssh-(?:rsa|ed25519|dss)|ecdsa-sha2-nistp(?:256|384|521)|sk-(?:ssh-ed25519|ecdsa-sha2-nistp256)@openssh\\.com)\\s+AAAA[A-Za-z0-9+/=]{20,})"
+secret_group = 1
+keywords = ["ssh-rsa", "ssh-ed25519", "ssh-dss", "ecdsa-sha2-nistp", "sk-ssh-ed25519", "sk-ecdsa-sha2"]

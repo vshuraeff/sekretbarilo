@@ -14,12 +14,14 @@ fn scalar_override_local_entropy_threshold_overrides_parent() {
     let parent = ProjectConfig {
         settings: SettingsConfig {
             entropy_threshold: Some(3.0),
+            detect_public_keys: None,
         },
         ..Default::default()
     };
     let child = ProjectConfig {
         settings: SettingsConfig {
             entropy_threshold: Some(4.5),
+            detect_public_keys: None,
         },
         ..Default::default()
     };
@@ -168,6 +170,7 @@ fn three_level_hierarchy_merges_correctly() {
     let grandparent = ProjectConfig {
         settings: SettingsConfig {
             entropy_threshold: Some(2.0),
+            detect_public_keys: None,
         },
         allowlist: AllowlistConfig {
             paths: vec!["vendor/.*".to_string()],
@@ -180,6 +183,7 @@ fn three_level_hierarchy_merges_correctly() {
     let parent = ProjectConfig {
         settings: SettingsConfig {
             entropy_threshold: Some(3.0),
+            detect_public_keys: None,
         },
         allowlist: AllowlistConfig {
             paths: vec!["generated/.*".to_string()],
@@ -192,6 +196,7 @@ fn three_level_hierarchy_merges_correctly() {
     let child = ProjectConfig {
         settings: SettingsConfig {
             entropy_threshold: Some(4.5),
+            detect_public_keys: None,
         },
         allowlist: AllowlistConfig {
             paths: vec!["tmp/.*".to_string()],

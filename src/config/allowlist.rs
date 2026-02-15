@@ -197,6 +197,8 @@ pub struct CompiledAllowlist {
     user_stopwords: Vec<String>,
     /// global entropy threshold override (if set by user config)
     pub entropy_threshold_override: Option<f64>,
+    /// whether to detect public keys as findings (default: false)
+    pub detect_public_keys: bool,
     /// per-rule allowlist compiled regexes: maps rule_id -> (value_regexes, path_regexes)
     per_rule_allowlists: Vec<(String, Vec<Regex>, Vec<Regex>)>,
 }
@@ -205,7 +207,7 @@ impl CompiledAllowlist {
     /// create a new allowlist with default settings only
     #[allow(dead_code)]
     pub fn default_allowlist() -> Result<Self, String> {
-        Self::new(&[], &[], None, &[])
+        Self::new(&[], &[], None, &[], false)
     }
 
     /// create a compiled allowlist from user configuration
@@ -214,6 +216,7 @@ impl CompiledAllowlist {
         user_stopwords: &[String],
         entropy_override: Option<f64>,
         per_rule: &[(String, Vec<String>, Vec<String>)],
+        detect_public_keys: bool,
     ) -> Result<Self, String> {
         let mut var_ref_patterns = Vec::with_capacity(VAR_PATTERNS.len());
         for pattern in VAR_PATTERNS {
@@ -263,6 +266,7 @@ impl CompiledAllowlist {
             user_path_patterns,
             user_stopwords: user_stopwords.iter().map(|s| s.to_lowercase()).collect(),
             entropy_threshold_override: entropy_override,
+            detect_public_keys,
             per_rule_allowlists,
         })
     }
@@ -536,6 +540,7 @@ mod tests {
             &[],
             None,
             &[],
+            false,
         )
         .unwrap();
         assert!(al.is_path_skipped("test/fixtures/secret.txt"));
@@ -572,6 +577,7 @@ mod tests {
             &["my-safe-token".to_string(), "internal-key".to_string()],
             None,
             &[],
+            false,
         )
         .unwrap();
         assert!(al.contains_stopword(b"my-safe-token-12345"));
@@ -592,6 +598,7 @@ mod tests {
                 vec!["AKIAIOSFODNN7EXAMPLE".to_string()],
                 vec![],
             )],
+            false,
         )
         .unwrap();
         assert!(al.is_rule_allowlisted("aws-access-key-id", b"AKIAIOSFODNN7EXAMPLE", "config.py"));
@@ -609,6 +616,7 @@ mod tests {
                 vec![],
                 vec!["test/.*".to_string()],
             )],
+            false,
         )
         .unwrap();
         assert!(al.is_rule_allowlisted(
@@ -630,6 +638,7 @@ mod tests {
                 vec!["AKIAIOSFODNN7EXAMPLE".to_string()],
                 vec![],
             )],
+            false,
         )
         .unwrap();
         // different rule id should not match

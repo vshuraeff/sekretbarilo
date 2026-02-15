@@ -57,6 +57,7 @@ struct CliOverrides {
     config_paths: Vec<PathBuf>,
     no_defaults: bool,
     entropy_threshold: Option<f64>,
+    detect_public_keys: bool,
     allowlist_paths: Vec<String>,
     stopwords: Vec<String>,
     exclude_patterns: Vec<String>,
@@ -136,6 +137,7 @@ fn parse_cli(
                     .map_err(|_| format!("invalid value for --entropy-threshold: '{}'", val))?;
                 overrides.entropy_threshold = Some(n);
             }
+            Arg::Long("detect-public-keys") => overrides.detect_public_keys = true,
             Arg::Long("allowlist-path") => {
                 let val = opts.value().map_err(|e| e.to_string())?;
                 overrides.allowlist_paths.push(val.to_string());
@@ -235,6 +237,9 @@ fn parse_cli(
         }
         if overrides.entropy_threshold.is_some() {
             return Err("--entropy-threshold is only valid with scan or audit".to_string());
+        }
+        if overrides.detect_public_keys {
+            return Err("--detect-public-keys is only valid with scan or audit".to_string());
         }
         if !overrides.allowlist_paths.is_empty() {
             return Err("--allowlist-path is only valid with scan or audit".to_string());
@@ -344,6 +349,7 @@ fn print_usage() {
     eprintln!("  --config <path>           use explicit config file (repeatable, skips discovery)");
     eprintln!("  --no-defaults             skip embedded default rules");
     eprintln!("  --entropy-threshold <n>   override entropy threshold");
+    eprintln!("  --detect-public-keys      report public keys as findings");
     eprintln!("  --allowlist-path <pat>    add path to allowlist (repeatable)");
     eprintln!("  --stopword <word>         add stopword (repeatable)");
     eprintln!();
@@ -411,6 +417,11 @@ fn apply_cli_overrides(base: ProjectConfig, overrides: &CliOverrides) -> Project
         },
         settings: config::SettingsConfig {
             entropy_threshold: overrides.entropy_threshold,
+            detect_public_keys: if overrides.detect_public_keys {
+                Some(true)
+            } else {
+                None
+            },
         },
         rules: vec![],
         audit: config::AuditConfig {

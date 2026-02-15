@@ -7,6 +7,7 @@ use crate::diff::parser::DiffFile;
 use crate::scanner::entropy;
 use crate::scanner::hash_detect;
 use crate::scanner::password;
+use crate::scanner::pubkey;
 use crate::scanner::rules::CompiledScanner;
 
 /// minimum number of files to trigger parallel processing with rayon
@@ -83,8 +84,18 @@ fn scan_file(
     // reusable bitset for candidate rules (avoids per-line vec allocation)
     let mut candidate_bits = vec![false; num_rules];
     let mut findings = Vec::new();
+    let mut pubkey_tracker = pubkey::PubKeyBlockTracker::new();
 
     for added_line in &file.added_lines {
+        // track PEM/PGP public key blocks across lines
+        let in_pubkey_block = pubkey_tracker.feed_line(&added_line.content);
+
+        // skip lines inside public key blocks (suppress false positives)
+        // unless detect_public_keys is enabled
+        if in_pubkey_block && !allowlist.detect_public_keys {
+            continue;
+        }
+
         let ctx = ScanLineContext {
             file_path: &file.path,
             line_number: added_line.line_number,
@@ -97,6 +108,13 @@ fn scan_file(
     }
 
     findings
+}
+
+/// check if a rule detects public keys (gated behind detect_public_keys setting)
+fn is_public_key_rule(rule_id: &str) -> bool {
+    rule_id == "pem-public-key"
+        || rule_id == "pgp-public-key-block"
+        || rule_id == "openssh-public-key"
 }
 
 /// check if a rule targets password-type secrets
@@ -160,6 +178,11 @@ fn scan_line(ctx: &ScanLineContext<'_>, candidate_bits: &mut [bool], findings: &
         }
 
         let rule = &ctx.scanner.rules[rule_idx];
+
+        // step 0: skip public key detection rules unless enabled
+        if is_public_key_rule(&rule.id) && !ctx.allowlist.detect_public_keys {
+            continue;
+        }
 
         // evaluate all matches for this rule on the line, not just the first.
         // if the first match is filtered (allowlist/stopword/var-ref), a later
@@ -245,6 +268,13 @@ fn scan_line(ctx: &ScanLineContext<'_>, candidate_bits: &mut [bool], findings: &
                 if entropy::shannon_entropy(secret) < threshold {
                     continue;
                 }
+            }
+
+            // step 8.7: OpenSSH public key detection (single-line format).
+            // lines like "ssh-rsa AAAA... user@host" contain high-entropy
+            // base64 that triggers token rules. skip unless detect_public_keys is on.
+            if !ctx.allowlist.detect_public_keys && pubkey::is_openssh_public_key(ctx.line) {
+                continue;
             }
 
             // step 9: entropy evaluation (if rule requires it).

@@ -35,6 +35,7 @@ fn merge_allowlist(base: AllowlistConfig, overlay: AllowlistConfig) -> Allowlist
 fn merge_settings(base: SettingsConfig, overlay: SettingsConfig) -> SettingsConfig {
     SettingsConfig {
         entropy_threshold: overlay.entropy_threshold.or(base.entropy_threshold),
+        detect_public_keys: overlay.detect_public_keys.or(base.detect_public_keys),
     }
 }
 
@@ -113,12 +114,14 @@ mod tests {
         let base = ProjectConfig {
             settings: SettingsConfig {
                 entropy_threshold: Some(3.0),
+                detect_public_keys: None,
             },
             ..Default::default()
         };
         let overlay = ProjectConfig {
             settings: SettingsConfig {
                 entropy_threshold: Some(4.5),
+                detect_public_keys: None,
             },
             ..Default::default()
         };
@@ -131,6 +134,7 @@ mod tests {
         let base = ProjectConfig {
             settings: SettingsConfig {
                 entropy_threshold: Some(3.0),
+                detect_public_keys: None,
             },
             ..Default::default()
         };
@@ -236,6 +240,7 @@ mod tests {
         let grandparent = ProjectConfig {
             settings: SettingsConfig {
                 entropy_threshold: Some(2.0),
+                detect_public_keys: None,
             },
             allowlist: AllowlistConfig {
                 paths: vec!["vendor/.*".to_string()],
@@ -248,6 +253,7 @@ mod tests {
         let parent = ProjectConfig {
             settings: SettingsConfig {
                 entropy_threshold: Some(3.0),
+                detect_public_keys: None,
             },
             allowlist: AllowlistConfig {
                 paths: vec!["generated/.*".to_string()],
@@ -260,6 +266,7 @@ mod tests {
         let child = ProjectConfig {
             settings: SettingsConfig {
                 entropy_threshold: Some(4.5),
+                detect_public_keys: None,
             },
             allowlist: AllowlistConfig {
                 paths: vec!["tmp/.*".to_string()],

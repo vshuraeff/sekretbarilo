@@ -65,6 +65,8 @@ pub struct AllowlistRuleOverride {
 pub struct SettingsConfig {
     /// global entropy threshold override
     pub entropy_threshold: Option<f64>,
+    /// detect public keys as findings (default: false)
+    pub detect_public_keys: Option<bool>,
 }
 
 /// load a single config file. returns None if the file doesn't exist or is empty.
@@ -223,6 +225,7 @@ pub fn build_allowlist(
         &config.allowlist.stopwords,
         config.settings.entropy_threshold,
         &per_rule,
+        config.settings.detect_public_keys.unwrap_or(false),
     )
 }
 
@@ -340,6 +343,7 @@ entropy_threshold = 3.5
             },
             settings: SettingsConfig {
                 entropy_threshold: Some(4.0),
+                detect_public_keys: None,
             },
             rules: vec![],
             ..Default::default()
