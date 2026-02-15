@@ -378,7 +378,7 @@ fn tier2_aws_secret_low_entropy_not_flagged() {
 fn tier2_postgres_connection_string() {
     assert_detected(
         "config.rs",
-        b"let url = \"postgres://admin:s3cur3Pa55w0rd@db.prod-host.com:5432/mydb\"",
+        b"let url = \"postgres://admin:Xk9#mQ2!vR7$nP4w@db.prod-host.com:5432/mydb\"",
         "database-connection-string-postgres",
     );
 }
@@ -387,7 +387,7 @@ fn tier2_postgres_connection_string() {
 fn tier2_postgresql_connection_string() {
     assert_detected(
         "config.rs",
-        b"let url = \"postgresql://admin:s3cur3Pa55w0rd@db.prod-host.com:5432/mydb\"",
+        b"let url = \"postgresql://admin:Xk9#mQ2!vR7$nP4w@db.prod-host.com:5432/mydb\"",
         "database-connection-string-postgres",
     );
 }
@@ -396,7 +396,7 @@ fn tier2_postgresql_connection_string() {
 fn tier2_mysql_connection_string() {
     assert_detected(
         "config.py",
-        b"db_url = \"mysql://root:s3cur3Pa55w0rd@db.prod-host.com:3306/app\"",
+        b"db_url = \"mysql://root:Xk9#mQ2!vR7$nP4w@db.prod-host.com:3306/app\"",
         "database-connection-string-mysql",
     );
 }
@@ -405,7 +405,7 @@ fn tier2_mysql_connection_string() {
 fn tier2_mongodb_connection_string() {
     assert_detected(
         "config.py",
-        b"mongo_url = \"mongodb://admin:s3cur3Pa55w0rd@mongo.prod-host.com:27017/app\"",
+        b"mongo_url = \"mongodb://admin:Xk9#mQ2!vR7$nP4w@mongo.prod-host.com:27017/app\"",
         "database-connection-string-mongodb",
     );
 }
@@ -414,7 +414,7 @@ fn tier2_mongodb_connection_string() {
 fn tier2_mongodb_srv_connection_string() {
     assert_detected(
         "config.py",
-        b"mongo_url = \"mongodb+srv://admin:s3cur3Pa55w0rd@cluster.prod-host.com/app\"",
+        b"mongo_url = \"mongodb+srv://admin:Xk9#mQ2!vR7$nP4w@cluster.prod-host.com/app\"",
         "database-connection-string-mongodb",
     );
 }
@@ -423,7 +423,7 @@ fn tier2_mongodb_srv_connection_string() {
 fn tier2_redis_connection_string() {
     assert_detected(
         "config.py",
-        b"redis_url = \"redis://:s3cur3Pa55w0rd@redis.prod-host.com:6379\"",
+        b"redis_url = \"redis://:Xk9#mQ2!vR7$nP4w@redis.prod-host.com:6379\"",
         "redis-connection-string",
     );
 }
@@ -1133,5 +1133,28 @@ fn tier2_cohere_api_key() {
         "src/config.rs",
         b"cohere_api_key = \"aBcDeFgH0123456789iJkLmNoPqRsTuVwXyZ0123\"",
         "cohere-api-key",
+    );
+}
+
+// ============================================================================
+// credential rule password strength filtering
+// ============================================================================
+
+#[test]
+fn credential_rule_skips_common_password() {
+    // weak password "password" should NOT be flagged in connection strings
+    assert_not_detected(
+        "config.rs",
+        b"let url = \"postgres://admin:password@db.host.com:5432/mydb\"",
+    );
+}
+
+#[test]
+fn credential_rule_detects_strong_password() {
+    // strong password should still be detected
+    assert_detected(
+        "config.rs",
+        b"let url = \"postgres://admin:Xk9#mQ2!vR7$nP4w@db.host.com:5432/mydb\"",
+        "database-connection-string-postgres",
     );
 }

@@ -784,6 +784,44 @@ fn fp_csharp_format_placeholder() {
     assert_no_findings("src/Logger.cs", b"secret = \"{0}\"");
 }
 
+// ============================================================================
+// category 10: weak passwords in database connection strings
+// ============================================================================
+
+#[test]
+fn fp_postgres_weak_password() {
+    assert_no_findings(
+        "config.py",
+        b"db_url = \"postgres://postgres:password@localhost:5432/db\"",
+    );
+}
+
+#[test]
+fn fp_mysql_weak_password() {
+    assert_no_findings(
+        "config.py",
+        b"db_url = \"mysql://root:admin123@localhost:3306/app\"",
+    );
+}
+
+#[test]
+fn fp_mongodb_placeholder_password() {
+    // "changeme" is caught by stopwords
+    assert_no_findings(
+        "config.js",
+        b"const uri = \"mongodb://user:changeme@localhost/db\";",
+    );
+}
+
+#[test]
+fn fp_connection_string_template_var() {
+    // template variable reference in password position
+    assert_no_findings(
+        "config.py",
+        b"db_url = \"postgres://user:${DB_PASSWORD}@host/db\"",
+    );
+}
+
 // tier 1 prefix rules should STILL detect secrets on template lines
 #[test]
 fn tp_tier1_on_template_line() {

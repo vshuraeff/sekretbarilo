@@ -764,7 +764,7 @@ fn integration_postgres_connection_string_blocked() {
     let diff = make_modified_file_diff(
         "src/db.py",
         5,
-        &["db_url = \"postgres://admin:s3cur3Pa55w0rd@db.prod-host.com:5432/mydb\""],
+        &["db_url = \"postgres://admin:Xk9#mQ2!vR7$nP4w@db.prod-host.com:5432/mydb\""],
     );
     let (_, findings) = scan_diff(&diff);
 
@@ -782,7 +782,7 @@ fn integration_mongodb_connection_string_blocked() {
     let diff = make_modified_file_diff(
         "src/db.js",
         8,
-        &["const uri = \"mongodb://admin:s3cur3Pa55w0rd@mongo.prod-host.com:27017/app\";"],
+        &["const uri = \"mongodb://admin:Xk9#mQ2!vR7$nP4w@mongo.prod-host.com:27017/app\";"],
     );
     let (_, findings) = scan_diff(&diff);
 

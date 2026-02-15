@@ -105,8 +105,9 @@ fn is_password_rule(rule_id: &str) -> bool {
 }
 
 /// check if a rule extracts credentials from connection strings/URLs.
-/// these rules need full stopword filtering but use standard entropy checks,
-/// not the password strength heuristic.
+/// these rules use the password strength heuristic to filter weak/placeholder
+/// passwords, but still fall through to entropy evaluation as a safety net
+/// for high-entropy tokens with limited character class diversity.
 fn is_credential_rule(rule_id: &str) -> bool {
     rule_id.starts_with("database-connection-string-")
         || rule_id == "redis-connection-string"
@@ -232,6 +233,18 @@ fn scan_line(ctx: &ScanLineContext<'_>, candidate_bits: &mut [bool], findings: &
             // passwords are flagged as real secrets.
             if is_password_rule(&rule.id) && !password::is_strong_password(secret) {
                 continue;
+            }
+
+            // step 8.6: for credential rules, filter weak passwords but
+            // preserve high-entropy tokens as a safety net for generated
+            // passwords with limited character class diversity (e.g. hex).
+            // uses raw shannon entropy (no min-length gate) since connection
+            // string passwords are typically short.
+            if is_credential_rule(&rule.id) && !password::is_strong_password(secret) {
+                let threshold = rule.entropy_threshold.unwrap_or(3.5);
+                if entropy::shannon_entropy(secret) < threshold {
+                    continue;
+                }
             }
 
             // step 9: entropy evaluation (if rule requires it).
