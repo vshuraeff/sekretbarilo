@@ -98,6 +98,10 @@ Global settings that affect scanning behavior.
 # lower values = more sensitive (more potential secrets detected)
 # higher values = less sensitive (fewer false positives)
 entropy_threshold = 3.5
+
+# report public keys (PEM, PGP, OpenSSH) as findings (default: false)
+# when false, public key material is suppressed to reduce noise
+detect_public_keys = false
 ```
 
 **Notes:**
@@ -105,6 +109,7 @@ entropy_threshold = 3.5
 - Setting a global threshold here overrides all per-rule thresholds.
 - Tier 1 rules (prefix-based) don't use entropy checks, so this setting doesn't affect them.
 - Use this to tune sensitivity globally without modifying individual rules.
+- `detect_public_keys` enables 3 gated rules (`pem-public-key`, `pgp-public-key-block`, `openssh-public-key`). When disabled (default), lines inside public key blocks are also suppressed to avoid false positives from base64 content. Can be overridden with `--detect-public-keys` CLI flag.
 
 ### `[allowlist]`
 
@@ -571,6 +576,7 @@ sekretbarilo scan --config .sekretbarilo.toml --stopword test-override
 - `--allowlist-path <pattern>` - add a path pattern to allowlist (repeatable)
 - `--exclude-pattern <pattern>` - add an audit exclude pattern (repeatable, audit only)
 - `--include-pattern <pattern>` - add an audit include pattern (repeatable, audit only)
+- `--detect-public-keys` - report public keys as findings (default: suppressed)
 
 See the [CLI reference](../README.md#cli-flags) for a complete list of available flags.
 

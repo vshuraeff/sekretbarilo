@@ -275,6 +275,7 @@ these flags apply to both `scan` and `audit` commands:
 | `--entropy-threshold <n>` | float | override entropy threshold for high-entropy detection. default varies by rule. typical range: 3.0-5.0. |
 | `--allowlist-path <pattern>` | repeatable | add path pattern to allowlist (regex). can be specified multiple times. appended to config-defined patterns. |
 | `--stopword <word>` | repeatable | add stopword to filter out false positives. can be specified multiple times. appended to config-defined stopwords. |
+| `--detect-public-keys` | boolean | report public keys (PEM, PGP, OpenSSH) as findings. by default, public keys are suppressed to reduce noise. |
 
 ---
 
@@ -430,6 +431,16 @@ sekretbarilo scan --stopword exampletoken --stopword testkey123
 sekretbarilo scan --config base.toml --stopword local_dev_key
 ```
 
+### public key detection
+
+```sh
+# scan staged changes and also report public keys
+sekretbarilo scan --detect-public-keys
+
+# audit working tree including public key findings
+sekretbarilo audit --detect-public-keys
+```
+
 ### entropy threshold tuning
 
 ```sh
@@ -513,6 +524,7 @@ sekretbarilo validates flag combinations to prevent misuse:
 | `--entropy-threshold` | `scan`, `audit` | `install`, `check-file`, `doctor` |
 | `--allowlist-path` | `scan`, `audit` | `install`, `check-file`, `doctor` |
 | `--stopword` | `scan`, `audit` | `install`, `check-file`, `doctor` |
+| `--detect-public-keys` | `scan`, `audit` | `install`, `check-file`, `doctor` |
 | `--history` | `audit` | `scan`, `install`, `check-file`, `doctor` |
 | `--branch` | `audit --history` | `scan`, `audit` (without `--history`) |
 | `--since` | `audit --history` | `scan`, `audit` (without `--history`) |

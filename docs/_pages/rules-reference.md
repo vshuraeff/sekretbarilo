@@ -267,15 +267,45 @@ Password rules (`generic-password-assignment`, `password-in-url`) only flag stro
 
 ---
 
+## Gated Rules: Public Key Detection
+
+these 3 rules are **disabled by default** to reduce noise. enable them with `detect_public_keys = true` in config or `--detect-public-keys` on the CLI.
+
+| Rule ID | Description | Matches |
+|---------|-------------|---------|
+| `pem-public-key` | PEM public key header | `-----BEGIN PUBLIC KEY-----`, `-----BEGIN RSA PUBLIC KEY-----`, etc. |
+| `pgp-public-key-block` | PGP public key block header | `-----BEGIN PGP PUBLIC KEY BLOCK-----` |
+| `openssh-public-key` | OpenSSH public key | `ssh-rsa AAAA...`, `ssh-ed25519 AAAA...`, `ecdsa-sha2-nistp256 AAAA...`, etc. |
+
+when disabled (default), sekretbarilo also suppresses false positives from base64 content inside multi-line PEM/PGP public key blocks (e.g., base64 lines that might trigger token rules like `facebook-access-token`).
+
+**enabling public key detection:**
+
+```toml
+# .sekretbarilo.toml
+[settings]
+detect_public_keys = true
+```
+
+or via CLI:
+
+```sh
+sekretbarilo scan --detect-public-keys
+sekretbarilo audit --detect-public-keys
+```
+
+---
+
 ## False Positive Reduction
 
 1. **Entropy thresholds** — tier 2/3 rules filter low-randomness strings; doc files get +1.0 bonus
 2. **Stopwords** — `example`, `test`, `placeholder`, `changeme`, `fake`, `mock`, `dummy`, etc.
 3. **Hash detection** — SHA-1, SHA-256, MD5, git commit hashes
 4. **Variable references** — `${VAR}`, `process.env.VAR`, `os.environ["VAR"]`, etc.
-5. **Template handling** — Jinja2/Helm `{{ }}`, GitHub Actions `${{ }}`, ERB `<%= %>`, Terraform `${var.}`, etc.
-6. **Password strength** — only flags strong passwords (8+ chars, mixed case, digits)
-7. **Path allowlists** — binary, generated, lock files, vendor dirs auto-skipped
+5. **Template handling** — Jinja2/Helm/Mustache/Handlebars `{{ }}`, GitHub Actions `${{ }}`, ERB `<%= %>`, Terraform `${var.}`, etc.
+6. **Public key suppression** — PEM, PGP, and OpenSSH public key blocks are suppressed by default (prevents base64 content from triggering token rules)
+7. **Password strength** — only flags strong passwords (8+ chars, mixed case, digits); also applied to connection string passwords
+8. **Path allowlists** — binary, generated, lock files, vendor dirs auto-skipped
 
 ---
 

@@ -451,7 +451,31 @@ id = "generic-api-key"
 paths = ["test/.*", "spec/.*", "fixtures/.*"]
 ```
 
-### Example 5: CI/CD pipeline config
+### Example 5: Enabling public key detection
+
+By default, public keys (PEM, PGP, OpenSSH) are suppressed. Enable detection if your policy treats public keys as sensitive:
+
+```toml
+# .sekretbarilo.toml
+
+[settings]
+# report public keys as findings
+detect_public_keys = true
+```
+
+Or enable via CLI for a one-off scan:
+
+```sh
+# scan staged changes including public keys
+sekretbarilo scan --detect-public-keys
+
+# audit working tree including public keys
+sekretbarilo audit --detect-public-keys
+```
+
+This enables 3 additional rules: `pem-public-key`, `pgp-public-key-block`, and `openssh-public-key`.
+
+### Example 6: CI/CD pipeline config
 
 Use stricter settings in your ci/cd pipeline:
 
@@ -478,7 +502,7 @@ exclude_patterns = ["^\.github/", "^scripts/"]
 sekretbarilo audit --config ci-sekretbarilo.toml
 ```
 
-### Example 6: Merging multiple configs
+### Example 7: Merging multiple configs
 
 Combine organization-wide rules with project-specific overrides:
 
@@ -516,7 +540,7 @@ Effective config:
 - company-internal-token rule is active
 - testdata directory is skipped
 
-### Example 7: Using only custom rules (no defaults)
+### Example 8: Using only custom rules (no defaults)
 
 Skip all built-in rules and use only your own:
 

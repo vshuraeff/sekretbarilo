@@ -13,7 +13,7 @@ High-performance secret scanner for git workflows and AI coding agents. Catches 
 
 - **Fast**: ~2.5 µs per commit, ~3.7 ms for 400-file diffs; parallel audit via rayon
 - **109 built-in rules** in three precision tiers (prefix-based, context-aware, catch-all) — see [rules reference](docs/_pages/rules-reference.md)
-- **Low false positives**: entropy analysis, stopword filtering, hash/variable detection, template-aware
+- **Low false positives**: entropy analysis, stopword filtering, hash/variable detection, template-aware, public key suppression
 - **Pre-commit hook**: scans staged changes on every commit
 - **Working tree & history audit**: scan tracked files or full git history with deduplication and branch resolution
 - **Agent hooks**: blocks AI agents (Claude Code) from reading files with secrets
@@ -106,6 +106,7 @@ Checks pre-commit hooks (local/global), Claude Code hooks, configuration, and PA
 | `--entropy-threshold <n>` | Override global entropy threshold |
 | `--allowlist-path <pattern>` | Add path allowlist pattern (repeatable) |
 | `--stopword <word>` | Add stopword (repeatable) |
+| `--detect-public-keys` | Report public keys as findings (default: suppressed) |
 
 ### Audit-only flags
 
@@ -186,6 +187,7 @@ paths = ["test/.*"]
 ```toml
 [settings]
 entropy_threshold = 3.5
+detect_public_keys = true  # report public keys as findings (default: false)
 
 [audit]
 exclude_patterns = ["^vendor/", "^build/"]
@@ -198,7 +200,8 @@ include_patterns = ["\\.rs$"]
 - **Stopwords**: `example`, `test`, `placeholder`, `changeme`, `fake`, `mock`, `dummy`, etc.
 - **Hash detection**: SHA-1, SHA-256, MD5, git commit hashes
 - **Variable references**: `${VAR}`, `$VAR`, `process.env.VAR`, `os.environ["VAR"]`, `System.getenv("VAR")`, etc.
-- **Template handling**: Jinja2/Helm `{{ }}`, GitHub Actions `${{ }}`, ERB `<%= %>`, Terraform `${var.}`, and more
+- **Template handling**: Jinja2/Helm/Mustache/Handlebars `{{ }}`, GitHub Actions `${{ }}`, ERB `<%= %>`, Terraform `${var.}`, and more
+- **Public key suppression**: PEM, PGP, and OpenSSH public key blocks are suppressed by default (opt-in via `--detect-public-keys`)
 - **Password strength**: only flags strong passwords (8+ chars, mixed case, digits)
 - **Path allowlists**: binary files, generated files, lock files, vendor dirs auto-skipped
 

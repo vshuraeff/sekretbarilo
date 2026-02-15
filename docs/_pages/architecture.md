@@ -12,7 +12,7 @@ sekretbarilo is a high-performance secret scanner written in Rust. This page exp
 
 ```
 src/
-  main.rs           - cli entry point, command parsing (clap)
+  main.rs           - cli entry point, hand-rolled command parsing
   lib.rs            - library exports
   agent/mod.rs      - agent hook support (claude code integration)
   audit/
@@ -38,6 +38,7 @@ src/
     entropy.rs      - shannon entropy calculation
     hash_detect.rs  - hash detection (sha-1, sha-256, md5)
     password.rs     - password strength heuristics
+    pubkey.rs       - public key block detection and tracking
 ```
 
 ## Scanning Pipeline (Core Engine)
@@ -74,7 +75,14 @@ pre-filters files to skip scanning:
 - **generated files**: `package-lock.json`, `Cargo.lock`, minified `.min.js`
 - **documentation**: `README.md`, `docs/`, `*.rst` (with entropy bonus)
 
-### 5. Aho-Corasick Keyword Pre-filter
+### 5. Public Key Block Suppression
+- tracks multi-line PEM/PGP public key blocks via `PubKeyBlockTracker`
+- when `detect_public_keys` is disabled (default), lines inside public key blocks are skipped entirely
+- prevents base64 content in public keys from triggering token rules (e.g., `EAA` → `facebook-access-token`)
+- also detects single-line OpenSSH public keys (`ssh-rsa AAAA...`, etc.)
+- gated rules (`pem-public-key`, `pgp-public-key-block`, `openssh-public-key`) are skipped unless enabled
+
+### 6. Aho-Corasick Keyword Pre-filter
 - single-pass scan across all rules' keywords simultaneously
 - case-insensitive matching via aho-corasick automaton
 - builds a bitset of "candidate rules" whose keywords matched
@@ -82,7 +90,7 @@ pre-filters files to skip scanning:
 
 **Example**: Line contains "akia" → activates `aws-access-key-id` rule
 
-### 6. Regex Evaluation
+### 7. Regex Evaluation
 - only evaluates regexes for rules whose keywords matched
 - uses `regex::bytes` crate for binary-safe matching
 - extracts full matches or capture groups via `secret_group` field
@@ -90,30 +98,30 @@ pre-filters files to skip scanning:
 
 **Example**: `(AKIA[A-Z0-9]{16})` matches `AKIAIOSFODNN7EXAMPLE`
 
-### 7. Secret Extraction
+### 8. Secret Extraction
 - if `secret_group > 0`, extracts capture group value
 - if `secret_group == 0`, uses full match
 - skips empty matches
 
-### 8. Per-Rule Allowlist Check
+### 9. Per-Rule Allowlist Check
 each rule can define:
 - **value regexes**: patterns to match against extracted secret (e.g., `AKIAIOSFODNN7EXAMPLE`)
 - **path patterns**: file path regexes to skip (e.g., `test/.*`)
 
-### 9. Variable Reference Detection
+### 10. Variable Reference Detection
 skips values that are template variables, not real secrets:
 - `$VAR`, `${VAR}`, `%VAR%` (shell variables)
 - `process.env.VAR` (node.js)
 - `os.environ['VAR']` (python)
 - `ENV['VAR']` (ruby)
 
-### 10. Stopword Filtering
+### 11. Stopword Filtering
 rules with `entropy_threshold` (tier 2+) check for common safe words:
 - built-in: `test`, `example`, `fake`, `placeholder`, `changeme`, `dummy`, `mock`
 - user-configurable via `[allowlist] stopwords = [...]`
 - **tier 1 rules** (no entropy threshold) only check placeholder patterns (`XXXX...`, `****...`) to allow tokens like `sk_test_` that inherently contain "test"
 
-### 11. Hash Detection
+### 12. Hash Detection
 prevents false positives on git commit hashes and checksums:
 - **full-length hashes**: 32 (md5), 40 (sha-1), 64 (sha-256) hex chars
 - **abbreviated hashes**: 7-12 hex chars
@@ -122,7 +130,7 @@ prevents false positives on git commit hashes and checksums:
 
 **Example**: `sha256: e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855` → skipped
 
-### 12. Password Strength Heuristics
+### 13. Password Strength Heuristics
 for `generic-password-assignment` and `password-in-url` rules only:
 - **weak passwords allowed**: `password`, `admin`, `123456`, `changeme`
 - **strong passwords blocked**: complex passwords with high entropy + character classes
@@ -135,7 +143,7 @@ for `generic-password-assignment` and `password-in-url` rules only:
 
 **Rationale**: `password=test` is a placeholder, `password=Kj8#mP2!xQ9vL4nR` is a real secret
 
-### 13. Shannon Entropy Evaluation
+### 14. Shannon Entropy Evaluation
 for rules with `entropy_threshold` set:
 - calculates shannon entropy over all 256 byte values
 - min length: 20 characters (shorter strings skip entropy check)
@@ -146,7 +154,7 @@ for rules with `entropy_threshold` set:
 
 **Example**: `aaaaaaaaaaaaaaaaaaaaaaaa` → entropy ≈ 0.0 (blocked), `aB3dEf7hIj1kLmN0pQrStUvWxYz` → entropy ≈ 4.2 (allowed)
 
-### 14. Output with Masking
+### 15. Output with Masking
 - secret values always masked: `AK**************FG` (first 2 + last 2 chars)
 - short values (≤4 chars): fully masked with `xxxx`
 - prefixes: `[ERROR]` (scan), `[AUDIT]` (audit), `[AGENT]` (check-file)
