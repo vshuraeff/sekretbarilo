@@ -144,8 +144,14 @@ fn contains_ci(haystack: &[u8], needle: &[u8]) -> bool {
 
 /// trim leading/trailing ascii whitespace from a byte slice
 fn trim_bytes(data: &[u8]) -> &[u8] {
-    let start = data.iter().position(|b| !b.is_ascii_whitespace()).unwrap_or(data.len());
-    let end = data.iter().rposition(|b| !b.is_ascii_whitespace()).map_or(start, |p| p + 1);
+    let start = data
+        .iter()
+        .position(|b| !b.is_ascii_whitespace())
+        .unwrap_or(data.len());
+    let end = data
+        .iter()
+        .rposition(|b| !b.is_ascii_whitespace())
+        .map_or(start, |p| p + 1);
     &data[start..end]
 }
 
@@ -177,7 +183,9 @@ mod tests {
 
     #[test]
     fn pem_private_key_not_matched() {
-        assert!(!is_pem_public_key_header(b"-----BEGIN RSA PRIVATE KEY-----"));
+        assert!(!is_pem_public_key_header(
+            b"-----BEGIN RSA PRIVATE KEY-----"
+        ));
         assert!(!is_pem_public_key_header(b"-----BEGIN PRIVATE KEY-----"));
         assert!(!is_pem_public_key_header(b"-----BEGIN EC PRIVATE KEY-----"));
     }
@@ -197,17 +205,23 @@ mod tests {
 
     #[test]
     fn pgp_public_key_header() {
-        assert!(is_pgp_public_key_header(b"-----BEGIN PGP PUBLIC KEY BLOCK-----"));
+        assert!(is_pgp_public_key_header(
+            b"-----BEGIN PGP PUBLIC KEY BLOCK-----"
+        ));
     }
 
     #[test]
     fn pgp_public_key_footer() {
-        assert!(is_pgp_public_key_footer(b"-----END PGP PUBLIC KEY BLOCK-----"));
+        assert!(is_pgp_public_key_footer(
+            b"-----END PGP PUBLIC KEY BLOCK-----"
+        ));
     }
 
     #[test]
     fn pgp_private_key_not_matched() {
-        assert!(!is_pgp_public_key_header(b"-----BEGIN PGP PRIVATE KEY BLOCK-----"));
+        assert!(!is_pgp_public_key_header(
+            b"-----BEGIN PGP PRIVATE KEY BLOCK-----"
+        ));
     }
 
     // -- OpenSSH public key detection --
@@ -248,7 +262,9 @@ mod tests {
 
     #[test]
     fn not_openssh_random_line() {
-        assert!(!is_openssh_public_key(b"some random line with ssh-rsa in it"));
+        assert!(!is_openssh_public_key(
+            b"some random line with ssh-rsa in it"
+        ));
     }
 
     // -- PubKeyBlockTracker --
@@ -293,15 +309,27 @@ mod tests {
 
     #[test]
     fn starts_with_ci_basic() {
-        assert!(starts_with_ci(b"-----BEGIN PUBLIC KEY-----", b"-----BEGIN "));
-        assert!(starts_with_ci(b"-----begin public key-----", b"-----BEGIN "));
+        assert!(starts_with_ci(
+            b"-----BEGIN PUBLIC KEY-----",
+            b"-----BEGIN "
+        ));
+        assert!(starts_with_ci(
+            b"-----begin public key-----",
+            b"-----BEGIN "
+        ));
         assert!(!starts_with_ci(b"short", b"longer than haystack"));
     }
 
     #[test]
     fn contains_ci_basic() {
-        assert!(contains_ci(b"-----BEGIN RSA PUBLIC KEY-----", b"PUBLIC KEY"));
-        assert!(contains_ci(b"-----begin rsa public key-----", b"PUBLIC KEY"));
+        assert!(contains_ci(
+            b"-----BEGIN RSA PUBLIC KEY-----",
+            b"PUBLIC KEY"
+        ));
+        assert!(contains_ci(
+            b"-----begin rsa public key-----",
+            b"PUBLIC KEY"
+        ));
         assert!(!contains_ci(b"no match here", b"PUBLIC KEY"));
     }
 }
