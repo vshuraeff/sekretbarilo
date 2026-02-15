@@ -732,6 +732,23 @@ fn fp_jinja2_set_secret() {
 }
 
 #[test]
+fn fp_jinja2_variable_tag_secret() {
+    // jinja2 variable substitution ({{ expr }}) without block tags
+    assert_no_findings(
+        "group_vars/all.yml",
+        b"JICOFO_COMPONENT_SECRET: \"{{ jitsi_secret_map['JICOFO_COMPONENT_SECRET'] }}\"",
+    );
+}
+
+#[test]
+fn fp_mustache_template_password() {
+    assert_no_findings(
+        "templates/config.mustache",
+        b"database_password: {{db_password}}",
+    );
+}
+
+#[test]
 fn fp_github_actions_secret_ref() {
     assert_no_findings(
         ".github/workflows/deploy.yml",

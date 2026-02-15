@@ -377,10 +377,15 @@ impl CompiledAllowlist {
     }
 
     /// check if a line contains template syntax markers.
-    /// looks for jinja2/django block tags ({%...%}), comment tags ({#...#}),
+    /// looks for jinja2/django/mustache/handlebars variable tags ({{...}}),
+    /// block tags ({%...%}), comment tags ({#...#}),
     /// erb/ejs tags (<%...%>), and php short echo tags (<?=...?>).
     /// used to skip tier 2/3 findings on lines that are clearly templates.
     pub fn is_template_line(&self, line: &[u8]) -> bool {
+        // jinja2/django/mustache/handlebars variable tags: {{ ... }}
+        if memmem::find(line, b"{{").is_some() && memmem::find(line, b"}}").is_some() {
+            return true;
+        }
         // jinja2/django/twig block tags: {% ... %}
         if memmem::find(line, b"{%").is_some() && memmem::find(line, b"%}").is_some() {
             return true;
@@ -846,6 +851,12 @@ mod tests {
     #[test]
     fn detect_template_lines() {
         let al = default_al();
+        // jinja2/mustache/handlebars variable tags
+        assert!(al.is_template_line(
+            b"JICOFO_COMPONENT_SECRET: \"{{ jitsi_secret_map['JICOFO_COMPONENT_SECRET'] }}\""
+        ));
+        assert!(al.is_template_line(b"password: {{ db_password }}"));
+        assert!(al.is_template_line(b"api_key = \"{{ lookup('vault', 'secret/key') }}\""));
         // jinja2 block tags
         assert!(al.is_template_line(b"{% if use_ssl %}password = {{ db_pass }}{% endif %}"));
         assert!(al.is_template_line(b"{% set api_key = vault_lookup('key') %}"));
@@ -869,5 +880,7 @@ mod tests {
         // partial markers should not match
         assert!(!al.is_template_line(b"x = 5 % 3 # modulo"));
         assert!(!al.is_template_line(b"price < 100"));
+        // single braces are not template markers
+        assert!(!al.is_template_line(b"let map = { password: \"secret\" };"));
     }
 }
