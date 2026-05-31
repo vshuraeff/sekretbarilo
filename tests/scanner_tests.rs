@@ -9,7 +9,7 @@
 
 use sekretbarilo::config;
 use sekretbarilo::diff::parser::{AddedLine, DiffFile};
-use sekretbarilo::scanner::engine::{scan, Finding};
+use sekretbarilo::scanner::engine::{Finding, scan};
 use sekretbarilo::scanner::entropy;
 use sekretbarilo::scanner::rules::{compile_rules, load_default_rules};
 

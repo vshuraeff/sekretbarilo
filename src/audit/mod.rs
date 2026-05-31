@@ -13,7 +13,7 @@ use crate::config::allowlist::CompiledAllowlist;
 use crate::config::{AuditConfig, ProjectConfig};
 use crate::diff::parser::{AddedLine, DiffFile};
 use crate::output::masking::mask_secret;
-use crate::scanner::engine::{scan, Finding};
+use crate::scanner::engine::{Finding, scan};
 use crate::scanner::rules::CompiledScanner;
 
 /// options for the audit command

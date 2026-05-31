@@ -2,7 +2,7 @@
 
 use sekretbarilo::config::discovery::{discover_configs, discover_hierarchy};
 use sekretbarilo::config::merge::{merge_all, merge_two};
-use sekretbarilo::config::{load_single_config, AllowlistConfig, ProjectConfig, SettingsConfig};
+use sekretbarilo::config::{AllowlistConfig, ProjectConfig, SettingsConfig, load_single_config};
 use serial_test::serial;
 use std::fs;
 use tempfile::tempdir;
@@ -50,10 +50,12 @@ fn list_merge_allowlist_paths_from_both_levels() {
     let merged = merge_two(parent, child);
     assert_eq!(merged.allowlist.paths.len(), 2);
     assert!(merged.allowlist.paths.contains(&"vendor/.*".to_string()));
-    assert!(merged
-        .allowlist
-        .paths
-        .contains(&"test/fixtures/.*".to_string()));
+    assert!(
+        merged
+            .allowlist
+            .paths
+            .contains(&"test/fixtures/.*".to_string())
+    );
 }
 
 // -- 1.4.3: rule merge by id --
@@ -249,7 +251,7 @@ fn deduplication_of_list_entries() {
         1
     );
     assert_eq!(merged.allowlist.paths.len(), 3); // vendor, test, new
-                                                 // "safe" appears only once
+    // "safe" appears only once
     assert_eq!(
         merged
             .allowlist
@@ -368,9 +370,9 @@ fn xdg_config_is_discovered_when_env_set() {
     .unwrap();
 
     // set XDG_CONFIG_HOME for this test
-    std::env::set_var("XDG_CONFIG_HOME", home.join("custom-xdg"));
+    unsafe { std::env::set_var("XDG_CONFIG_HOME", home.join("custom-xdg")) };
     let configs = discover_configs(&start, &home);
-    std::env::remove_var("XDG_CONFIG_HOME");
+    unsafe { std::env::remove_var("XDG_CONFIG_HOME") };
 
     // should find the xdg config
     assert!(
@@ -409,13 +411,13 @@ fn hierarchy_configs_come_after_xdg_in_priority() {
 
     // make sure XDG_CONFIG_HOME is not overriding the default
     let prev_xdg = std::env::var_os("XDG_CONFIG_HOME");
-    std::env::remove_var("XDG_CONFIG_HOME");
+    unsafe { std::env::remove_var("XDG_CONFIG_HOME") };
 
     let configs = discover_configs(&child, &home);
 
     // restore
     if let Some(val) = prev_xdg {
-        std::env::set_var("XDG_CONFIG_HOME", val);
+        unsafe { std::env::set_var("XDG_CONFIG_HOME", val) };
     }
 
     assert!(
@@ -461,10 +463,10 @@ fn repo_root_config_is_last_in_priority() {
     .unwrap();
 
     let prev_xdg = std::env::var_os("XDG_CONFIG_HOME");
-    std::env::remove_var("XDG_CONFIG_HOME");
+    unsafe { std::env::remove_var("XDG_CONFIG_HOME") };
     let configs = discover_configs(&repo, &home);
     if let Some(val) = prev_xdg {
-        std::env::set_var("XDG_CONFIG_HOME", val);
+        unsafe { std::env::set_var("XDG_CONFIG_HOME", val) };
     }
 
     // the last config should be the repo root one (highest priority)
@@ -492,12 +494,12 @@ fn missing_system_and_xdg_configs_silently_ignored() {
 
     let prev_xdg = std::env::var_os("XDG_CONFIG_HOME");
     // point xdg to a nonexistent dir
-    std::env::set_var("XDG_CONFIG_HOME", home.join("nonexistent-xdg"));
+    unsafe { std::env::set_var("XDG_CONFIG_HOME", home.join("nonexistent-xdg")) };
     let configs = discover_configs(&home, &home);
     if let Some(val) = prev_xdg {
-        std::env::set_var("XDG_CONFIG_HOME", val);
+        unsafe { std::env::set_var("XDG_CONFIG_HOME", val) };
     } else {
-        std::env::remove_var("XDG_CONFIG_HOME");
+        unsafe { std::env::remove_var("XDG_CONFIG_HOME") };
     }
 
     // should still find the project config, no errors
@@ -551,8 +553,10 @@ stopwords = ["project-safe"]
     assert_eq!(merged.settings.entropy_threshold, Some(4.0));
     // both stopwords present
     assert!(merged.allowlist.stopwords.contains(&"xdg-safe".to_string()));
-    assert!(merged
-        .allowlist
-        .stopwords
-        .contains(&"project-safe".to_string()));
+    assert!(
+        merged
+            .allowlist
+            .stopwords
+            .contains(&"project-safe".to_string())
+    );
 }

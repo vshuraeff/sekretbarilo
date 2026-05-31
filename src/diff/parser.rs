@@ -81,10 +81,10 @@ fn parse_file_block(lines: &[&[u8]], start: usize, total: usize) -> (DiffFile, u
             file.is_binary = true;
         } else if line.starts_with(b"+++ b/") {
             // update path from the +++ line (more reliable for renames)
-            if let Some(p) = line.get(6..) {
-                if let Ok(s) = std::str::from_utf8(p) {
-                    file.path = s.to_string();
-                }
+            if let Some(p) = line.get(6..)
+                && let Ok(s) = std::str::from_utf8(p)
+            {
+                file.path = s.to_string();
             }
         } else if line.starts_with(b"+++ /dev/null") {
             // deleted file, path stays from header
@@ -184,12 +184,11 @@ fn parse_hunk_header_new_start(header: &[u8]) -> usize {
             .iter()
             .position(|&b| !b.is_ascii_digit())
             .unwrap_or(after_plus.len());
-        if end > 0 {
-            if let Ok(s) = std::str::from_utf8(&after_plus[..end]) {
-                if let Ok(n) = s.parse::<usize>() {
-                    return n;
-                }
-            }
+        if end > 0
+            && let Ok(s) = std::str::from_utf8(&after_plus[..end])
+            && let Ok(n) = s.parse::<usize>()
+        {
+            return n;
         }
     }
     1 // default

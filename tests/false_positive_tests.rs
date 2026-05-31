@@ -5,8 +5,8 @@
 // realistic code snippets that should pass through without findings.
 
 use sekretbarilo::config;
-use sekretbarilo::diff::parser::{parse_diff, AddedLine, DiffFile};
-use sekretbarilo::scanner::engine::{scan, Finding};
+use sekretbarilo::diff::parser::{AddedLine, DiffFile, parse_diff};
+use sekretbarilo::scanner::engine::{Finding, scan};
 use sekretbarilo::scanner::rules::{compile_rules, load_default_rules};
 
 // -- helpers --

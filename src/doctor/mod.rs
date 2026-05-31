@@ -100,11 +100,7 @@ pub fn run_doctor() -> i32 {
         eprintln!();
     }
 
-    if has_issues {
-        1
-    } else {
-        0
-    }
+    if has_issues { 1 } else { 0 }
 }
 
 /// check git pre-commit hook status (local and global)
@@ -158,10 +154,10 @@ fn check_local_git_hook() -> CheckResult {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        if let Ok(meta) = std::fs::metadata(&hook_file) {
-            if meta.permissions().mode() & 0o111 == 0 {
-                return CheckResult::warn("local pre-commit hook is not executable");
-            }
+        if let Ok(meta) = std::fs::metadata(&hook_file)
+            && meta.permissions().mode() & 0o111 == 0
+        {
+            return CheckResult::warn("local pre-commit hook is not executable");
         }
     }
 
@@ -210,10 +206,10 @@ fn check_global_git_hook() -> CheckResult {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        if let Ok(meta) = std::fs::metadata(&hook_file) {
-            if meta.permissions().mode() & 0o111 == 0 {
-                return CheckResult::warn("global pre-commit hook is not executable");
-            }
+        if let Ok(meta) = std::fs::metadata(&hook_file)
+            && meta.permissions().mode() & 0o111 == 0
+        {
+            return CheckResult::warn("global pre-commit hook is not executable");
         }
     }
 
@@ -255,7 +251,7 @@ fn check_claude_hook_at(config_path: &Path, scope: &str) -> CheckResult {
     let content = match std::fs::read_to_string(config_path) {
         Ok(c) => c,
         Err(e) => {
-            return CheckResult::error(format!("cannot read {}: {}", config_path.display(), e))
+            return CheckResult::error(format!("cannot read {}: {}", config_path.display(), e));
         }
     };
 
@@ -266,7 +262,7 @@ fn check_claude_hook_at(config_path: &Path, scope: &str) -> CheckResult {
                 "malformed JSON in {}: {}",
                 config_path.display(),
                 e
-            ))
+            ));
         }
     };
 
@@ -277,7 +273,7 @@ fn check_claude_hook_at(config_path: &Path, scope: &str) -> CheckResult {
             return CheckResult::not_installed(format!(
                 "{} claude code settings exists but has no hooks.PreToolUse",
                 scope
-            ))
+            ));
         }
     };
 
@@ -459,10 +455,10 @@ fn expand_tilde(path: &str) -> PathBuf {
         if let Some(home) = std::env::var_os("HOME") {
             return PathBuf::from(home);
         }
-    } else if let Some(rest) = path.strip_prefix("~/") {
-        if let Some(home) = std::env::var_os("HOME") {
-            return PathBuf::from(home).join(rest);
-        }
+    } else if let Some(rest) = path.strip_prefix("~/")
+        && let Some(home) = std::env::var_os("HOME")
+    {
+        return PathBuf::from(home).join(rest);
     }
     PathBuf::from(path)
 }

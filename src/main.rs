@@ -14,8 +14,8 @@ use std::path::{Path, PathBuf};
 
 use getargs::Arg;
 
-use config::allowlist::CompiledAllowlist;
 use config::ProjectConfig;
+use config::allowlist::CompiledAllowlist;
 use doctor::resolve_repo_root;
 use scanner::rules::CompiledScanner;
 
@@ -574,11 +574,7 @@ fn run_scan(overrides: &CliOverrides) -> i32 {
     // step 6: report findings
     let total = output::report_findings(&findings, &env_check.blocked_files);
 
-    if total > 0 {
-        1
-    } else {
-        0
-    }
+    if total > 0 { 1 } else { 0 }
 }
 
 fn run_audit_cmd(overrides: &CliOverrides, audit_flags: &AuditFlags) -> i32 {

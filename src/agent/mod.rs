@@ -3,7 +3,7 @@
 use std::io::{Read, Write as IoWrite};
 use std::path::{Path, PathBuf};
 
-use crate::audit::{read_file_to_diff_result, ReadFileResult};
+use crate::audit::{ReadFileResult, read_file_to_diff_result};
 use crate::config;
 use crate::config::allowlist::CompiledAllowlist;
 use crate::output::masking::mask_secret;
@@ -271,12 +271,12 @@ fn resolve_file_path(file_path: &str, cwd: Option<&str>) -> Result<(String, Path
             None => std::env::current_dir().ok(),
         };
 
-        if let Some(base) = base {
-            if let Ok(rel) = path.strip_prefix(&base) {
-                let rel_str = rel.to_string_lossy().to_string();
-                if !rel_str.is_empty() {
-                    return Ok((rel_str, base));
-                }
+        if let Some(base) = base
+            && let Ok(rel) = path.strip_prefix(&base)
+        {
+            let rel_str = rel.to_string_lossy().to_string();
+            if !rel_str.is_empty() {
+                return Ok((rel_str, base));
             }
         }
 
@@ -299,14 +299,14 @@ fn resolve_file_path(file_path: &str, cwd: Option<&str>) -> Result<(String, Path
         // validate that the resolved path stays within the base directory.
         // prevents path traversal via relative paths like "../../etc/passwd".
         let full = base.join(file_path);
-        if let (Ok(canonical), Ok(canonical_base)) = (full.canonicalize(), base.canonicalize()) {
-            if !canonical.starts_with(&canonical_base) {
-                return Err(format!(
-                    "file path '{}' resolves outside base directory '{}'",
-                    file_path,
-                    base.display()
-                ));
-            }
+        if let (Ok(canonical), Ok(canonical_base)) = (full.canonicalize(), base.canonicalize())
+            && !canonical.starts_with(&canonical_base)
+        {
+            return Err(format!(
+                "file path '{}' resolves outside base directory '{}'",
+                file_path,
+                base.display()
+            ));
         }
         Ok((file_path.to_string(), base))
     }
@@ -393,10 +393,10 @@ pub fn run_check_file(stdin_json: bool, file_arg: Option<&str>) -> i32 {
 
     // step 3: cheap fast-path rejection using hardcoded patterns only.
     // this avoids loading config/rules for obvious skips (binary, vendor, lock files).
-    if let Ok(default_al) = CompiledAllowlist::default_allowlist() {
-        if default_al.is_path_skipped(&relative_path) {
-            return 0;
-        }
+    if let Ok(default_al) = CompiledAllowlist::default_allowlist()
+        && default_al.is_path_skipped(&relative_path)
+    {
+        return 0;
     }
 
     // step 4: load config and build full allowlist for user-configured patterns

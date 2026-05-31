@@ -1,8 +1,8 @@
-use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
+use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 
 use aho_corasick::AhoCorasick;
 use sekretbarilo::config::allowlist::CompiledAllowlist;
-use sekretbarilo::diff::parser::{parse_diff, AddedLine, DiffFile};
+use sekretbarilo::diff::parser::{AddedLine, DiffFile, parse_diff};
 use sekretbarilo::scanner::engine::scan;
 use sekretbarilo::scanner::entropy::shannon_entropy;
 use sekretbarilo::scanner::rules::{compile_rules, load_default_rules};

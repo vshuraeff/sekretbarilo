@@ -9,11 +9,11 @@ use rayon::prelude::*;
 
 use regex::Regex;
 
-use crate::config::allowlist::CompiledAllowlist;
 use crate::config::AuditConfig;
-use crate::diff::parser::{parse_diff, DiffFile};
+use crate::config::allowlist::CompiledAllowlist;
+use crate::diff::parser::{DiffFile, parse_diff};
 use crate::output::masking::mask_secret;
-use crate::scanner::engine::{scan, Finding};
+use crate::scanner::engine::{Finding, scan};
 use crate::scanner::rules::CompiledScanner;
 
 use super::AuditOptions;
@@ -439,11 +439,11 @@ pub(crate) fn write_history_findings(
                 sanitize_display(&hf.commit.date)
             );
             // show branch containment if available
-            if let Some(branches) = branch_map.get(&current_hash) {
-                if !branches.is_empty() {
-                    let safe: Vec<String> = branches.iter().map(|b| sanitize_display(b)).collect();
-                    let _ = writeln!(out, "    branches: {}", safe.join(", "));
-                }
+            if let Some(branches) = branch_map.get(&current_hash)
+                && !branches.is_empty()
+            {
+                let safe: Vec<String> = branches.iter().map(|b| sanitize_display(b)).collect();
+                let _ = writeln!(out, "    branches: {}", safe.join(", "));
             }
         }
         let masked = sanitize_display(&mask_secret(&hf.finding.matched_value));

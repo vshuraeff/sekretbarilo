@@ -315,10 +315,11 @@ impl CompiledAllowlist {
                 return true;
             }
             // check for /vendor_dir/ in middle of path without allocation
-            if let Some(pos) = lower.find(vendor_dir) {
-                if pos > 0 && lower.as_bytes()[pos - 1] == b'/' {
-                    return true;
-                }
+            if let Some(pos) = lower.find(vendor_dir)
+                && pos > 0
+                && lower.as_bytes()[pos - 1] == b'/'
+            {
+                return true;
             }
         }
 
@@ -411,10 +412,10 @@ impl CompiledAllowlist {
         let filename = lower.rsplit('/').next().unwrap_or(&lower);
 
         // check doc file extensions
-        if let Some(ext) = filename.rsplit('.').next() {
-            if DOC_EXTENSIONS.contains(&ext) {
-                return true;
-            }
+        if let Some(ext) = filename.rsplit('.').next()
+            && DOC_EXTENSIONS.contains(&ext)
+        {
+            return true;
         }
 
         // check doc file prefixes (README*, CHANGELOG*, etc.)
@@ -431,10 +432,11 @@ impl CompiledAllowlist {
             }
             // check for /docs/, /doc/, etc. in middle of path
             // without format! allocation
-            if let Some(pos) = lower.find(dir) {
-                if pos > 0 && lower.as_bytes()[pos - 1] == b'/' {
-                    return true;
-                }
+            if let Some(pos) = lower.find(dir)
+                && pos > 0
+                && lower.as_bytes()[pos - 1] == b'/'
+            {
+                return true;
             }
         }
 

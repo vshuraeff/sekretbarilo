@@ -282,19 +282,19 @@ fn scan_line(ctx: &ScanLineContext<'_>, candidate_bits: &mut [bool], findings: &
             // heuristic (step 8.5) already validates these. the entropy
             // min-length threshold would otherwise reject strong passwords
             // shorter than MIN_ENTROPY_LENGTH (e.g. 12-char passwords).
-            if !is_password_rule(&rule.id) {
-                if let Some(mut threshold) = rule.entropy_threshold {
-                    // apply global override as a floor (never lower a rule's threshold)
-                    if let Some(override_val) = ctx.allowlist.entropy_threshold_override {
-                        threshold = threshold.max(override_val);
-                    }
-                    // apply doc file bonus (raise threshold = less likely to flag)
-                    if ctx.is_doc_file {
-                        threshold += ctx.allowlist.doc_entropy_bonus();
-                    }
-                    if !entropy::passes_entropy_check(secret, threshold) {
-                        continue;
-                    }
+            if !is_password_rule(&rule.id)
+                && let Some(mut threshold) = rule.entropy_threshold
+            {
+                // apply global override as a floor (never lower a rule's threshold)
+                if let Some(override_val) = ctx.allowlist.entropy_threshold_override {
+                    threshold = threshold.max(override_val);
+                }
+                // apply doc file bonus (raise threshold = less likely to flag)
+                if ctx.is_doc_file {
+                    threshold += ctx.allowlist.doc_entropy_bonus();
+                }
+                if !entropy::passes_entropy_check(secret, threshold) {
+                    continue;
                 }
             }
 
@@ -312,7 +312,7 @@ fn scan_line(ctx: &ScanLineContext<'_>, candidate_bits: &mut [bool], findings: &
 mod tests {
     use super::*;
     use crate::diff::parser::{AddedLine, DiffFile};
-    use crate::scanner::rules::{compile_rules, Rule, RuleAllowlist};
+    use crate::scanner::rules::{Rule, RuleAllowlist, compile_rules};
 
     fn make_rule(
         id: &str,
@@ -570,12 +570,16 @@ mod tests {
         let findings = scan(&[file1, file2], &scanner, &al);
         assert_eq!(findings.len(), 2);
         // with parallel processing, order may vary, so check both exist
-        assert!(findings
-            .iter()
-            .any(|f| f.rule_id == "aws-key" && f.file == "aws.rs"));
-        assert!(findings
-            .iter()
-            .any(|f| f.rule_id == "github-token" && f.file == "github.rs"));
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.rule_id == "aws-key" && f.file == "aws.rs")
+        );
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.rule_id == "github-token" && f.file == "github.rs")
+        );
     }
 
     #[test]

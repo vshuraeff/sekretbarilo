@@ -7,8 +7,8 @@
 
 use sekretbarilo::config;
 use sekretbarilo::diff::check_env_files;
-use sekretbarilo::diff::parser::{parse_diff, AddedLine, DiffFile};
-use sekretbarilo::scanner::engine::{scan, Finding};
+use sekretbarilo::diff::parser::{AddedLine, DiffFile, parse_diff};
+use sekretbarilo::scanner::engine::{Finding, scan};
 use sekretbarilo::scanner::rules::{compile_rules, load_default_rules};
 
 // -- helpers --
@@ -295,9 +295,13 @@ fn integration_password_placeholder_allowed() {
 
 #[test]
 fn integration_sha256_hash_allowed() {
-    let diff = make_modified_file_diff("src/verify.rs", 30, &[
-        "let expected_hash = \"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\";",
-    ]);
+    let diff = make_modified_file_diff(
+        "src/verify.rs",
+        30,
+        &[
+            "let expected_hash = \"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\";",
+        ],
+    );
     let (_, findings) = scan_diff(&diff);
 
     assert!(
@@ -743,9 +747,13 @@ fn integration_multiple_secrets_single_file() {
 
 #[test]
 fn integration_jwt_token_blocked() {
-    let diff = make_modified_file_diff("src/auth.js", 10, &[
-        "const token = \"eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U\";",
-    ]);
+    let diff = make_modified_file_diff(
+        "src/auth.js",
+        10,
+        &[
+            "const token = \"eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U\";",
+        ],
+    );
     let (_, findings) = scan_diff(&diff);
 
     assert!(
