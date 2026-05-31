@@ -63,6 +63,10 @@ struct CliOverrides {
     exclude_patterns: Vec<String>,
     include_patterns: Vec<String>,
     include_ignored: bool,
+    /// literal substring patterns for user-search (audit only)
+    search_literals: Vec<String>,
+    /// regex patterns for user-search (audit only)
+    search_regexes: Vec<String>,
 }
 
 /// audit-specific flags parsed from cli
@@ -169,6 +173,14 @@ fn parse_cli(
                 let val = opts.value().map_err(|e| e.to_string())?;
                 overrides.include_patterns.push(val.to_string());
             }
+            Arg::Long("search") => {
+                let val = opts.value().map_err(|e| e.to_string())?;
+                overrides.search_literals.push(val.to_string());
+            }
+            Arg::Long("search-regex") => {
+                let val = opts.value().map_err(|e| e.to_string())?;
+                overrides.search_regexes.push(val.to_string());
+            }
             // install flags
             Arg::Long("global") => install_flags.global = true,
             // check-file flags
@@ -223,6 +235,12 @@ fn parse_cli(
         }
         if overrides.include_ignored {
             return Err("--include-ignored is only valid with audit".to_string());
+        }
+        if !overrides.search_literals.is_empty() {
+            return Err("--search is only valid with audit".to_string());
+        }
+        if !overrides.search_regexes.is_empty() {
+            return Err("--search-regex is only valid with audit".to_string());
         }
     }
 
@@ -363,6 +381,8 @@ fn print_usage() {
     eprintln!("  --include-ignored         include untracked ignored files");
     eprintln!("  --exclude-pattern <pat>   add exclude pattern for audit (repeatable)");
     eprintln!("  --include-pattern <pat>   add include pattern for audit (repeatable)");
+    eprintln!("  --search <text>           literal substring to search for (repeatable)");
+    eprintln!("  --search-regex <pat>      regex pattern to search for (repeatable)");
     eprintln!();
     eprintln!("check-file flags:");
     eprintln!("  --stdin-json              read file path from JSON on stdin (agent hook mode)");
@@ -602,6 +622,8 @@ fn run_audit_cmd(overrides: &CliOverrides, audit_flags: &AuditFlags) -> i32 {
         since: audit_flags.since.clone(),
         until: audit_flags.until.clone(),
         include_ignored: overrides.include_ignored,
+        search_literals: overrides.search_literals.clone(),
+        search_regexes: overrides.search_regexes.clone(),
     };
 
     audit::run_audit(&repo_root, &options, &project_config, &compiled, &allowlist)
@@ -732,6 +754,55 @@ mod tests {
         let (_, overrides, _, _, _) = parse_cli(&a).unwrap();
         assert_eq!(overrides.exclude_patterns, vec!["^vendor/"]);
         assert_eq!(overrides.include_patterns, vec![r"\.rs$"]);
+    }
+
+    #[test]
+    fn parse_cli_search_literal_repeatable() {
+        let (_, overrides, _, _, _) = parse_cli(&args("audit --search foo --search bar")).unwrap();
+        assert_eq!(overrides.search_literals, vec!["foo", "bar"]);
+        assert!(overrides.search_regexes.is_empty());
+    }
+
+    #[test]
+    fn parse_cli_search_regex_repeatable() {
+        let a: Vec<String> = vec![
+            "audit",
+            "--search-regex",
+            "api.*key",
+            "--search-regex",
+            "token[0-9]+",
+        ]
+        .into_iter()
+        .map(String::from)
+        .collect();
+        let (_, overrides, _, _, _) = parse_cli(&a).unwrap();
+        assert_eq!(overrides.search_regexes, vec!["api.*key", "token[0-9]+"]);
+    }
+
+    #[test]
+    fn parse_cli_search_and_search_regex_coexist() {
+        let (_, overrides, _, _, _) =
+            parse_cli(&args("audit --search foo --search-regex bar.*baz")).unwrap();
+        assert_eq!(overrides.search_literals, vec!["foo"]);
+        assert_eq!(overrides.search_regexes, vec!["bar.*baz"]);
+    }
+
+    #[test]
+    fn parse_cli_search_on_scan_rejected() {
+        let err = parse_cli(&args("scan --search foo")).unwrap_err();
+        assert!(err.contains("only valid with audit"));
+    }
+
+    #[test]
+    fn parse_cli_search_regex_on_scan_rejected() {
+        let err = parse_cli(&args("scan --search-regex foo")).unwrap_err();
+        assert!(err.contains("only valid with audit"));
+    }
+
+    #[test]
+    fn parse_cli_search_missing_value() {
+        let err = parse_cli(&args("audit --search")).unwrap_err();
+        assert!(err.contains("requires a value"));
     }
 
     #[test]

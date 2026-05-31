@@ -17,18 +17,24 @@ use crate::scanner::engine::{Finding, scan};
 use crate::scanner::rules::CompiledScanner;
 
 use super::AuditOptions;
+use super::search::{SearchMatch, SearchPatterns, run_search_pass, snippet_display};
 
 /// strip control characters and unicode bidi overrides from a string
 /// to prevent terminal injection via malicious git author/email/branch/file fields.
-fn sanitize_display(s: &str) -> String {
+pub(crate) fn sanitize_display(s: &str) -> String {
     s.chars()
-        .filter(|&c| c >= ' ' || c == '\t')
-        .filter(|&c| c != '\x7f')
+        // strip c0/c1 control chars (incl. del and csi u+009b), keep tab
+        .filter(|&c| c == '\t' || !c.is_control())
+        // strip bidi controls and zero-width/invisible format chars that
+        // enable terminal spoofing
         .filter(|&c| {
             !matches!(c,
-                '\u{200E}'..='\u{200F}' | // LTR/RTL marks
+                '\u{200B}'..='\u{200F}' | // zero-width chars + ltr/rtl marks
                 '\u{202A}'..='\u{202E}' | // bidi overrides
-                '\u{2066}'..='\u{2069}'   // bidi isolates
+                '\u{2060}'..='\u{2064}' | // word joiner + invisible operators
+                '\u{2066}'..='\u{2069}' | // bidi isolates
+                '\u{061C}' |              // arabic letter mark
+                '\u{FEFF}'                // zero-width no-break space / bom
             )
         })
         .collect()
@@ -49,6 +55,13 @@ pub struct CommitInfo {
 #[derive(Debug, Clone)]
 pub struct HistoryFinding {
     pub finding: Finding,
+    pub commit: CommitInfo,
+}
+
+/// a user-search match annotated with commit metadata
+#[derive(Debug, Clone)]
+pub struct HistorySearchMatch {
+    pub base: SearchMatch,
     pub commit: CommitInfo,
 }
 
@@ -298,8 +311,9 @@ impl CompiledAuditFilters {
     }
 }
 
-/// scan a single commit's diff for secrets.
+/// scan a single commit's diff for secrets AND user-search patterns.
 /// increments `error_count` if the diff cannot be retrieved.
+#[allow(clippy::too_many_arguments)]
 fn scan_commit(
     commit: &CommitInfo,
     is_root: bool,
@@ -307,19 +321,20 @@ fn scan_commit(
     scanner: &CompiledScanner,
     allowlist: &CompiledAllowlist,
     audit_filters: &CompiledAuditFilters,
+    search_patterns: &SearchPatterns,
     error_count: &AtomicUsize,
-) -> Vec<HistoryFinding> {
+) -> (Vec<HistoryFinding>, Vec<HistorySearchMatch>) {
     let diff_bytes = match get_commit_diff(&commit.hash, is_root, repo_root) {
         Ok(d) => d,
         Err(e) => {
             eprintln!("[WARN] {}", e);
             error_count.fetch_add(1, Ordering::Relaxed);
-            return Vec::new();
+            return (Vec::new(), Vec::new());
         }
     };
 
     if diff_bytes.is_empty() {
-        return Vec::new();
+        return (Vec::new(), Vec::new());
     }
 
     let diff_files: Vec<DiffFile> = parse_diff(&diff_bytes)
@@ -327,14 +342,28 @@ fn scan_commit(
         .filter(|df| audit_filters.should_scan(&df.path))
         .collect();
     let findings = scan(&diff_files, scanner, allowlist);
+    let search_matches = if search_patterns.is_empty() {
+        Vec::new()
+    } else {
+        run_search_pass(&diff_files, search_patterns)
+    };
 
-    findings
+    let history_findings = findings
         .into_iter()
         .map(|f| HistoryFinding {
             finding: f,
             commit: commit.clone(),
         })
-        .collect()
+        .collect();
+    let history_matches = search_matches
+        .into_iter()
+        .map(|m| HistorySearchMatch {
+            base: m,
+            commit: commit.clone(),
+        })
+        .collect();
+
+    (history_findings, history_matches)
 }
 
 /// deduplicate history findings: same rule + same file + same secret value
@@ -370,6 +399,105 @@ pub fn deduplicate_findings(findings: Vec<HistoryFinding>) -> Vec<HistoryFinding
             .then(a.finding.line.cmp(&b.finding.line))
     });
     result
+}
+
+/// deduplicate history search matches: same file + line + pattern + content
+/// keeps the earliest commit so the user sees when the text first appeared.
+pub fn deduplicate_search_matches(matches: Vec<HistorySearchMatch>) -> Vec<HistorySearchMatch> {
+    let mut seen: HashMap<(String, usize, String, Vec<u8>), HistorySearchMatch> = HashMap::new();
+    for hm in matches {
+        let key = (
+            hm.base.file.clone(),
+            hm.base.line,
+            hm.base.pattern.clone(),
+            hm.base.line_content.clone(),
+        );
+        seen.entry(key)
+            .and_modify(|existing| {
+                if hm.commit.timestamp < existing.commit.timestamp {
+                    *existing = hm.clone();
+                }
+            })
+            .or_insert(hm);
+    }
+    let mut result: Vec<HistorySearchMatch> = seen.into_values().collect();
+    result.sort_by(|a, b| {
+        a.commit
+            .timestamp
+            .cmp(&b.commit.timestamp)
+            .then(a.commit.hash.cmp(&b.commit.hash))
+            .then(a.base.file.cmp(&b.base.file))
+            .then(a.base.line.cmp(&b.base.line))
+            .then(a.base.pattern.cmp(&b.base.pattern))
+    });
+    result
+}
+
+/// report history search matches to stderr.
+/// groups matches by commit; includes branch containment when available.
+pub fn report_history_search_matches(
+    matches: &[HistorySearchMatch],
+    commit_count: usize,
+    branch_map: &HashMap<String, Vec<String>>,
+) -> usize {
+    write_history_search_matches(matches, commit_count, branch_map, &mut std::io::stderr())
+}
+
+pub(crate) fn write_history_search_matches(
+    matches: &[HistorySearchMatch],
+    commit_count: usize,
+    branch_map: &HashMap<String, Vec<String>>,
+    out: &mut dyn std::io::Write,
+) -> usize {
+    let total = matches.len();
+    if total == 0 {
+        let _ = writeln!(
+            out,
+            "[SEARCH] scanned {} commit(s). 0 match(es).",
+            commit_count
+        );
+        return 0;
+    }
+    let _ = writeln!(out);
+    let _ = writeln!(out, "[SEARCH] user-search match(es) found in git history");
+    let _ = writeln!(out);
+
+    let mut current_hash = String::new();
+    for hm in matches {
+        if hm.commit.hash != current_hash {
+            current_hash = hm.commit.hash.clone();
+            let short = if current_hash.len() >= 8 {
+                &current_hash[..8]
+            } else {
+                current_hash.as_str()
+            };
+            let _ = writeln!(
+                out,
+                "  commit: {} ({} <{}>, {})",
+                short,
+                sanitize_display(&hm.commit.author),
+                sanitize_display(&hm.commit.email),
+                sanitize_display(&hm.commit.date)
+            );
+            if let Some(branches) = branch_map.get(&current_hash)
+                && !branches.is_empty()
+            {
+                let safe: Vec<String> = branches.iter().map(|b| sanitize_display(b)).collect();
+                let _ = writeln!(out, "    branches: {}", safe.join(", "));
+            }
+        }
+        let _ = writeln!(out, "    file: {}", sanitize_display(&hm.base.file));
+        let _ = writeln!(out, "    line: {}", hm.base.line);
+        let _ = writeln!(out, "    pattern: {}", sanitize_display(&hm.base.pattern));
+        let _ = writeln!(out, "    match: {}", snippet_display(&hm.base.line_content));
+        let _ = writeln!(out);
+    }
+    let _ = writeln!(
+        out,
+        "[SEARCH] {} match(es) across {} commit(s) scanned.",
+        total, commit_count
+    );
+    total
 }
 
 /// report history findings to stderr.
@@ -482,6 +610,16 @@ pub fn run_history_audit(
         }
     };
 
+    // step 1b: compile user-search patterns
+    let search_patterns =
+        match SearchPatterns::new(&options.search_literals, &options.search_regexes) {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("[ERROR] {}", e);
+                return 2;
+            }
+        };
+
     // step 2: list commits
     let commits = match list_commits(repo_root, options) {
         Ok(c) => c,
@@ -509,20 +647,22 @@ pub fn run_history_audit(
         }
     };
 
-    // step 4: scan commits in parallel with progress reporting
+    // step 4: scan commits in parallel with progress reporting.
+    // each commit produces both secret findings and user-search matches.
     let progress = AtomicUsize::new(0);
 
-    let all_findings: Vec<HistoryFinding> = commits
+    let per_commit: Vec<(Vec<HistoryFinding>, Vec<HistorySearchMatch>)> = commits
         .par_iter()
-        .flat_map(|commit| {
+        .map(|commit| {
             let is_root = root_hashes.contains(&commit.hash);
-            let findings = scan_commit(
+            let pair = scan_commit(
                 commit,
                 is_root,
                 repo_root,
                 scanner,
                 allowlist,
                 &audit_filters,
+                &search_patterns,
                 &error_count,
             );
 
@@ -533,9 +673,16 @@ pub fn run_history_audit(
                 eprintln!("[AUDIT] scanned {}/{} commits...", done, commit_count);
             }
 
-            findings
+            pair
         })
         .collect();
+
+    let mut all_findings: Vec<HistoryFinding> = Vec::new();
+    let mut all_search_matches: Vec<HistorySearchMatch> = Vec::new();
+    for (fs, ms) in per_commit {
+        all_findings.extend(fs);
+        all_search_matches.extend(ms);
+    }
 
     let errors = error_count.load(Ordering::Relaxed);
     if errors > 0 {
@@ -547,22 +694,24 @@ pub fn run_history_audit(
         eprintln!("[AUDIT] scanned {}/{} commits.", commit_count, commit_count);
     }
 
-    // step 5: deduplicate
+    // step 5: deduplicate secret findings and search matches separately
     let deduped = deduplicate_findings(all_findings);
+    let deduped_matches = deduplicate_search_matches(all_search_matches);
 
-    // step 6: resolve branches for commits that have findings
+    // step 6: resolve branches for commits that have findings or search matches
     let finding_hashes: Vec<String> = {
         let mut seen = HashSet::new();
-        deduped
+        let mut out = Vec::new();
+        for hash in deduped
             .iter()
-            .filter_map(|hf| {
-                if seen.insert(hf.commit.hash.as_str()) {
-                    Some(hf.commit.hash.clone())
-                } else {
-                    None
-                }
-            })
-            .collect()
+            .map(|hf| hf.commit.hash.as_str())
+            .chain(deduped_matches.iter().map(|hm| hm.commit.hash.as_str()))
+        {
+            if seen.insert(hash) {
+                out.push(hash.to_string());
+            }
+        }
+        out
     };
     if !finding_hashes.is_empty() {
         eprintln!(
@@ -572,10 +721,15 @@ pub fn run_history_audit(
     }
     let branch_map = get_branches_for_commits(&finding_hashes, repo_root);
 
-    // step 7: report
+    // step 7: report findings and search matches in separate sections
     let total = report_history_findings(&deduped, commit_count, errors, &branch_map);
+    let search_total = if !search_patterns.is_empty() {
+        report_history_search_matches(&deduped_matches, commit_count, &branch_map)
+    } else {
+        0
+    };
 
-    if total > 0 {
+    if total > 0 || search_total > 0 {
         1
     } else if errors > 0 {
         // incomplete scan: some commits failed, cannot guarantee clean

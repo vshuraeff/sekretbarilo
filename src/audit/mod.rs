@@ -1,6 +1,7 @@
 // audit mode: scan all tracked files in working tree for secrets
 
 pub mod history;
+pub mod search;
 
 use std::collections::HashSet;
 use std::path::Path;
@@ -29,6 +30,10 @@ pub struct AuditOptions {
     pub until: Option<String>,
     /// include untracked ignored files in audit
     pub include_ignored: bool,
+    /// literal substring patterns for user-search
+    pub search_literals: Vec<String>,
+    /// regex patterns for user-search
+    pub search_regexes: Vec<String>,
 }
 
 /// list all tracked files via `git ls-files -z` (NUL-delimited for safe filename handling).
@@ -289,9 +294,6 @@ pub fn validate_filter_options(options: &AuditOptions) -> Result<(), String> {
     Ok(())
 }
 
-/// run the audit: scan all tracked files in the working tree, or history if --history is set.
-/// accepts pre-loaded config, scanner, and allowlist from the caller.
-/// returns exit code: 0 = clean, 1 = secrets found, 2 = internal error.
 pub fn run_audit(
     repo_root: &Path,
     options: &AuditOptions,
@@ -315,6 +317,18 @@ pub fn run_audit(
             &project_config.audit,
         );
     }
+
+    // step 1: compile user-search patterns eagerly so invalid regex/literal
+    // input is reported before any file work and regardless of whether the
+    // filtered file list ends up empty.
+    let search_patterns =
+        match search::SearchPatterns::new(&options.search_literals, &options.search_regexes) {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("[ERROR] {}", e);
+                return 2;
+            }
+        };
 
     // working-tree mode below
     let mut skipped_files = 0usize;
@@ -379,13 +393,21 @@ pub fn run_audit(
     let total_errors = read_errors + skipped_files + enumeration_errors;
     let file_count = diff_files.len();
 
-    // step 6: scan
+    // step 6a: secret-rule scan
     let findings = scan(&diff_files, compiled, allowlist);
+
+    // step 6b: user-search pass (independent of secret rules)
+    let search_matches = search::run_search_pass(&diff_files, &search_patterns);
 
     // step 7: report
     let total = report_audit_findings(&findings, file_count, total_errors);
+    let search_total = if !search_patterns.is_empty() {
+        search::report_search_matches(&search_matches, file_count)
+    } else {
+        0
+    };
 
-    if total > 0 {
+    if total > 0 || search_total > 0 {
         1
     } else if total_errors > 0 {
         // incomplete scan: some files unreadable/skipped, cannot guarantee clean

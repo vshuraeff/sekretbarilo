@@ -71,6 +71,15 @@ sekretbarilo audit --history
 
 # filter by branch or date
 sekretbarilo audit --history --branch main --since 2024-01-01
+
+# find arbitrary text in working tree (literal substring, dots are literal)
+sekretbarilo audit --search "api.key"
+
+# find regex across full history (case-sensitive; use (?i) prefix for ci)
+sekretbarilo audit --history --search-regex "TOKEN_[A-Z]+"
+
+# skip embedded default rules; custom config rules (if any) still apply
+sekretbarilo audit --history --search "my_flag" --no-defaults
 ```
 
 ### Agent hooks (Claude Code)
@@ -120,6 +129,12 @@ Checks pre-commit hooks (local/global), Claude Code hooks, configuration, and PA
 | `--include-ignored` | Include untracked ignored files |
 | `--exclude-pattern <p>` | Exclude pattern (repeatable) |
 | `--include-pattern <p>` | Force-include pattern (repeatable) |
+| `--search <text>` | Literal substring to search for (repeatable; metacharacters are escaped) |
+| `--search-regex <pattern>` | Regex pattern to search for (repeatable; case-sensitive) |
+
+`--search`/`--search-regex` report hits in a separate `[SEARCH]` block and do not affect secret-rule output. Combine with `--no-defaults` to skip the embedded secret rules — note that custom rules from config files still run, so this is only a pure search mode if no custom rules are configured. Both flags work in working-tree and `--history` modes. Exit code is `1` when a secret **or** a search match is found.
+
+> Note: `--stopword` is an *allowlist* (suppresses findings whose secret value contains the word), not a search filter. For searching use `--search`/`--search-regex`.
 
 ### Other flags
 

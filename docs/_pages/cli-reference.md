@@ -292,6 +292,12 @@ these flags only apply to the `audit` command:
 | `--include-ignored` | boolean | include untracked ignored files in working tree scan (respects .gitignore). |  |
 | `--exclude-pattern <pattern>` | repeatable | exclude files matching regex pattern. can be specified multiple times. |  |
 | `--include-pattern <pattern>` | repeatable | force-include files matching regex pattern (overrides exclusions). can be specified multiple times. |  |
+| `--search <text>` | repeatable | literal substring to search for across scanned files and/or history. regex metacharacters are escaped automatically, so `api.key` matches only literal `api.key`. reports appear in a separate `[SEARCH]` block and do not run through the secret-rule engine (no allowlist/stopword suppression). |  |
+| `--search-regex <pattern>` | repeatable | regex pattern to search for. case-sensitive by default; prefix with `(?i)` for case-insensitive matching. |  |
+
+`--search` and `--search-regex` are independent of the secret-rule engine. Use them to find arbitrary text or patterns in the working tree (default) or across full history (`--history`). Combine with `--no-defaults` to skip the embedded secret rules — note that rules loaded from a `--config` file still run, so this is only a pure search mode when no custom rules are configured. Exit code is `1` when a secret **or** a search match is found.
+
+> `--search` is not the same as `--stopword`. `--stopword` *suppresses* secret findings whose captured value contains the word; `--search` actively looks for text.
 
 ---
 
@@ -418,6 +424,32 @@ sekretbarilo audit --history --since 2024-01-01 --until 2024-12-31
 sekretbarilo audit --history --branch feature/new-api --since 2024-06-01
 ```
 
+### user-search (arbitrary text or regex)
+
+```sh
+# find a literal substring in the working tree
+sekretbarilo audit --search "api_key"
+
+# same thing across all commits in history
+sekretbarilo audit --history --search "api_key"
+
+# dots in --search are literal (will NOT match 'apiXkey')
+sekretbarilo audit --search "api.key"
+
+# regex search (case-sensitive; prefix with (?i) to ignore case)
+sekretbarilo audit --search-regex "TOKEN_[A-Z]+"
+sekretbarilo audit --history --search-regex "(?i)internal.*url"
+
+# multiple patterns at once (repeat the flag)
+sekretbarilo audit --search "FIXME" --search "TODO" --search-regex "HACK\s*\(.+\)"
+
+# skip the embedded secret rules (custom --config rules, if any, still run)
+sekretbarilo audit --history --search "my_flag" --no-defaults
+
+# combine with path filters to narrow scope
+sekretbarilo audit --search "todo" --exclude-pattern '^vendor/'
+```
+
 ### runtime allowlist and stopwords
 
 ```sh
@@ -531,6 +563,8 @@ sekretbarilo validates flag combinations to prevent misuse:
 | `--until` | `audit --history` | `scan`, `audit` (without `--history`) |
 | `--exclude-pattern` | `audit` | `scan`, `install`, `check-file`, `doctor` |
 | `--include-pattern` | `audit` | `scan`, `install`, `check-file`, `doctor` |
+| `--search` | `audit` | `scan`, `install`, `check-file`, `doctor` |
+| `--search-regex` | `audit` | `scan`, `install`, `check-file`, `doctor` |
 | `--include-ignored` | `audit` | `scan`, `install`, `check-file`, `doctor` |
 | `--stdin-json` | `check-file` | `scan`, `audit`, `install`, `doctor` |
 | `--global` | `install` subcommands | `scan`, `audit`, `check-file`, `doctor` |
