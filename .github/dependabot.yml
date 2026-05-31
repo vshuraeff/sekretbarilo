@@ -1,0 +1,25 @@
+version: 2
+updates:
+  # keep pinned github actions (commit-sha) up to date
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: ci
+    groups:
+      actions:
+        patterns:
+          - "*"
+
+  # keep cargo dependencies up to date
+  - package-ecosystem: cargo
+    directory: "/"
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: chore
+    groups:
+      cargo:
+        patterns:
+          - "*"
