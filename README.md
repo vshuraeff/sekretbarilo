@@ -4,6 +4,7 @@
 [![Release](https://github.com/vshuraeff/sekretbarilo/actions/workflows/release.yml/badge.svg)](https://github.com/vshuraeff/sekretbarilo/actions/workflows/release.yml)
 [![Latest Release](https://img.shields.io/github/v/release/vshuraeff/sekretbarilo)](https://github.com/vshuraeff/sekretbarilo/releases)
 [![License: MIT](https://img.shields.io/github/license/vshuraeff/sekretbarilo)](LICENSE)
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/vshuraeff/sekretbarilo)
 
 High-performance secret scanner for git workflows and AI coding agents. Catches API keys, credentials, and secrets before they leak.
 
