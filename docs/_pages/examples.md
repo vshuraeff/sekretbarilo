@@ -36,33 +36,63 @@ sekretbarilo install pre-commit
 
 Output:
 ```
-[INFO] pre-commit hook installed at .git/hooks/pre-commit
+[OK] created new pre-commit hook
 ```
 
-### What happens when you commit a secret
+### What happens when you commit a .env file
+
+`.env` files are blocked unconditionally — sekretbarilo does not even read them, so this example needs no secret material at all:
 
 ```sh
-# create a config file with an aws key
-echo "AWS_KEY=AKIAIOSFODNN7EXAMPLE" > config.py
+# create a .env file (it does not matter what is in it)
+echo "API_TOKEN=changeme" > .env
 
 # try to commit it
-git add config.py
-git commit -m "add config"
+git add -f .env
+git commit -m "add env"
 ```
 
 sekretbarilo blocks the commit and shows:
 
 ```
-[ERROR] secret detected in staged changes
+[ERROR] secret(s) detected in staged changes
 
-  file: config.py
-  line: 1
-  rule: aws-access-key-id
-  match: AK**************LE
+  file: .env
+  line: -
+  rule: env-file-blocked
+  match: (blocked file type)
 
 commit blocked. 1 secret(s) found.
 use `git commit --no-verify` to bypass (not recommended).
 ```
+
+`line: -` and `match: (blocked file type)` are literal: the block is a policy decision about the filename, not a finding inside the file.
+
+Renaming it to `.env.example` (or `.env.sample`, or `.env.template`) makes the commit pass — those three names are treated as documentation.
+
+### What happens when you commit a key in source code
+
+```sh
+# a real-shaped aws access key ends up in a config file
+git add config.py
+git commit -m "add config"
+```
+
+```
+[ERROR] secret(s) detected in staged changes
+
+  file: config.py
+  line: 1
+  rule: aws-access-key-id
+  match: AK****************ME
+
+commit blocked. 1 secret(s) found.
+use `git commit --no-verify` to bypass (not recommended).
+```
+
+The value is masked to its first and last two characters, so the last two of your output will differ from the transcript above.
+
+**A note on `AKIAIOSFODNN7EXAMPLE`**: that specific string is the key AWS prints in its own documentation, and it ships allowlisted in the built-in `aws-access-key-id` rule. It will *not* block a commit. If you want to reproduce the block above, use a throwaway value of the same shape rather than the documentation key.
 
 ### Fixing the issue
 
@@ -81,10 +111,7 @@ git add config.py
 git commit -m "add config"
 ```
 
-Output:
-```
-[INFO] no secrets detected. commit allowed.
-```
+A clean `scan` prints nothing at all and exits 0 — silence is success. sekretbarilo only speaks up when it has something to block.
 
 ---
 
@@ -101,23 +128,22 @@ sekretbarilo audit
 
 Example output (clean):
 ```
-[AUDIT] no secrets found in working tree
+[AUDIT] audit complete. scanned 1 file(s), 0 secret(s) found.
 ```
 
 Example output (secrets found):
 ```
-[AUDIT] 2 secret(s) found in working tree
-
-  file: src/config.rs
-  line: 42
-  rule: aws-access-key-id
-  match: AK**************QA
+[AUDIT] secret(s) detected in tracked files
 
   file: scripts/deploy.sh
-  line: 15
-  rule: generic-api-key
-  match: sk********************xy
+  line: 1
+  rule: github-personal-access-token
+  match: gh**************************************AB
+
+[AUDIT] audit complete. scanned 3 file(s), 1 secret(s) in 1 file(s).
 ```
+
+Unlike `scan`, `audit` always prints a summary line, clean or not — it is a report, not a gate. It still exits 1 when it finds something.
 
 ### Including ignored files
 
@@ -173,38 +199,46 @@ sekretbarilo audit --history
 
 Example output:
 ```
-[AUDIT] 3 secret(s) found in git history
+[AUDIT] scanned 4/4 commits.
+[AUDIT] resolving branches for 3 commit(s)...
 
-  commit: abc1234567890abcdef1234567890abcdef12345 (Jane Dev <jane@company.com>, 2024-03-15T14:22:00+00:00)
-    branches: main, feature/auth
+[AUDIT] secret(s) detected in git history
+
+  commit: 1e512f68 (Jane Dev <jane@example.com>, 2024-03-15T14:22:00Z)
+    branches: feature/api, main
     file: config.py
-    line: 7
-    rule: aws-access-key-id
-    match: AK**************QA
-
-  commit: def4567890123def4567890123def4567890123d (John Smith <john@company.com>, 2024-05-20T09:15:30+00:00)
-    branches: main, develop
-    file: scripts/setup.sh
-    line: 23
+    line: 1
     rule: github-personal-access-token
-    match: gh**********************************AB
+    match: gh**************************************AB
 
-  commit: 789abc123def789abc123def789abc123def789a (Alice Johnson <alice@company.com>, 2024-08-10T16:45:00+00:00)
-    branches: feature/api, develop
+  commit: 7ff8ca52 (John Smith <john@example.com>, 2024-05-20T09:15:30Z)
+    branches: feature/api, main
+    file: scripts/setup.sh
+    line: 1
+    rule: gitlab-personal-access-token
+    match: gl**********************ij
+
+  commit: 6c2a6a9c (Alice Johnson <alice@example.com>, 2024-08-10T16:45:00Z)
+    branches: feature/api
     file: src/api/client.js
-    line: 102
-    rule: generic-api-key
-    match: sk********************yz
+    line: 1
+    rule: slack-bot-token
+    match: xo**************************************************Wx
+
+[AUDIT] scanned 4 commit(s). 3 secret(s) found.
 ```
 
 The output shows:
-- **commit hash** - full sha-1 hash of the commit
+- **progress lines** - how many commits were scanned, and how many needed branch resolution
+- **commit hash** - abbreviated commit hash
 - **author and email** - who committed the secret
-- **timestamp** - when it was committed (iso 8601 format with timezone)
+- **timestamp** - when it was committed (iso 8601)
 - **branches** - which branches contain this commit
 - **file and line** - where in the file the secret was found
 - **rule** - which detection rule matched
 - **match** - partially redacted secret value
+
+Branch resolution runs only for commits that produced findings, which is why the second progress line counts 3 and not 4.
 
 ### Filtering by branch
 
@@ -250,9 +284,75 @@ History audit findings include additional context compared to regular scans:
 
 ---
 
+## Searching for Your Own Strings
+
+`--search` and `--search-regex` add a second, independent pass to an audit. Use them when you know exactly what you are looking for — a rotated credential, an internal hostname, a vendor account id — and the built-in rules would not recognise it.
+
+```sh
+# find every occurrence of an internal hostname
+sekretbarilo audit --search internal.example.com
+```
+
+The search pass runs *in addition to* the normal rule-based audit, and reports separately:
+
+```
+[AUDIT] secret(s) detected in tracked files
+
+  file: config.py
+  line: 1
+  rule: github-personal-access-token
+  match: gh**************************************AB
+
+  file: scripts/setup.sh
+  line: 1
+  rule: gitlab-personal-access-token
+  match: gl**********************ij
+
+[AUDIT] audit complete. scanned 5 file(s), 2 secret(s) in 2 file(s).
+
+
+[SEARCH] user-search match(es) found
+
+  file: deploy/prod.yml
+  line: 1
+  pattern: internal.example.com
+  match: endpoint: api.internal.example.com
+
+  file: deploy/staging.yml
+  line: 1
+  pattern: internal.example.com
+  match: endpoint: api.internal.example.com
+
+[SEARCH] 2 match(es) in 2 file(s) across 5 scanned file(s).
+```
+
+With no matches, the pass still reports:
+
+```
+[SEARCH] scanned 5 file(s). 0 match(es).
+```
+
+Both flags are repeatable and can be mixed:
+
+```sh
+sekretbarilo audit \
+  --search internal.example.com \
+  --search-regex 'ACCT-[0-9]{8}'
+```
+
+Three things to know:
+
+- **Search hits are not masked.** You asked for this exact string, so the full matching line is printed. Rule findings on the same run stay masked.
+- **A search match alone makes the command exit 1**, even when the rule pass found nothing.
+- **Audit only.** `scan --search` is rejected; the pass is meant for investigation, not for gating commits.
+
+---
+
 ## Setting Up Claude Code Protection
 
-Prevent Claude Code from reading files that contain secrets.
+The following examples use `block` mode, which prevents Claude Code from reading files that contain secrets. For output masking, use `sekretbarilo install agent-hook claude --mode redact` (Claude Code >= 2.1.121): successful `Bash`, text `Read`, and `Grep` results replace detected values with `[REDACTED]` while leaving files unchanged. See [redaction behavior and a synthetic smoke check]({{ '/agent-hooks/#redact-mode-output-editor' | relative_url }}).
+
+Without `--mode`, an install preserves the mode already configured in the selected settings file; a new installation uses `block`. Use `--mode block` explicitly when following these blocking examples after enabling redaction.
 
 ### Step-by-step installation
 
@@ -266,59 +366,7 @@ sekretbarilo install agent-hook claude
 
 Output:
 ```
-[INFO] claude code hook installed at .claude/settings.json
-[INFO] hook command: sekretbarilo check-file --stdin-json
-[INFO] hook will scan files before claude code reads them
-```
-
-### Verifying installation
-
-```sh
-# check that everything is configured correctly
-sekretbarilo doctor
-```
-
-Example output (healthy installation):
-```
-[INFO] sekretbarilo doctor
-
-Git pre-commit hook (local):
-  ✓ installed at .git/hooks/pre-commit
-  ✓ executable
-  ✓ sekretbarilo marker present
-
-Claude code hook (local):
-  ✓ installed at .claude/settings.json
-  ✓ hook command: sekretbarilo check-file --stdin-json
-  ✓ hook type: PreToolUse (Read tool)
-
-Configuration:
-  ✓ config loaded from .sekretbarilo.toml
-  ✓ 109 built-in rules + 2 custom rules
-  ✓ entropy threshold: 3.5
-
-Binary:
-  ✓ sekretbarilo found in PATH at /usr/local/bin/sekretbarilo
-```
-
-Example output (issues found):
-```
-[WARN] sekretbarilo doctor
-
-Git pre-commit hook (local):
-  ✗ not installed
-
-Claude code hook (local):
-  ✓ installed at .claude/settings.json
-  ⚠ outdated command detected: sekretbarilo scan --stdin-json
-  → run `sekretbarilo install agent-hook claude` to update
-
-Configuration:
-  ✓ config loaded from .sekretbarilo.toml
-  ✓ 109 built-in rules
-
-Binary:
-  ✓ sekretbarilo found in PATH
+[OK] created claude code hook configuration
 ```
 
 ### How it works
@@ -335,6 +383,7 @@ Example (Claude Code is blocked from reading a file with secrets):
 ```
 [AGENT] secret(s) detected in src/config.rs
 
+  file: config.rs
   line: 42
   rule: aws-access-key-id
   match: AK**************QA
@@ -354,6 +403,97 @@ sekretbarilo install agent-hook claude --global
 ```
 
 This installs the hook in `~/.claude/settings.json` instead of `.claude/settings.json`.
+
+---
+
+## Setting Up Codex CLI Protection
+
+The Codex hook works in the other direction from the Claude hook: instead of checking a file the agent is about to *read*, it checks what the agent is about to *write* or *run*, before it happens.
+
+### Step-by-step installation
+
+```sh
+cd my-project
+sekretbarilo install agent-hook codex
+```
+
+Output:
+```
+[OK] created codex cli hook configuration
+[WARN] IMPORTANT: Codex will silently skip this hook until you approve it.
+       In the Codex TUI, run /hooks and approve the sekretbarilo hook.
+       For non-interactive automation only, --dangerously-bypass-hook-trust bypasses this protection.
+[INFO] detected Codex version: codex-cli 0.145.0
+```
+
+**Do not skip the approval step.** Codex ignores hooks it has not been asked to trust, and it does so silently — an unapproved hook looks exactly like a working one until a secret slips through. Run `/hooks` in the Codex TUI and approve the sekretbarilo entry.
+
+### Global installation
+
+```sh
+sekretbarilo install agent-hook codex --global
+```
+
+This writes `$CODEX_HOME/hooks.json`, which is `~/.codex/hooks.json` unless `CODEX_HOME` is set.
+
+### Installing everything at once
+
+```sh
+sekretbarilo install all           # pre-commit + claude + codex, in this project
+sekretbarilo install all --global  # the same three, for every project
+```
+
+Output:
+```
+installing pre-commit hook...
+[OK] created new pre-commit hook
+installing claude code agent hook...
+[OK] created claude code hook configuration
+installing codex cli agent hook...
+[OK] created codex cli hook configuration
+[WARN] IMPORTANT: Codex will silently skip this hook until you approve it.
+       In the Codex TUI, run /hooks and approve the sekretbarilo hook.
+       For non-interactive automation only, --dangerously-bypass-hook-trust bypasses this protection.
+[INFO] detected Codex version: codex-cli 0.145.0
+```
+
+### What it blocks
+
+The hook matches two Codex tools, `apply_patch` and `Bash`.
+
+When Codex tries to write a secret into a file, the patch is blocked before it lands:
+
+```
+[AGENT] Codex apply_patch blocked: secret(s) detected
+  file: src/creds.py
+  line: 1
+  rule: github-personal-access-token
+  match: gh**************************************AB
+apply_patch action blocked to prevent secret exposure. total findings: 1.
+```
+
+When a secret appears in the shell command itself — for example an `echo` that appends a token to a file — the command is blocked and the finding is attributed to `<bash-command>`:
+
+```
+[AGENT] Codex Bash blocked: secret(s) detected
+  file: <bash-command>
+  line: 1
+  rule: github-personal-access-token
+  match: gh**************************************AB
+Bash action blocked to prevent secret exposure. total findings: 1.
+```
+
+Codex sees the non-zero exit and does not run the tool call.
+
+### Config trust on agent paths
+
+An agent can write files, and one of the files it could write is `.sekretbarilo.toml`. So on the `check-file`, `check-codex`, and `redact-claude` paths only, an in-workspace config is honoured **only** when git says it is tracked and unmodified against `HEAD`. Otherwise the whole layer is dropped:
+
+```
+[WARN] ignoring untrusted in-workspace config: /home/user/project/.sekretbarilo.toml
+```
+
+`scan` and `audit` are unaffected — those are run by a human. See [Configuration]({{ '/configuration/' | relative_url }}) for the exact conditions.
 
 ---
 
@@ -435,10 +575,10 @@ Skip a specific value that looks like a secret but isn't:
 ```toml
 # .sekretbarilo.toml
 
-# skip the official aws example key from documentation
+# skip a specific throwaway key that appears in your own docs
 [[allowlist.rules]]
 id = "aws-access-key-id"
-regexes = ["AKIAIOSFODNN7EXAMPLE"]
+regexes = ["AKIA-YOUR-THROWAWAY-KEY-HERE"]
 
 # skip jwt tokens in documentation files
 [[allowlist.rules]]
@@ -450,6 +590,8 @@ paths = ["docs/.*\\.md$", "README\\.md"]
 id = "generic-api-key"
 paths = ["test/.*", "spec/.*", "fixtures/.*"]
 ```
+
+You do not need an entry for `AKIAIOSFODNN7EXAMPLE` — the key AWS uses in its own documentation already ships allowlisted in the built-in `aws-access-key-id` rule.
 
 ### Example 5: Enabling public key detection
 
@@ -491,11 +633,11 @@ entropy_threshold = 4.0
 stopwords = ["ci-test-token"]
 
 [audit]
-# scan everything in ci (no excludes)
-exclude_patterns = []
-# but skip ci-specific directories
-exclude_patterns = ["^\.github/", "^scripts/"]
+# skip ci-specific directories
+exclude_patterns = ["^\\.github/", "^scripts/"]
 ```
+
+Two TOML details that bite here: a key may appear only once per table (a second `exclude_patterns` is a parse error, not an override), and a backslash inside a basic string must be escaped — `"^\\.github/"`, not `"^\.github/"`. A config that fails to parse is reported and the command exits 2.
 
 ```sh
 # in your ci pipeline script
@@ -508,7 +650,9 @@ Combine organization-wide rules with project-specific overrides:
 
 ```sh
 # merge org-wide rules with project-specific settings
-sekretbarilo scan --config /etc/sekretbarilo.toml --config .sekretbarilo.toml
+# --config skips hierarchical discovery entirely; only the listed files are loaded,
+# left to right, with later files winning on scalars
+sekretbarilo scan --config org-rules.toml --config project-rules.toml
 ```
 
 **org-rules.toml** (organization-wide):
@@ -634,74 +778,97 @@ The `doctor` command checks your sekretbarilo installation health.
 sekretbarilo doctor
 ```
 
-### Example output: healthy installation
+Doctor prints five groups of checks. In the transcripts below, real absolute paths have been replaced with `/home/user/project` and `/home/user`; everything else is verbatim 0.7.x output.
+
+### Example output: nothing installed yet
 
 ```
-[INFO] sekretbarilo doctor
+git pre-commit hook:
+  [NOT INSTALLED] local pre-commit hook not found
+  [NOT INSTALLED] global pre-commit hook not found
 
-Git pre-commit hook (local):
-  ✓ installed at .git/hooks/pre-commit
-  ✓ executable
-  ✓ sekretbarilo marker present
+claude code agent hook:
+  [NOT INSTALLED] local claude code hook not found
+  [NOT INSTALLED] global claude code hook not found
 
-Git pre-commit hook (global):
-  ✓ installed at ~/.git/hooks/pre-commit
-  ✓ executable
-  ✓ sekretbarilo marker present
+codex cli agent hook:
+  [NOT INSTALLED] local codex cli hook not found
+  [NOT INSTALLED] global codex cli hook not found
+  [OK] codex found in PATH (codex-cli 0.145.0)
 
-Claude code hook (local):
-  ✓ installed at .claude/settings.json
-  ✓ hook command: sekretbarilo check-file --stdin-json
-  ✓ hook type: PreToolUse (Read tool)
+configuration:
+  [OK] no custom config files found (using defaults)
+  [OK] 112 rules loaded successfully
+  [OK] rules compile successfully
 
-Claude code hook (global):
-  ✓ installed at ~/.claude/settings.json
-  ✓ hook command: sekretbarilo check-file --stdin-json
-  ✓ hook type: PreToolUse (Read tool)
-
-Configuration:
-  ✓ config loaded from .sekretbarilo.toml
-  ✓ config loaded from ~/.config/sekretbarilo/sekretbarilo.toml
-  ✓ 109 built-in rules + 5 custom rules
-  ✓ entropy threshold: 3.5
-  ✓ 12 allowlist paths
-  ✓ 3 stopwords (+ defaults)
-
-Binary:
-  ✓ sekretbarilo found in PATH at /usr/local/bin/sekretbarilo
+sekretbarilo binary:
+  [OK] sekretbarilo found in PATH
 ```
+
+Exit code 0. `[NOT INSTALLED]` is informational — doctor tells you a hook is absent without treating absence as a failure. Only `[WARN]` and `[ERROR]` make it exit 1.
 
 ### Example output: issues detected
 
+Here the hooks are installed locally, the Codex hook has not been approved, and the project has its own config adding one custom rule:
+
 ```
-[WARN] sekretbarilo doctor - issues detected
+git pre-commit hook:
+  [OK] local pre-commit hook installed
+  [NOT INSTALLED] global pre-commit hook not found
 
-Git pre-commit hook (local):
-  ✗ not installed
-  → run `sekretbarilo install pre-commit` to install
+claude code agent hook:
+  [OK] local claude code hook installed (/home/user/project/.claude/settings.json)
+  [NOT INSTALLED] global claude code hook not found
 
-Git pre-commit hook (global):
-  ✓ installed at ~/.git/hooks/pre-commit
-  ✓ executable
+codex cli agent hook:
+  [OK] local codex cli hook installed (/home/user/project/.codex/hooks.json)
+  [WARN] local codex cli hook approval entry not found in /home/user/.codex/config.toml; codex silently skips unapproved hooks; approve it with /hooks in the Codex TUI
+  [NOT INSTALLED] global codex cli hook not found
+  [OK] codex found in PATH (codex-cli 0.145.0)
 
-Claude code hook (local):
-  ✓ installed at .claude/settings.json
-  ⚠ outdated command detected: sekretbarilo scan --stdin-json
-  → run `sekretbarilo install agent-hook claude` to update
+configuration:
+  [OK] config file: /home/user/project/.sekretbarilo.toml
+  [OK] 113 rules loaded successfully
+  [OK] rules compile successfully
 
-Claude code hook (global):
-  ✗ not installed
-  → run `sekretbarilo install agent-hook claude --global` to install
-
-Configuration:
-  ✓ config loaded from .sekretbarilo.toml
-  ⚠ config parse warning: unknown field 'invalid_key' in .sekretbarilo.toml
-  ✓ 109 built-in rules + 1 custom rule
-  ✗ rule 'custom-broken-rule' failed to compile: invalid regex pattern
-
-Binary:
-  ✓ sekretbarilo found in PATH
+sekretbarilo binary:
+  [OK] sekretbarilo found in PATH
 ```
+
+Exit code 1, because of the single `[WARN]`. Note the rule count is a total, not a split: 112 built-in plus the one rule defined in `.sekretbarilo.toml`.
+
+### Example output: healthy installation
+
+Everything installed locally and globally, and the Codex hook approved:
+
+```
+git pre-commit hook:
+  [OK] local pre-commit hook installed
+  [OK] global pre-commit hook installed
+
+claude code agent hook:
+  [OK] local claude code hook installed (/home/user/project/.claude/settings.json)
+  [OK] global claude code hook installed (/home/user/.claude/settings.json)
+
+codex cli agent hook:
+  [OK] local codex cli hook installed (/home/user/project/.codex/hooks.json)
+  [OK] local codex cli hook approval entry found in /home/user/.codex/config.toml (group 0, handler 0); codex re-checks its own trust hash at run time, so this is not proof the hook runs
+  [OK] global codex cli hook installed (/home/user/.codex/hooks.json)
+  [OK] global codex cli hook approval entry found in /home/user/.codex/config.toml (group 0, handler 0); codex re-checks its own trust hash at run time, so this is not proof the hook runs
+  [OK] codex found in PATH (codex-cli 0.145.0)
+
+configuration:
+  [OK] no custom config files found (using defaults)
+  [OK] 112 rules loaded successfully
+  [OK] rules compile successfully
+
+sekretbarilo binary:
+  [OK] sekretbarilo found in PATH
+```
+
+Exit code 0.
+
+The Codex approval check is deliberately honest about its own limits: it confirms that an approval entry exists at the right position in Codex's `config.toml`, but it does not revalidate Codex's internal trust hash. An `[OK]` there means "approved at some point", not "guaranteed to run".
 
 ---
 
@@ -717,11 +884,13 @@ git clone https://github.com/yourorg/yourproject.git
 cd yourproject
 
 # step 2: install sekretbarilo (if not already installed)
-cargo install sekretbarilo
+brew install vshuraeff/tap/sekretbarilo
 
 # step 3: install hooks (project already has .sekretbarilo.toml)
-sekretbarilo install pre-commit
-sekretbarilo install agent-hook claude  # if using claude code
+sekretbarilo install all
+
+# if you use Codex CLI, approve its hook now: run /hooks in the Codex TUI.
+# an unapproved codex hook is silently ignored.
 
 # step 4: verify installation
 sekretbarilo doctor
@@ -793,12 +962,14 @@ sekretbarilo audit
 
 Output:
 ```
-[AUDIT] 1 secret(s) found in working tree
+[AUDIT] secret(s) detected in tracked files
 
   file: docs/authentication.md
   line: 42
   rule: jwt-token
   match: ey**************************************************Ab
+
+[AUDIT] audit complete. scanned 214 file(s), 1 secret(s) in 1 file(s).
 ```
 
 **Option 1: Allowlist by path** (skip all jwt tokens in docs):
@@ -853,8 +1024,8 @@ git commit --no-verify
 # .sekretbarilo.toml
 [[allowlist.rules]]
 id = "aws-access-key-id"
-# only skip this specific example key
-regexes = ["AKIAIOSFODNN7EXAMPLE"]
+# only skip the one example key that appears in our docs
+regexes = ["AKIA-YOUR-THROWAWAY-KEY-HERE"]
 ```
 
 Then commit normally:
@@ -865,15 +1036,14 @@ git commit -m "add aws documentation example"
 # sekretbarilo allows the commit (matches allowlist)
 ```
 
-**Best approach** (use variable references in examples):
+**Best approach** (use the vendor's own documentation key, or a variable reference):
 
 ```python
-# instead of hardcoding an example key
-aws_key = "AKIAIOSFODNN7EXAMPLE"  # sekretbarilo will flag this
-
-# use a variable reference (sekretbarilo skips these automatically)
+# a variable reference is never a finding — sekretbarilo skips these automatically
 aws_key = os.environ.get("AWS_ACCESS_KEY_ID")
 ```
+
+Where an example genuinely needs a literal, prefer the value the vendor publishes in its own documentation. `AKIAIOSFODNN7EXAMPLE` is AWS's, and it is allowlisted in the built-in rule, so it needs no config at all.
 
 ### Scenario 5: Scanning before a large refactor
 
@@ -881,13 +1051,14 @@ Before making major changes:
 
 ```sh
 # scan current state
-sekretbarilo audit > audit-before.txt
+# note the 2>: all sekretbarilo output goes to stderr, so a plain > captures nothing
+sekretbarilo audit 2> audit-before.txt
 
 # perform refactor
 # ... make changes ...
 
 # scan again
-sekretbarilo audit > audit-after.txt
+sekretbarilo audit 2> audit-after.txt
 
 # compare results
 diff audit-before.txt audit-after.txt
@@ -913,12 +1084,12 @@ jobs:
   scan:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0  # full history for --history scans
 
       - name: Install Rust
-        uses: actions-rs/toolchain@v1
+        uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           toolchain: stable
 
@@ -960,7 +1131,7 @@ secrets-scan:
 # scan a specific file before committing
 sekretbarilo check-file src/config.py
 
-# if clean (exit code 0), safe to commit
+# check-file exits 0 (clean) or 2 (secrets found, or an error) — never 1
 ```
 
 ### Test a new custom rule
@@ -994,10 +1165,10 @@ sekretbarilo scan
 ### Find which commits introduced secrets
 
 ```sh
-# scan history with verbose output
-sekretbarilo audit --history | grep -A 10 "commit:"
+# redirect stderr into the pipe — that is where sekretbarilo writes
+sekretbarilo audit --history 2>&1 | grep -A 10 "commit:"
 
-# shows full commit info including author and timestamp
+# shows commit hash, author and timestamp for each finding
 ```
 
 ### Check if binary is accessible
@@ -1046,3 +1217,4 @@ sekretbarilo audit --history --branch feature/experimental
 - [Configuration]({{ '/configuration/' | relative_url }}) - detailed configuration reference
 - [CLI Reference]({{ '/cli-reference/' | relative_url }}) - complete command documentation
 - [Agent Hooks]({{ '/agent-hooks/' | relative_url }}) - ai agent integration details
+- [Rules Reference]({{ '/rules-reference/' | relative_url }}) - what each built-in rule detects

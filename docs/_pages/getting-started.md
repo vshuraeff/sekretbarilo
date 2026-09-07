@@ -114,7 +114,7 @@ Now that you understand the basics:
 
 - **[Installation]({{ '/installation/' | relative_url }})** - detailed installation guide including global hooks and AI agent integration
 - **[CLI Reference]({{ '/cli-reference/' | relative_url }})** - complete command reference for scanning, auditing, and configuration
-- **[Agent Hooks]({{ '/agent-hooks/' | relative_url }})** - protect AI coding tools like Claude Code from reading sensitive files
+- **[Agent Hooks]({{ '/agent-hooks/' | relative_url }})** - block Claude Code file reads or mask secrets in tool results; protect Codex patches and shell commands
 - **[Configuration]({{ '/configuration/' | relative_url }})** - customize detection rules, ignore patterns, and output formats
 
 ## Quick reference
@@ -136,6 +136,9 @@ sekretbarilo check-file path/to/file.py
 
 # install hooks for claude code (ai agent protection)
 sekretbarilo install agent-hook claude
+
+# mask claude Bash/Read/Grep results (requires claude >= 2.1.121)
+sekretbarilo install agent-hook claude --mode redact
 
 # install all hooks at once
 sekretbarilo install all

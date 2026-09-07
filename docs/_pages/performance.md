@@ -13,31 +13,48 @@ sekretbarilo is a high-performance secret scanner written in Rust, designed to b
 Pre-commit hooks must be **imperceptible** or developers bypass them. sekretbarilo is architected to scan typical commits in microseconds, making it completely invisible in normal workflows.
 
 - **Pre-commit hooks must be fast**: developers will skip hooks that add noticeable delay
-- **Designed to be imperceptible**: typical commits scan in ~2.5 microseconds
+- **Designed to be imperceptible**: the scan itself is microseconds; process startup dominates
 - **Parallelized for large operations**: audit mode leverages all CPU cores with rayon
 - **Early exit paths**: binary files, vendor directories, and lock files are filtered before scanning
 
+## Benchmark Environment
+
+Every figure on this page was measured with `cargo bench` (criterion) on macOS 15.7, Intel Core i9-9900K @ 3.60GHz, against the 112 built-in rules. Absolute numbers move with hardware, OS and rule count — the ratios are the durable part.
+
 ## Scan Mode Benchmarks
 
-Scan mode is the core operation used by pre-commit hooks and agent hooks. Performance is measured across different commit sizes:
+Scan mode is the core operation used by pre-commit hooks and agent hooks. These measure the in-process scan only, excluding process startup and `git diff` (see [End-to-End Latency](#end-to-end-latency) below):
 
 | Scenario | Scale | Time |
 |----------|-------|------|
-| Empty diff | 0 lines | ~48 ns |
-| Typical commit | 1 file, 10 lines | ~2.5 µs |
-| Medium commit | 10 files, 500 lines | ~168 µs |
-| With secrets | 10 files | ~199 µs |
-| Large commit | 100 files, 5000 lines | ~679 µs |
-| Very large commit | 400 files, 40000 lines | ~3.7 ms |
-
-**Benchmark environment**: macOS 15.7, Intel Core i9-9900 @ 3.60GHz, measured with criterion.
+| Empty diff | 0 lines | ~44 ns |
+| Typical commit | 1 file, 10 lines | ~3.2 µs |
+| Medium commit | 10 files, 500 lines | ~183 µs |
+| With secrets | 10 files | ~230 µs |
+| Large commit | 100 files, 5000 lines | ~765 µs |
+| Very large commit | 400 files, 40000 lines | ~4.4 ms |
 
 ### What This Means
 
-- **Typical workflow**: scanning a 1-10 file commit takes 2-200 microseconds — completely imperceptible
-- **Large refactors**: even 100-file commits complete in under 1 millisecond
-- **Massive changes**: 400-file diffs (40,000 lines) still complete in under 4 milliseconds
-- **Secret detection**: finding and validating actual secrets adds only ~30 microseconds overhead
+- **Typical workflow**: scanning a 1-10 file commit takes microseconds to a fraction of a millisecond
+- **Large refactors**: even 100-file commits scan in under 1 millisecond
+- **Massive changes**: 400-file diffs (40,000 lines) still scan in under 5 milliseconds
+- **Secret detection**: finding and reporting actual secrets adds roughly 50 microseconds over the same clean diff
+
+## End-to-End Latency
+
+The benchmarks above are the scan itself. What a developer waits for is a whole process: spawn, config discovery, rule compilation, a `git diff` subprocess, then the scan. Measured as 50 sequential invocations of `sekretbarilo scan` against a one-file staged diff, on the machine described above:
+
+| Component | Per invocation |
+|-----------|----------------|
+| Process spawn (`sekretbarilo --version` as a floor) | ~13 ms |
+| `git diff --cached` subprocess | ~10 ms |
+| Rule compilation (delta between `scan` and `scan --no-defaults`) | ~11 ms |
+| **Whole `sekretbarilo scan` invocation** | **~53 ms** |
+
+Two things follow. First, the ~50 ms is essentially fixed: it barely moves with commit size, because the size-dependent part is the microsecond-scale scan. Second, optimizing the scanner further would be pointless for pre-commit use — startup and `git` already account for almost all of it.
+
+Process spawn cost in particular is OS-dependent and can be noticeably higher on macOS than on Linux for a locally built, unsigned binary.
 
 ## Diff Parsing Performance
 
@@ -45,9 +62,9 @@ Diff parsing extracts added lines from git diff output before scanning. This is 
 
 | Scale | Time |
 |-------|------|
-| 1 file, 10 lines | ~1.4 µs |
-| 10 files, 50 lines each | ~37 µs |
-| 100 files, 50 lines each | ~435 µs |
+| 1 file, 10 lines | ~1.3 µs |
+| 10 files, 50 lines each | ~39 µs |
+| 100 files, 50 lines each | ~459 µs |
 
 Parsing overhead is minimal compared to scanning, since the Aho-Corasick and regex stages dominate computation.
 
@@ -57,12 +74,12 @@ sekretbarilo uses Aho-Corasick automaton for keyword pre-filtering instead of na
 
 | Method | Time | Ratio |
 |--------|------|-------|
-| Aho-Corasick | ~44 µs | 1x (baseline) |
-| Naive contains | ~4.2 ms | ~96x slower |
+| Aho-Corasick | ~100 µs | 1x (baseline) |
+| Naive contains | ~12.4 ms | ~125x slower |
 
 **Why this matters**: the naive approach checks every keyword against every line (O(keywords × lines)). Aho-Corasick builds a finite automaton that matches all keywords in a single pass (O(lines)).
 
-With 109 built-in rules and hundreds of total keywords, this optimization is critical. Without it, scan performance would degrade from microseconds to milliseconds.
+With 112 built-in rules and hundreds of total keywords, this optimization is critical. Without it, scan performance would degrade from microseconds to milliseconds — and the gap widens with every rule added, since the naive cost grows with rule count while the automaton's does not.
 
 ## Key Optimizations
 
@@ -70,11 +87,11 @@ sekretbarilo achieves microsecond-scale scanning through several architectural o
 
 ### 1. Aho-Corasick Automaton
 
-**What**: single-pass keyword matching across all 109 rules simultaneously
+**What**: single-pass keyword matching across all 112 rules simultaneously
 
 **Why**: instead of checking each rule's keywords against every line (O(rules × keywords × lines)), Aho-Corasick builds a finite automaton that matches all keywords in one pass (O(lines))
 
-**Impact**: 96x faster than naive `contains()` approach
+**Impact**: ~125x faster than the naive `contains()` approach
 
 The automaton is compiled once at startup and reused across all files and lines.
 
@@ -84,9 +101,9 @@ The automaton is compiled once at startup and reused across all files and lines.
 
 **Why**: most lines match zero keywords, so most regex checks are skipped entirely
 
-**Impact**: reduces regex evaluation from 100% of lines to ~10% (keyword match rate)
+**Impact**: a line matching no keyword never reaches a regex at all. Scanning 100 keyword-free lines costs ~8.6 µs — under 90 ns per line — because the work stops at the automaton.
 
-This is a critical filter: regex compilation and matching are expensive. The keyword pre-filter eliminates 90%+ of regex work.
+This is a critical filter: regex matching is expensive relative to an automaton step, and in ordinary source code the overwhelming majority of lines contain nothing that looks like a credential keyword.
 
 ### 3. One-Time Compilation
 
@@ -96,7 +113,7 @@ This is a critical filter: regex compilation and matching are expensive. The key
 
 **Impact**: avoids per-file or per-line recompilation overhead
 
-For pre-commit hooks, this means the scanner process lifetime is short (single commit), so compilation overhead is noticeable. One-time compilation keeps it negligible.
+For pre-commit hooks, the process lifetime is short (a single commit), so compilation is paid once and never amortized across runs — it is the ~11 ms line in the end-to-end table above. Compiling per file or per line instead would multiply that cost by the number of files.
 
 ### 4. Byte-Level Processing
 
@@ -104,9 +121,9 @@ For pre-commit hooks, this means the scanner process lifetime is short (single c
 
 **Why**: avoids UTF-8 validation overhead on every line
 
-**Impact**: eliminates UTF-8 validation cost (~10-20% speedup for non-ASCII content)
+**Impact**: no UTF-8 validation pass, and no allocation to convert a line before matching it
 
-Secret patterns are often ASCII-only (API keys, tokens), and diff output is byte-oriented. Byte slices let the scanner skip validation and work directly with raw bytes.
+Secret patterns are ASCII-only (API keys, tokens), and diff output is byte-oriented. Byte slices let the scanner skip validation and work directly with raw bytes — which also means files that are not valid UTF-8 scan correctly instead of being skipped.
 
 ### 5. Parallel Processing (rayon)
 
@@ -114,10 +131,10 @@ Secret patterns are often ASCII-only (API keys, tokens), and diff output is byte
 
 **Why**: modern CPUs have 4-16+ cores; serial processing leaves them idle
 
-**Impact**: near-linear speedup on multi-core systems (4x on 4 cores, 8x on 8 cores)
+**Impact**: work scales with available cores. Audit and history are I/O- and subprocess-bound rather than CPU-bound, so the real speedup lands below the core count — measure on your own repository rather than assuming a multiplier.
 
 Parallel processing triggers when:
-- **Scan mode**: 4+ files in a diff (pre-commit hooks)
+- **Scan mode**: 4+ files in a diff (`PARALLEL_FILE_THRESHOLD` in `src/scanner/engine.rs`)
 - **Audit mode**: all files processed in parallel
 - **History audit**: all commits processed in parallel
 
@@ -127,7 +144,7 @@ Parallel processing triggers when:
 
 **Why**: scanning binary or generated files wastes CPU cycles and produces false positives
 
-**Impact**: eliminates scanning overhead for 30-50% of files in typical repos
+**Impact**: skipped files are never read from disk, so they cost a path-pattern check (~1.1 µs) instead of a read plus a scan
 
 Early exit filters (applied before keyword matching):
 - Binary files (`.png`, `.jpg`, `.wasm`, etc.)
@@ -141,7 +158,7 @@ Early exit filters (applied before keyword matching):
 
 **Why**: `git branch --contains` is expensive (O(branches × commits)); most commits have no findings
 
-**Impact**: reduces branch resolution from 100% of commits to ~1-5% (findings rate)
+**Impact**: one `git branch --contains` subprocess per *finding-bearing* commit instead of one per commit — on a clean repository, none at all
 
 This optimization is critical for large repositories with many branches. Without it, history audit would spend most of its time resolving branches for clean commits.
 
@@ -151,9 +168,9 @@ This optimization is critical for large repositories with many branches. Without
 
 **Why**: a secret introduced in commit A and present in commits B, C, D only needs to be reported once
 
-**Impact**: reduces noise and branch resolution overhead by 10-100x in repos with long-lived secrets
+**Impact**: a secret that survived N commits is reported once, not N times — which also removes N-1 branch-resolution subprocesses
 
-Deduplication uses a hash map keyed by `(file_path, rule_id, secret_hash)`. Only the earliest commit (by timestamp) is retained.
+Deduplication uses a hash map keyed by `(file_path, rule_id, matched_value)`. Only the earliest commit (by timestamp) is retained.
 
 ## Running Benchmarks
 
@@ -169,6 +186,7 @@ Benchmark suite includes:
 - **Diff parsing**: parsing speed at different scales
 - **Keyword matching**: Aho-Corasick vs naive comparison
 - **Entropy calculation**: Shannon entropy on different string lengths
+- **Prefilter**: cost of 100 lines that match no keyword at all
 - **Path allowlist**: regex matching overhead
 
 Criterion runs each benchmark multiple times, applies statistical analysis, and reports mean, median, and standard deviation. Results are saved to `target/criterion/` with HTML reports.
@@ -179,89 +197,82 @@ Criterion runs each benchmark multiple times, applies statistical analysis, and 
 
 **Scenario**: developer commits 1-10 files with 10-500 lines changed
 
-**Time**: 2-200 microseconds
+**Time**: ~50 ms of process, of which microseconds are scanning
 
-**Experience**: imperceptible — faster than terminal I/O
+**Experience**: not noticeable next to `git commit`'s own work
 
-The hook runs as:
+The installed hook does not pipe anything in — it invokes the binary, which runs `git diff` itself:
 ```sh
-git diff --cached | sekretbarilo scan
+sekretbarilo scan
 ```
 
-Total latency includes:
-- `git diff` generation: ~500 µs - 2 ms (dominant cost)
-- sekretbarilo scan: ~2-200 µs (negligible)
-- Process spawn overhead: ~1-3 ms (one-time)
-
-**Total commit latency**: typically under 10 milliseconds, dominated by git diff and shell overhead.
+Where that ~50 ms goes is broken down in [End-to-End Latency](#end-to-end-latency). The practical consequence: commit latency is flat. A 1-file commit and a 100-file commit cost about the same, because the part that varies with commit size is under a millisecond.
 
 ### Working Tree Audit
 
 **Scenario**: scan all tracked files in a repository
 
-**Time**: seconds for most repos (parallel file processing)
-
-**Example**: 1000 files, 100k lines → ~1-3 seconds on 8-core CPU
-
-Audit mode uses rayon to process files in parallel:
+Audit mode enumerates tracked files with `git ls-files`, reads them in parallel with rayon, and feeds them through the same scanner engine:
 ```sh
 sekretbarilo audit
 ```
 
-Bottlenecks:
+Bottlenecks, in order:
 - File I/O (reading from disk)
 - Regex evaluation (for lines with keyword matches)
 - Entropy calculation (for tier 2+ rules)
 
-For repositories with 10k+ files, audit time scales linearly with file count and CPU core count.
+Runtime tracks file count, file sizes, filesystem speed and core count. No figure is published here because none of those are properties of sekretbarilo — time it on the repository you care about:
+```sh
+time sekretbarilo audit
+```
 
 ### History Audit
 
 **Scenario**: scan every commit in git history
 
-**Time**: minutes for large repos (parallel commit processing with dedup)
-
-**Example**: 10,000 commits, 500 with changes → ~2-10 minutes on 8-core CPU
-
-History audit uses rayon to process commits in parallel:
 ```sh
 sekretbarilo audit --history
 ```
 
-Performance factors:
-- **Commit count**: linear scaling (more commits = more time)
-- **Deduplication**: 10-100x reduction in reported findings
-- **Branch resolution**: only for commits with findings (~1-5% of commits)
-- **CPU cores**: near-linear speedup (8 cores ≈ 8x faster)
+This is the slowest mode by a wide margin, and the cost is mostly `git`: one `diff-tree` subprocess per commit, parallelized across cores. Progress is reported as commits are consumed.
 
-For extremely large repositories (100k+ commits), history audit can take 30+ minutes. Use `--branch` and `--since` filters to limit scope.
+Performance factors:
+- **Commit count**: the dominant term — one `git diff-tree` per commit
+- **Deduplication**: a long-lived secret is reported once, not once per commit that contains it
+- **Branch resolution**: one extra subprocess per finding-bearing commit, none for clean ones
+- **CPU cores**: commits are processed in parallel
+
+On a large repository this can run for a long time. Narrow it with `--branch`, `--since` and `--until` rather than waiting out a full scan.
 
 ### Agent Hook Performance
 
-**Scenario**: Claude Code reads a file; sekretbarilo checks it first
+**Scenario**: an AI agent is about to read a file (`check-file`) or write one (`check-codex`); sekretbarilo runs first
 
-**Time**: microseconds for typical files
+**Time**: dominated by the same fixed startup as `scan` — tens of milliseconds per tool call
 
-**Experience**: imperceptible — no noticeable delay
+**Experience**: not noticeable against model latency, which is orders of magnitude larger
 
-The check-file operation includes fast-path optimizations:
-- **Binary files**: detected and skipped in microseconds (extension check)
+`check-file` includes fast-path optimizations that apply before the file is read:
+- **Binary files**: detected and skipped on the extension alone
 - **Vendor directories**: skipped via path pattern matching
 - **Lock files**: skipped via filename patterns
 - **Full scan**: same performance as scan mode for individual files
-
-**Timeout**: 10 seconds (more than sufficient for any single file, even 100k+ lines)
 
 Fast-path filters (applied before reading file content):
 - `.png`, `.jpg`, `.gif`, `.wasm`, `.so`, etc. → skip
 - `node_modules/`, `vendor/`, `.venv/`, `target/` → skip
 - `package-lock.json`, `Cargo.lock`, `go.sum` → skip
 
+`check-codex` never reads a file at all. It scans the tool payload the agent is about to execute — the added lines of an `apply_patch`, or a `Bash` command string — so its scanning cost is proportional to that payload, which is small.
+
+**Timeout**: both hooks are installed with a 10-second timeout, far above what either needs.
+
 ## Performance Tuning
 
 ### Entropy Thresholds
 
-Higher entropy thresholds (e.g., 4.0 instead of 3.5) reduce false positives but increase scan time slightly due to more entropy calculations passing the keyword filter.
+Raising the entropy threshold (e.g. 4.0 instead of 3.5) reduces false positives. It does not meaningfully change scan time: the same number of entropy calculations run either way, only their verdict changes.
 
 **Recommendation**: use default thresholds (3.5 for most rules) unless you have specific false positive issues.
 
@@ -282,14 +293,15 @@ The `PARALLEL_FILE_THRESHOLD` constant (default: 4 files) controls when rayon pa
 
 ## Comparison to Other Tools
 
-| Tool | Language | Typical Commit | Large Commit | Notes |
-|------|----------|----------------|--------------|-------|
-| sekretbarilo | Rust | ~2.5 µs | ~3.7 ms | parallel, Aho-Corasick |
-| gitleaks | Go | ~10-50 ms | ~500 ms | serial scanning |
-| truffleHog | Python | ~100-500 ms | ~5-10 s | slow regex evaluation |
-| detect-secrets | Python | ~50-200 ms | ~2-5 s | serial scanning |
+No cross-tool benchmarks are published here. Comparing secret scanners fairly requires running them over the same corpus with comparable rule sets on the same machine, and numbers quoted without that setup are not meaningful.
 
-**Note**: benchmarks are approximate and depend on repository structure, rule count, and hardware. sekretbarilo's Rust implementation and Aho-Corasick optimization provide 10-1000x speedup over Python-based tools.
+What is structural rather than measured:
+
+- **Compiled, no runtime**: sekretbarilo is a single native binary with no interpreter or VM to start, which matters most for the short-lived, once-per-commit invocations a pre-commit hook makes.
+- **Keyword pre-filter**: rules are gated behind one Aho-Corasick pass, so adding rules costs automaton states rather than another regex over every line.
+- **Parallel by default**: audit and history work is spread across cores without configuration.
+
+If you need a comparison for a decision, benchmark the candidates on your own repository.
 
 ## Future Optimizations
 
@@ -298,6 +310,5 @@ Potential areas for further performance improvements:
 1. **SIMD acceleration**: use SIMD instructions for entropy calculation and byte matching
 2. **Memory-mapped files**: avoid read() syscalls for large files
 3. **Incremental scanning**: cache results for unchanged files (audit mode)
-4. **GPU acceleration**: offload regex matching to GPU for extremely large audits
 
-Currently, sekretbarilo is fast enough that these optimizations are not priorities. Pre-commit hooks complete in microseconds, and audit operations are I/O-bound rather than CPU-bound.
+None of these are priorities. The scan itself is already microseconds; the wall clock a developer feels is process startup and `git` subprocesses, which no amount of scanner optimization would touch.

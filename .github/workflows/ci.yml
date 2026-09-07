@@ -36,6 +36,12 @@ jobs:
       - name: Test
         run: cargo test
 
+      - name: Test (release profile — panic-safety regression)
+        run: |
+          cargo test --release --test codex_hook_tests check_codex_exit_code_is_stable_when_stderr_reader_closes_early
+          cargo test --release --test agent_hook_tests e2e_check_file_exit_code_is_stable_when_stderr_reader_closes_early
+          cargo test --locked --release --test claude_redact_tests --test hook_panic_safety_tests
+
   lint:
     name: Lint
     runs-on: ubuntu-latest

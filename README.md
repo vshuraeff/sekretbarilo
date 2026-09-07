@@ -13,15 +13,15 @@ High-performance secret scanner for git workflows and AI coding agents. Catches 
 ## Features
 
 - **Fast**: ~2.5 µs per commit, ~3.7 ms for 400-file diffs; parallel audit via rayon
-- **109 built-in rules** in three precision tiers (prefix-based, context-aware, catch-all) — see [rules reference](docs/_pages/rules-reference.md)
+- **113 built-in rules** in three precision tiers (prefix-based, context-aware, catch-all) — see [rules reference](docs/_pages/rules-reference.md)
 - **Low false positives**: entropy analysis, stopword filtering, hash/variable detection, template-aware, public key suppression
 - **Pre-commit hook**: scans staged changes on every commit
 - **Working tree & history audit**: scan tracked files or full git history with deduplication and branch resolution
-- **Agent hooks**: blocks AI agents (Claude Code) from reading files with secrets
+- **Agent hooks**: blocks Claude Code file reads or masks secrets in `Bash`, `Read`, and `Grep` results; blocks Codex CLI from writing secrets via `apply_patch` or `Bash`
 - **Health diagnostics**: `doctor` command checks hooks, config, and binary availability
 - **Hierarchical config**: `.sekretbarilo.toml` at system, user, and project levels
 - **Zero config needed**: works out of the box with sensible defaults
-- **Blocks .env files**: prevents committing or reading `.env`, `.env.local`, `.env.production`, etc.
+- **Blocks .env files**: prevents committing them and reading them in Claude `block` mode; `redact` scans their returned content
 
 ## Installation
 
@@ -60,6 +60,8 @@ sekretbarilo install pre-commit --global
 sekretbarilo scan
 ```
 
+The global install works through `core.hooksPath` (default `~/.config/git/hooks`), setting it when unset. It applies to every repository immediately, and — being how git works — it replaces per-repository `.git/hooks/` rather than layering with it.
+
 ### Audit
 
 ```sh
@@ -91,19 +93,65 @@ sekretbarilo install agent-hook claude
 # install globally
 sekretbarilo install agent-hook claude --global
 
+# mask tool results instead of blocking file reads (Claude Code >= 2.1.121)
+sekretbarilo install agent-hook claude --mode redact
+
+# switch back to blocking reads
+sekretbarilo install agent-hook claude --mode block
+
+# target an explicit settings file instead of the local/global default
+sekretbarilo install agent-hook claude --settings .claude/settings.local.json --mode redact
+
 # install all hooks at once
 sekretbarilo install all --global
 ```
 
-Adds a `PreToolUse` hook on the `Read` tool. When Claude Code reads a file, sekretbarilo scans it first and blocks the read if secrets are found. Binary files, vendor directories, and lock files are fast-path skipped.
+`--settings <path>` installs into that exact file instead of the local or global default, is mutually exclusive with `--global`, and works outside a git repository; a relative path resolves against the current directory, not the repo root. Installing into an arbitrary file does not register a new Claude Code profile: Claude only picks it up when it is one of its standard settings files, when Claude itself is launched with its own [`--settings <path>`](https://code.claude.com/docs/en/cli-reference) flag, or when the file is the `settings.json` of the profile directory named by [`CLAUDE_CONFIG_DIR`](https://code.claude.com/docs/en/claude-directory).
+
+The default for a new installation is `block`: a `PreToolUse` hook scans files before `Read` and blocks secrets or `.env` files. Binary files, vendor directories, and lock files are fast-path skipped. Omitting `--mode` preserves the mode already installed in the selected settings file, including when running `install all`.
+
+`redact` installs a synchronous `PostToolUse` hook for `Bash`, `Read`, and `Grep`. Tools execute normally; detected secret values in supported text results become `[REDACTED]` before the result reaches the model. This is an **in-memory output editor**: source files are unchanged. Eligible high-entropy values are redacted regardless of variable name, so harmless base64 blobs or checksums may also be redacted. Response structure, metadata, surrounding text, UTF-8, and line endings are preserved. For example, `cat config.txt` can return:
+
+```text
+host = localhost
+password = [REDACTED]
+port = 5432
+```
+
+`redact` uses the same trusted configuration, rules, entropy thresholds, password heuristics, and value exceptions. Path exclusions and documentation relaxations do not apply; `.env` output is scanned by content. Installation checks Claude Code >= 2.1.121 before changing protection, and installation/`doctor` warn about a blocking Read hook in another settings scope. See [redaction behavior and limits](docs/_pages/agent-hooks.md#redact-mode-output-editor), including unsupported tools, hook failures, and telemetry.
+
+Password assignments are detected with double quotes, single quotes, backticks, or no quotes. Existing strength and placeholder checks apply to every form.
+
+### Agent hooks (Codex CLI)
+
+```sh
+# install in current project (.codex/hooks.json)
+sekretbarilo install agent-hook codex
+
+# install globally ($CODEX_HOME/hooks.json, default ~/.codex/hooks.json)
+sekretbarilo install agent-hook codex --global
+```
+
+Adds a `PreToolUse` hook on the `apply_patch` and `Bash` tools. For `apply_patch` sekretbarilo scans the lines being added and blocks patches targeting `.env` files outright; for `Bash` it scans the command string, catching exported credentials, tokens in `curl -H` headers, and heredocs that write secrets to a file. A block is an exit code 2 with a masked reason on stderr, which Codex surfaces to the model. The reason renders at most 20 findings (the closing `total findings: N.` line still carries the true count), and file paths and rule names taken from the patch are stripped of control characters before printing.
+
+`check-codex` requires `--stdin-json` — the bare command exits 2. The installer already writes the flag, so existing installations are unaffected.
+
+**Codex will not run a newly installed hook until you approve it** — run `/hooks` in the Codex TUI. An unapproved hook is skipped silently. sekretbarilo does not write the trust state itself: the trust hash is an internal Codex detail, and a security tool that grants itself trust defeats the point of the trust model. For non-interactive use, Codex offers `--dangerously-bypass-hook-trust`, which disables the check for every hook in the session.
+
+Verified on codex-cli `0.145.0`; older releases may not deliver `PreToolUse` for `apply_patch`. Note two limits: Codex has no Read-equivalent tool, so the hook cannot stop the agent from *reading* a file with secrets, and the `Bash` check is a text scan — a guardrail against accidental leakage, not a sandbox. See the [agent hooks docs](docs/_pages/agent-hooks.md) for details.
+
+`sekretbarilo install all` sets up the pre-commit hook plus every agent hook at once. `--mode block|redact` selects the Claude mode; omitted, it preserves the installed mode or chooses `block` for a new installation. Selecting `redact` requires a supported Claude version. `--settings <path>` applies only to the Claude step; the pre-commit and Codex steps keep their normal local/global behavior. The Codex step is skipped when `codex` is neither on `PATH` nor has a `$CODEX_HOME` directory.
 
 ### Diagnostics
 
 ```sh
 sekretbarilo doctor
+
+# also inspect an explicit Claude Code settings file
+sekretbarilo doctor --settings .claude/settings.local.json
 ```
 
-Checks pre-commit hooks (local/global), Claude Code hooks, configuration, and PATH availability.
+Checks pre-commit hooks (local/global), Claude Code hooks, Codex CLI hooks, configuration, and PATH availability. `--settings <path>` adds that file as an extra "explicit" scope next to local and global, deduplicated when it names the same file; doctor never creates or edits it, and a missing or malformed file is reported as an issue.
 
 ## CLI reference
 
@@ -140,8 +188,10 @@ Checks pre-commit hooks (local/global), Claude Code hooks, configuration, and PA
 
 | Flag | Description |
 |------|-------------|
-| `--stdin-json` | Read file path from stdin JSON (check-file) |
-| `--global` | Install globally (install) |
+| `--stdin-json` | Read the hook payload from stdin JSON (`check-file`; required for `check-codex` and `redact-claude`) |
+| `--global` | Install globally (install). For the Claude step, honours `CLAUDE_CONFIG_DIR` when set, writing `$CLAUDE_CONFIG_DIR/settings.json` instead of `~/.claude/settings.json` |
+| `--mode block\|redact` | Select Claude hook mode (`install agent-hook claude`, `install all`) |
+| `--settings <path>` | Target an explicit Claude Code settings file (`install agent-hook claude`, `install all`, `doctor`); mutually exclusive with `--global` |
 
 ## Exit codes
 
@@ -149,8 +199,10 @@ Checks pre-commit hooks (local/global), Claude Code hooks, configuration, and PA
 |---------|---|---|---|
 | `scan`, `audit`, `doctor` | Clean | Secrets found | Error |
 | `check-file` | Clean / skipped | — | Secrets found or error |
+| `check-codex` | Allow tool call | — | Block tool call (secrets, `.env` target, or error) |
+| `redact-claude` | No change, replacement JSON, or stop JSON on error | Output delivery failed | Not used to remove output |
 
-`check-file` uses exit 2 for both secrets and errors to fail closed — Claude Code blocks any non-zero exit.
+`check-file` and `check-codex` use exit 2 for both secrets and errors to block the tool call. `redact-claude` normally exits 0: clean output has no stdout; masking returns `hookSpecificOutput.updatedToolOutput`. Errors and the 10 MiB input/output limits return `continue: false` with a fixed safe reason and, when possible, a replacement hiding all supported text. Failed stdout delivery exits 1. A PostToolUse exit 2 does not remove a result that already exists.
 
 ## Configuration
 
@@ -165,6 +217,12 @@ Create `.sekretbarilo.toml` in your repo root, or use `--config <path>` to skip 
 5. `.sekretbarilo.toml` (project)
 
 **Merge strategy**: scalars — last wins; lists — merged and deduplicated; rules by `id` — last wins.
+
+### Agent hooks require an in-repo config to be committed
+
+`check-file`, `check-codex`, and `redact-claude` honour a `.sekretbarilo.toml` located inside the git working tree only when it is **git-tracked and unmodified relative to `HEAD`**. Otherwise the whole layer is dropped with a warning on stderr. Layers above the repo root, the user config, and the system config are unaffected, and `scan`/`audit` are not affected at all.
+
+The reason: an agent that can write files can write a permissive config, and that patch carries no secret, so it passes — after which every later check is neutered. A dropped layer is dropped whole rather than partially, because a `[[rules]]` entry reusing a built-in `id` replaces that rule. `sekretbarilo doctor` flags any in-workspace config the hooks will ignore. The fix is to commit it.
 
 ### Allowlists
 

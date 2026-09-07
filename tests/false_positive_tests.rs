@@ -1,8 +1,7 @@
 // false positive test suite (phase 8.5)
 //
-// verifies that common non-secret patterns are NOT flagged by the scanner.
-// each test category exercises the full pipeline (parse_diff -> scan) with
-// realistic code snippets that should pass through without findings.
+// verifies clean controls and deliberate entropy findings in non-secret data.
+// high-entropy literals have no automatic name, shape, or context exemption.
 
 use sekretbarilo::config;
 use sekretbarilo::diff::parser::{AddedLine, DiffFile, parse_diff};
@@ -60,6 +59,18 @@ fn assert_no_findings(path: &str, line: &[u8]) {
             ))
             .collect::<Vec<_>>()
     );
+}
+
+fn assert_only_entropy_finding(path: &str, line: &[u8]) {
+    let findings = scan_line(path, line);
+    assert_eq!(
+        findings.len(),
+        1,
+        "expected one entropy finding: {findings:?}"
+    );
+    assert_eq!(findings[0].rule_id, "generic-high-entropy-value");
+    assert!(findings[0].matched_value.len() >= 20);
+    assert!(sekretbarilo::scanner::entropy::shannon_entropy(&findings[0].matched_value) >= 4.0);
 }
 
 fn scan_lines(path: &str, lines: &[&[u8]]) -> Vec<Finding> {
@@ -195,25 +206,25 @@ fn fp_css_hex_color_8_digit_alpha() {
 // ============================================================================
 
 #[test]
-fn fp_base64_image_data_uri() {
-    assert_no_findings(
+fn entropy_flags_base64_image_data_uri() {
+    assert_only_entropy_finding(
         "src/icons.ts",
         b"const icon = \"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAA\";",
     );
 }
 
 #[test]
-fn fp_base64_in_test_fixture() {
-    assert_no_findings(
+fn entropy_flags_base64_in_test_fixture() {
+    assert_only_entropy_finding(
         "tests/fixtures/data.rs",
         b"let encoded = \"SGVsbG8gV29ybGQhIFRoaXMgaXMgYSB0ZXN0IG1lc3NhZ2U=\";",
     );
 }
 
 #[test]
-fn fp_base64_utf8_content() {
+fn entropy_flags_base64_utf8_content() {
     // base64 of "The quick brown fox jumps over the lazy dog"
-    assert_no_findings(
+    assert_only_entropy_finding(
         "src/encoding.rs",
         b"let data = \"VGhlIHF1aWNrIGJyb3duIGZveCBqdW1wcyBvdmVyIHRoZSBsYXp5IGRvZw==\";",
     );
@@ -225,6 +236,32 @@ fn fp_base64_in_html_template() {
         "templates/email.html",
         b"<img src=\"data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7\" />",
     );
+}
+
+#[test]
+fn fp_base64_with_explicit_value_allowlist() {
+    let rules = load_default_rules().unwrap();
+    let scanner = compile_rules(&rules).unwrap();
+    let al = config::allowlist::CompiledAllowlist::new(
+        &[],
+        &[],
+        None,
+        &[(
+            "generic-high-entropy-value".into(),
+            vec!["^SGVsbG8g".into()],
+            vec![],
+        )],
+        false,
+    )
+    .unwrap();
+    let file = make_file(
+        "tests/fixtures/data.rs",
+        vec![(
+            1,
+            b"let encoded = \"SGVsbG8gV29ybGQhIFRoaXMgaXMgYSB0ZXN0IG1lc3NhZ2U=\";",
+        )],
+    );
+    assert!(scan(&[file], &scanner, &al).is_empty());
 }
 
 // ============================================================================
@@ -468,8 +505,8 @@ fn fp_git_log_output_in_script() {
 }
 
 #[test]
-fn fp_sha_in_github_compare_url() {
-    assert_no_findings(
+fn entropy_flags_github_compare_url_even_in_documentation() {
+    assert_only_entropy_finding(
         "CHANGELOG.md",
         b"Full diff: https://github.com/user/repo/compare/abc1234...def5678",
     );
@@ -806,34 +843,34 @@ fn fp_csharp_format_placeholder() {
 // ============================================================================
 
 #[test]
-fn fp_postgres_weak_password() {
-    assert_no_findings(
+fn entropy_flags_postgres_url_with_weak_password() {
+    assert_only_entropy_finding(
         "config.py",
         b"db_url = \"postgres://postgres:password@localhost:5432/db\"",
     );
 }
 
 #[test]
-fn fp_mysql_weak_password() {
-    assert_no_findings(
+fn entropy_flags_mysql_url_with_weak_password() {
+    assert_only_entropy_finding(
         "config.py",
         b"db_url = \"mysql://root:admin123@localhost:3306/app\"",
     );
 }
 
 #[test]
-fn fp_mongodb_placeholder_password() {
-    // "changeme" is caught by stopwords
-    assert_no_findings(
+fn entropy_flags_mongodb_url_with_placeholder_password() {
+    // the credential rule still suppresses changeme; the complete url meets entropy.
+    assert_only_entropy_finding(
         "config.js",
         b"const uri = \"mongodb://user:changeme@localhost/db\";",
     );
 }
 
 #[test]
-fn fp_connection_string_template_var() {
-    // template variable reference in password position
-    assert_no_findings(
+fn entropy_flags_connection_string_containing_template_reference() {
+    // this complete url is not itself a variable reference.
+    assert_only_entropy_finding(
         "config.py",
         b"db_url = \"postgres://user:${DB_PASSWORD}@host/db\"",
     );

@@ -61,10 +61,11 @@ fn merge_allowlist_rules(
     let mut merged = base;
     for rule in overlay {
         if let Some(pos) = merged.iter().position(|r| r.id == rule.id) {
-            // merge regexes and paths for same id
+            // merge regexes, paths, and keys for same id
             merged[pos].regexes =
                 dedup_strings(std::mem::take(&mut merged[pos].regexes), rule.regexes);
             merged[pos].paths = dedup_strings(std::mem::take(&mut merged[pos].paths), rule.paths);
+            merged[pos].keys = dedup_strings(std::mem::take(&mut merged[pos].keys), rule.keys);
         } else {
             merged.push(rule);
         }
@@ -103,6 +104,7 @@ mod tests {
             description: format!("{} rule", id),
             regex_pattern: format!("({})", id),
             secret_group: 1,
+            secret_groups: Vec::new(),
             keywords: vec![id.to_string()],
             entropy_threshold: None,
             allowlist: RuleAllowlist::default(),
@@ -194,6 +196,7 @@ mod tests {
             description: "custom aws".to_string(),
             regex_pattern: "(CUSTOM_AWS.*)".to_string(),
             secret_group: 1,
+            secret_groups: Vec::new(),
             keywords: vec!["custom_aws".to_string()],
             entropy_threshold: Some(4.0),
             allowlist: RuleAllowlist::default(),
@@ -326,9 +329,10 @@ mod tests {
         let base = ProjectConfig {
             allowlist: AllowlistConfig {
                 rules: vec![AllowlistRuleOverride {
-                    id: "aws-key".to_string(),
+                    id: "generic-high-entropy-value".to_string(),
                     regexes: vec!["AKIAIOSFODNN7EXAMPLE".to_string()],
                     paths: vec!["test/.*".to_string()],
+                    keys: vec!["TMPDIR".to_string()],
                 }],
                 ..Default::default()
             },
@@ -338,14 +342,16 @@ mod tests {
             allowlist: AllowlistConfig {
                 rules: vec![
                     AllowlistRuleOverride {
-                        id: "aws-key".to_string(),
+                        id: "generic-high-entropy-value".to_string(),
                         regexes: vec!["AKIANEWPATTERN12345".to_string()],
                         paths: vec![],
+                        keys: vec![],
                     },
                     AllowlistRuleOverride {
                         id: "github-token".to_string(),
                         regexes: vec!["ghp_example".to_string()],
                         paths: vec![],
+                        keys: vec![],
                     },
                 ],
                 ..Default::default()
@@ -355,15 +361,16 @@ mod tests {
         let merged = merge_two(base, overlay);
 
         assert_eq!(merged.allowlist.rules.len(), 2);
-        // aws-key should have both regexes merged
-        let aws = merged
+        // generic-high-entropy-value should have both regexes merged
+        let entropy = merged
             .allowlist
             .rules
             .iter()
-            .find(|r| r.id == "aws-key")
+            .find(|r| r.id == "generic-high-entropy-value")
             .unwrap();
-        assert_eq!(aws.regexes.len(), 2);
-        assert_eq!(aws.paths.len(), 1);
+        assert_eq!(entropy.regexes.len(), 2);
+        assert_eq!(entropy.paths.len(), 1);
+        assert_eq!(entropy.keys, vec!["TMPDIR"]);
         // github-token is new
         let gh = merged
             .allowlist
@@ -372,6 +379,40 @@ mod tests {
             .find(|r| r.id == "github-token")
             .unwrap();
         assert_eq!(gh.regexes.len(), 1);
+    }
+
+    #[test]
+    fn allowlist_rule_keys_merge_without_erasing_other_fields() {
+        let base = ProjectConfig {
+            allowlist: AllowlistConfig {
+                rules: vec![AllowlistRuleOverride {
+                    id: "generic-high-entropy-value".to_string(),
+                    regexes: vec!["^base$".to_string()],
+                    paths: vec!["base/.*".to_string()],
+                    keys: vec!["TMPDIR".to_string()],
+                }],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let overlay = ProjectConfig {
+            allowlist: AllowlistConfig {
+                rules: vec![AllowlistRuleOverride {
+                    id: "generic-high-entropy-value".to_string(),
+                    regexes: vec!["^overlay$".to_string()],
+                    paths: vec![],
+                    keys: vec!["TMPDIR".to_string(), "SSH_*".to_string()],
+                }],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let merged = merge_two(base, overlay);
+        let rule = &merged.allowlist.rules[0];
+        assert_eq!(rule.regexes, vec!["^base$", "^overlay$"]);
+        assert_eq!(rule.paths, vec!["base/.*"]);
+        assert_eq!(rule.keys, vec!["TMPDIR", "SSH_*"]);
     }
 
     #[test]

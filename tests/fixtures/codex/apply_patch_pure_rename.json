@@ -1,0 +1,9 @@
+{
+  "session_id": "session-apply-patch-pure-rename",
+  "hook_event_name": "PreToolUse",
+  "tool_name": "apply_patch",
+  "tool_input": {
+    "command": "*** Begin Patch\n*** Update File: old.txt\n*** Move to: new.txt\n*** End Patch\n"
+  },
+  "cwd": "/tmp"
+}

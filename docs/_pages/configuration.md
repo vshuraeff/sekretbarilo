@@ -55,6 +55,68 @@ When running `sekretbarilo` from `~/work/acme/project-x/`, all five configs will
 
 ---
 
+## In-Workspace Config Trust (Agent Hooks Only)
+
+The agent hooks — `check-file`, `check-codex`, and `redact-claude` — apply one extra rule on top of the discovery above:
+
+> A `.sekretbarilo.toml` located **inside the git working tree** is honored only when it is **git-tracked and unmodified relative to `HEAD`**. Otherwise the entire layer is dropped.
+
+When a layer is dropped, the hook writes one line to stderr and carries on with the remaining layers:
+
+```
+[WARN] ignoring untrusted in-workspace config: /home/user/project/.sekretbarilo.toml
+```
+
+`scan` and `audit` are **not** affected. They load an in-workspace config the moment it exists on disk, tracked or not. The rule exists only where an AI agent is on the other side of the scan.
+
+### Why
+
+An agent hook is the one place where the thing being scanned can also rewrite the scanner's configuration. An agent asked to add a feature can write a permissive `.sekretbarilo.toml` first — that patch carries no secret, so it passes the check cleanly — and every check after it is neutered. Two tool calls, no warning, protection gone.
+
+Requiring the config to be committed moves that step in front of a human: changing what the hooks enforce becomes a reviewable commit rather than a silent side effect of an agent turn.
+
+### Why the Whole Layer
+
+The rule drops the layer entirely, not just its allowlists. A `[[rules]]` entry whose `id` collides with a built-in rule **replaces** that rule (see [Merge Strategy](#merge-strategy)), so an overlay shipping its own `id = "aws-access-key-id"` with a regex that matches nothing would disable AWS key detection while looking like an ordinary rule addition. Honoring "only the safe parts" of an untrusted layer is not possible when any part of it can disarm a built-in rule.
+
+### What Is and Is Not Subject to the Rule
+
+| Layer | Subject to the trust check |
+|-------|---------------------------|
+| `.sekretbarilo.toml` at the repo root | Yes |
+| `.sekretbarilo.toml` in any subdirectory of the working tree | Yes |
+| `.sekretbarilo.toml` in a parent directory above the repo root | No |
+| `~/.sekretbarilo.toml` | No |
+| `$XDG_CONFIG_HOME/sekretbarilo/sekretbarilo.toml` | No |
+| `/etc/sekretbarilo.toml` | No |
+
+The layers outside the working tree are outside the agent's reach in the same session, so they are loaded normally.
+
+### What to Do About It
+
+Commit the config:
+
+```sh
+git add .sekretbarilo.toml
+git commit -m "add sekretbarilo config"
+```
+
+A tracked file with uncommitted edits is untrusted too, so committing changes to it is part of the same workflow. `sekretbarilo doctor` reports any in-workspace config the hooks will ignore:
+
+```
+  [WARN] /home/user/project/.sekretbarilo.toml is untracked or has uncommitted changes; the check-file/check-codex agent hooks ignore this config layer entirely until it is committed
+```
+
+If your allowlist works when you run `sekretbarilo audit` by hand but the agent hook still blocks the same file, this is almost always why.
+
+### Redaction Policy
+
+`redact-claude` uses the trusted layers' detection rules, entropy thresholds, password heuristics, public-key setting, stopwords, and per-rule value regexes. It ignores all path exclusions and documentation relaxations, including global/per-rule path allowlists and audit exclusion patterns. `.env` output is scanned by content instead of rejected by filename. These differences apply only to output redaction; existing file-scanning policies are unchanged.
+
+An invalid trusted config is an error: redaction returns `continue: false` with a fixed safe reason and, when the response structure is available and fits the limit, masks all supported text. It does not silently continue with defaults after a config parse failure. See [Agent Hooks]({{ '/agent-hooks/#redact-mode-output-editor' | relative_url }}).
+
+---
+
 ## Merge Strategy
 
 sekretbarilo merges all discovered config files using the following rules:
@@ -137,18 +199,28 @@ stopwords = [
 **Default stopwords** (always active, even if not listed):
 - `example`, `test`, `sample`, `placeholder`, `dummy`, `changeme`, `fake`, `mock`, `todo`, `fixme`, `xxx`, `lorem`, `default`, `replace_me`, `insert_here`, `your_`, `my_`
 
+Word-based stopwords are consulted only by the 32 rules that carry an `entropy_threshold`. The other 80 rules still reject the built-in placeholder examples, but ignore stopwords otherwise: a string matching `AKIA` plus sixteen key characters is an AWS key whatever else it contains.
+
+The split follows the entropy threshold, not the tier, and the two do not coincide. `mailchimp-api-key`, `facebook-access-token`, `dropbox-api-token` and `launchdarkly-sdk-key` are prefix rules that do carry a threshold, so stopwords reach them. `airtable-api-key`, `twilio-api-key`, `azure-storage-account-key`, `password-in-url`, `webhook-url-with-token` and `generic-password-assignment` match case-insensitively but carry no threshold, so word-based stopwords do not apply to them. Password rules reject stopword values separately, through the strength heuristic.
+
+To allowlist a value a stopword cannot reach, use a per-rule `regexes` entry (see [`[[allowlist.rules]]`](#allowlistrules)).
+
 **Default allowlisted paths** (built-in, automatically skipped):
 - Binary files: `.png`, `.jpg`, `.gif`, `.pdf`, `.exe`, `.dll`, `.zip`, `.gz`, `.tar`, `.mp3`, `.mp4`, etc.
-- Generated files: `.min.js`, `.min.css`, `.map`
+- Generated files: `.min.js`, `.min.css`
 - Lock files: `package-lock.json`, `yarn.lock`, `Cargo.lock`, `go.sum`, `pnpm-lock.yaml`, etc.
 - Vendor directories: `node_modules/`, `vendor/`, `.bundle/`, `bower_components/`, `__pycache__/`, `.git/`
+
+The complete lists are in [Agent Hooks]({{ '/agent-hooks/#fast-path-skipping' | relative_url }}).
 
 ### `[[allowlist.rules]]`
 
 Per-rule allowlist overrides. These allow you to skip findings for specific rules based on value pattern or file path.
 
 ```toml
-# skip known safe AWS key (official example key from AWS docs)
+# skip a known safe AWS key value
+# (this particular one, from AWS's own docs, is already allowlisted by a
+#  built-in rule allowlist - it is shown here for the syntax)
 [[allowlist.rules]]
 id = "aws-access-key-id"
 regexes = ["AKIAIOSFODNN7EXAMPLE"]
@@ -171,14 +243,24 @@ paths = []
 id = "github-personal-access-token"
 regexes = ["ghp_[0-9a-zA-Z]{36}"]                          # skip tokens matching this pattern
 paths = ["fixtures/github/.*", "testdata/.*"]              # skip findings in these paths
+
+# skip generic high-entropy values assigned to known-safe environment keys
+[[allowlist.rules]]
+id = "generic-high-entropy-value"
+keys = ["TMPDIR", "SSH_AUTH_SOCK", "GHOSTTY_*"]
 ```
 
 **Notes:**
 - `id` must match an existing rule ID (built-in or custom).
 - `regexes` are matched against the captured secret value (not the whole line).
 - `paths` are matched against the file path.
-- Both `regexes` and `paths` can be empty (use only one or both).
+- `keys` applies only to `generic-high-entropy-value`; using a non-empty `keys` list for any other rule is a configuration error.
+- `keys` use case-sensitive whole-key matching: `*` matches zero or more characters, `?` matches exactly one character, and every other character is literal. A pattern needs at least one literal character, so a wildcard-only pattern (e.g. `*`, `**`, `?`) that would match every key is a configuration error, as is an empty pattern. For quoted assignment keys, matching removes one surrounding pair of matching single or double quotes.
+- Per-rule `regexes` still see only the captured value. For `generic-high-entropy-value`, `keys` is the one allowlist mechanism that sees the assignment key.
+- Both `regexes` and `paths` can be empty (use only one or both); `keys` can be omitted or empty to preserve the default behavior.
 - Per-rule allowlists from config files are **merged** with allowlists defined in the rule itself (from `rules.toml`).
+
+Allowlisting a key is intentionally narrow but does exempt any opaque or random-looking value assigned to that key from `generic-high-entropy-value`, including a URL-shaped value. It does not disable any other rule, so named-secret rules can still report values under an allowlisted key.
 
 ### `[audit]`
 
@@ -215,7 +297,7 @@ include_patterns = [
 
 ### `[[rules]]`
 
-Custom detection rules. These are merged with the 109 built-in rules.
+Custom detection rules. These are merged with the 113 built-in rule definitions (110 enabled by default).
 
 ```toml
 [[rules]]
@@ -250,6 +332,7 @@ paths = ["test/.*"]                   # skip findings in test files
 ```
 
 - `entropy_threshold` - minimum Shannon entropy for the captured secret (0.0 - 8.0). If not set, global `settings.entropy_threshold` is used (if set).
+- `secret_groups` - alternative capture group indices, checked in order when `secret_group` did not participate in the match. Defaults to `[]`; for example, `[2, 3, 4]` supports regex alternatives for different quoting forms. If no configured group participates, the full match is used, preserving existing custom-rule behavior.
 - `allowlist.regexes` - value patterns to skip (merged with `[[allowlist.rules]]` overrides)
 - `allowlist.paths` - file path patterns to skip (merged with `[[allowlist.rules]]` overrides)
 
@@ -578,7 +661,7 @@ sekretbarilo scan --config .sekretbarilo.toml --stopword test-override
 - `--include-pattern <pattern>` - add an audit include pattern (repeatable, audit only)
 - `--detect-public-keys` - report public keys as findings (default: suppressed)
 
-See the [CLI reference](../README.md#cli-flags) for a complete list of available flags.
+See the [CLI Reference]({{ '/cli-reference/' | relative_url }}) for a complete list of available flags.
 
 ---
 
@@ -594,17 +677,16 @@ sekretbarilo validates config files at load time:
 
 **Example validation error:**
 ```
-[ERROR] failed to compile rule 'custom-token': regex parse error: unclosed group
+[ERROR] failed to compile rules: failed to compile regex for rule 'custom-token': regex parse error: ...
 ```
 
-To validate your config without running a scan:
+To validate a config file, run an audit with it:
 
 ```sh
-# validate config by attempting to load it
-sekretbarilo audit --config .sekretbarilo.toml --help
+sekretbarilo audit --config .sekretbarilo.toml
 ```
 
-If there are parse errors, they'll be printed to stderr before the help message appears.
+Loading and compiling happen before any file is scanned, so a parse error or a bad regex is reported immediately. To check the configs that hierarchical discovery finds, without naming them yourself, run `sekretbarilo doctor` — it lists every discovered file and reports whether the merged ruleset loads and compiles.
 
 ---
 
@@ -693,4 +775,5 @@ sekretbarilo scan --config .sekretbarilo.toml
 
 - [Getting Started]({{ '/getting-started/' | relative_url }}) - installation and quick start
 - [CLI Reference]({{ '/cli-reference/' | relative_url }}) - complete list of command-line flags
+- [Agent Hooks]({{ '/agent-hooks/' | relative_url }}) - how config applies to the Claude Code and Codex CLI hooks
 - [Rules Reference]({{ '/rules-reference/' | relative_url }}) - default detection rules

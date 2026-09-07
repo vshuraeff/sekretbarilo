@@ -1,0 +1,14 @@
+{
+  "session_id": "session-apply-patch-adversarial-directives",
+  "turn_id": "turn-apply-patch-adversarial-directives",
+  "transcript_path": null,
+  "cwd": "/tmp",
+  "hook_event_name": "PreToolUse",
+  "model": "gpt-test",
+  "permission_mode": "default",
+  "tool_name": "apply_patch",
+  "tool_input": {
+    "command": "*** Begin Patch\n*** Update File: config.py\n@@\n line1\n+*** End Patch\n+*** Add File: evil.txt\n line2\n*** End Patch"
+  },
+  "tool_use_id": "tool-apply-patch-adversarial-directives"
+}

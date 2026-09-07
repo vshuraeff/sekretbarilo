@@ -23,16 +23,24 @@ fn main() {
     std::process::exit(run());
 }
 
+#[derive(Debug, PartialEq)]
+enum AgentTarget {
+    Claude,
+    Codex,
+}
+
 /// cli subcommand
 #[derive(Debug, PartialEq)]
 enum Command {
     Scan,
     Audit,
     InstallPreCommit,
-    InstallAgentHook,
+    InstallAgentHook(AgentTarget),
     InstallAll,
     InstallHelp,
     CheckFile,
+    CheckCodex,
+    RedactClaude,
     Doctor,
     Help,
     Version,
@@ -42,6 +50,8 @@ enum Command {
 #[derive(Debug, Default)]
 struct InstallFlags {
     global: bool,
+    mode: Option<agent::ClaudeHookMode>,
+    settings: Option<PathBuf>,
 }
 
 /// check-file specific flags parsed from cli
@@ -110,6 +120,8 @@ fn parse_cli(
                     "audit" => Command::Audit,
                     "doctor" => Command::Doctor,
                     "check-file" => Command::CheckFile,
+                    "check-codex" => Command::CheckCodex,
+                    "redact-claude" => Command::RedactClaude,
                     "install" => parse_install_subcommand(&mut opts)?,
                     other => return Err(format!("unknown command: '{}'", other)),
                 });
@@ -183,6 +195,30 @@ fn parse_cli(
             }
             // install flags
             Arg::Long("global") => install_flags.global = true,
+            Arg::Long("mode") => {
+                install_flags.mode = Some(match opts.value().map_err(|e| e.to_string())? {
+                    "block" => agent::ClaudeHookMode::Block,
+                    "redact" => agent::ClaudeHookMode::Redact,
+                    _ => return Err("--mode must be block or redact".to_string()),
+                });
+            }
+            Arg::Long("settings") => {
+                if install_flags.settings.is_some() {
+                    return Err("--settings may only be given once".to_string());
+                }
+                let value = opts.value().map_err(|e| e.to_string())?;
+                if value.is_empty() {
+                    return Err("--settings requires a non-empty path".to_string());
+                }
+                let path = PathBuf::from(value);
+                install_flags.settings = Some(if path.is_absolute() {
+                    path
+                } else {
+                    std::env::current_dir()
+                        .map_err(|e| format!("could not determine current directory: {}", e))?
+                        .join(path)
+                });
+            }
             // check-file flags
             Arg::Long("stdin-json") => check_file_flags.stdin_json = true,
             // unknown
@@ -194,23 +230,61 @@ fn parse_cli(
     let command = command.unwrap_or(Command::Help);
 
     // validate check-file flags
-    if command != Command::CheckFile && check_file_flags.stdin_json {
-        return Err("--stdin-json is only valid with check-file".to_string());
+    if command != Command::CheckFile
+        && command != Command::CheckCodex
+        && command != Command::RedactClaude
+        && check_file_flags.stdin_json
+    {
+        return Err(
+            "--stdin-json is only valid with check-file, check-codex or redact-claude".to_string(),
+        );
     }
     if check_file_flags.stdin_json && check_file_flags.file_path.is_some() {
         return Err("--stdin-json and file path argument are mutually exclusive".to_string());
+    }
+    if command == Command::CheckCodex && !check_file_flags.stdin_json {
+        return Err(
+            "check-codex reads its payload from stdin and requires --stdin-json".to_string(),
+        );
+    }
+    if command == Command::RedactClaude && !check_file_flags.stdin_json {
+        return Err("redact-claude requires --stdin-json".to_string());
     }
 
     // validate install flags
     let is_install_cmd = matches!(
         command,
         Command::InstallPreCommit
-            | Command::InstallAgentHook
+            | Command::InstallAgentHook(_)
             | Command::InstallAll
             | Command::InstallHelp
     );
     if !is_install_cmd && install_flags.global {
         return Err("--global is only valid with install subcommands".to_string());
+    }
+    if install_flags.mode.is_some()
+        && !matches!(
+            command,
+            Command::InstallAgentHook(AgentTarget::Claude) | Command::InstallAll
+        )
+    {
+        return Err(
+            "--mode is only valid with install agent-hook claude or install all".to_string(),
+        );
+    }
+    if install_flags.settings.is_some()
+        && !matches!(
+            command,
+            Command::InstallAgentHook(AgentTarget::Claude) | Command::InstallAll | Command::Doctor
+        )
+    {
+        return Err(
+            "--settings is only valid with install agent-hook claude, install all or doctor"
+                .to_string(),
+        );
+    }
+    if install_flags.settings.is_some() && install_flags.global {
+        return Err("--settings and --global are mutually exclusive".to_string());
     }
 
     // validate audit-only flags on non-audit commands
@@ -284,15 +358,13 @@ fn parse_install_subcommand<'a, I: Iterator<Item = &'a str>>(
         Some(Arg::Positional("pre-commit")) => Ok(Command::InstallPreCommit),
         Some(Arg::Positional("all")) => Ok(Command::InstallAll),
         Some(Arg::Positional("agent-hook")) => match opts.next_arg().map_err(|e| e.to_string())? {
-            Some(Arg::Positional("claude")) => Ok(Command::InstallAgentHook),
-            Some(Arg::Positional("codex")) => Err("codex agent hooks are not yet supported. \
-                     codex cli does not currently provide a hooks api"
-                .to_string()),
+            Some(Arg::Positional("claude")) => Ok(Command::InstallAgentHook(AgentTarget::Claude)),
+            Some(Arg::Positional("codex")) => Ok(Command::InstallAgentHook(AgentTarget::Codex)),
             Some(Arg::Positional(other)) => Err(format!(
-                "unknown agent hook target: '{}'. supported: claude",
+                "unknown agent hook target: '{}'. supported: claude, codex",
                 other
             )),
-            _ => Err("install agent-hook requires a target. supported: claude".to_string()),
+            _ => Err("install agent-hook requires a target. supported: claude, codex".to_string()),
         },
         Some(Arg::Long("help")) | Some(Arg::Short('h')) => Ok(Command::InstallHelp),
         Some(Arg::Positional(other)) => Err(format!(
@@ -318,6 +390,9 @@ fn run() -> i32 {
     {
         Ok(parsed) => parsed,
         Err(e) => {
+            if args.first().is_some_and(|arg| arg == "redact-claude") {
+                return agent::redact_cli_error();
+            }
             eprintln!("[ERROR] {}", e);
             eprintln!();
             print_usage();
@@ -335,8 +410,17 @@ fn run() -> i32 {
             0
         }
         Command::InstallPreCommit => run_install_pre_commit(install_flags.global),
-        Command::InstallAgentHook => run_install_agent_hook(install_flags.global),
-        Command::InstallAll => run_install_all(install_flags.global),
+        Command::InstallAgentHook(target) => run_install_agent_hook(
+            target,
+            install_flags.global,
+            install_flags.mode,
+            install_flags.settings,
+        ),
+        Command::InstallAll => run_install_all(
+            install_flags.global,
+            install_flags.mode,
+            install_flags.settings,
+        ),
         Command::InstallHelp => {
             print_install_usage();
             0
@@ -347,7 +431,9 @@ fn run() -> i32 {
             check_file_flags.stdin_json,
             check_file_flags.file_path.as_deref(),
         ),
-        Command::Doctor => doctor::run_doctor(),
+        Command::CheckCodex => agent::run_check_codex(),
+        Command::RedactClaude => agent::run_redact_claude(),
+        Command::Doctor => doctor::run_doctor(install_flags.settings),
     }
 }
 
@@ -359,6 +445,12 @@ fn print_usage() {
     eprintln!("  sekretbarilo install      install hooks (see: sekretbarilo install --help)");
     eprintln!("  sekretbarilo audit        scan all tracked files in working tree");
     eprintln!("  sekretbarilo check-file   scan a single file for secrets (agent hook mode)");
+    eprintln!(
+        "  sekretbarilo redact-claude --stdin-json  redact Claude PostToolUse output in memory"
+    );
+    eprintln!(
+        "  sekretbarilo check-codex  consume a Codex agent hook payload (internal; do not run directly)"
+    );
     eprintln!("  sekretbarilo doctor       diagnose hook installation and configuration");
     eprintln!("  sekretbarilo --help       show this help");
     eprintln!("  sekretbarilo --version    show version");
@@ -384,8 +476,13 @@ fn print_usage() {
     eprintln!("  --search <text>           literal substring to search for (repeatable)");
     eprintln!("  --search-regex <pat>      regex pattern to search for (repeatable)");
     eprintln!();
-    eprintln!("check-file flags:");
-    eprintln!("  --stdin-json              read file path from JSON on stdin (agent hook mode)");
+    eprintln!("check-file / check-codex / redact-claude flags:");
+    eprintln!("  --stdin-json              read file path or hook payload from JSON on stdin");
+    eprintln!();
+    eprintln!("install flags:");
+    eprintln!("  --global                  install globally instead of locally");
+    eprintln!("  --mode block|redact       select Claude hook mode");
+    eprintln!("  --settings <path>         target one Claude settings JSON file");
     eprintln!();
     eprintln!("examples:");
     eprintln!("  sekretbarilo scan --config rules.toml              scan with explicit config");
@@ -393,6 +490,10 @@ fn print_usage() {
     eprintln!("  sekretbarilo scan --stopword mytoken               add a stopword");
     eprintln!("  sekretbarilo install pre-commit                    install git pre-commit hook");
     eprintln!("  sekretbarilo install agent-hook claude              install claude code hook");
+    eprintln!(
+        "  sekretbarilo install agent-hook claude --mode redact  redact Claude tool output instead of blocking reads"
+    );
+    eprintln!("  sekretbarilo install agent-hook claude --settings <path>");
     eprintln!("  sekretbarilo install all --global                  install all hooks globally");
     eprintln!("  sekretbarilo audit                                 scan working tree");
     eprintln!("  sekretbarilo audit --history                       scan all commits");
@@ -410,20 +511,37 @@ fn print_install_usage() {
     eprintln!("usage:");
     eprintln!("  sekretbarilo install pre-commit          install git pre-commit hook");
     eprintln!("  sekretbarilo install agent-hook claude    install claude code agent hook");
+    eprintln!("  sekretbarilo install agent-hook codex     install codex cli agent hook");
     eprintln!("  sekretbarilo install all                  install all available hooks");
     eprintln!();
     eprintln!("flags:");
+    eprintln!(
+        "  --mode block|redact   Claude mode; preserve installed mode, default block on new install"
+    );
     eprintln!("  --global    install globally instead of locally");
     eprintln!("              pre-commit: uses git config --global core.hooksPath directory");
-    eprintln!("              agent-hook: modifies ~/.claude/settings.json");
+    eprintln!(
+        "              agent-hook: modifies $CLAUDE_CONFIG_DIR/settings.json when set, else ~/.claude/settings.json"
+    );
+    eprintln!("              codex hook: modifies ~/.codex/hooks.json or $CODEX_HOME/hooks.json");
+    eprintln!(
+        "  --settings <path>  install into or inspect one explicit Claude settings JSON file"
+    );
+    eprintln!(
+        "              claude only: explicit settings file for install agent-hook claude, install all and doctor; not combinable with --global"
+    );
     eprintln!();
     eprintln!("examples:");
     eprintln!("  sekretbarilo install pre-commit              install local pre-commit hook");
     eprintln!("  sekretbarilo install pre-commit --global     install global pre-commit hook");
     eprintln!("  sekretbarilo install agent-hook claude        install local claude code hook");
     eprintln!("  sekretbarilo install agent-hook claude --global");
+    eprintln!("  sekretbarilo install agent-hook claude --mode redact");
+    eprintln!("  sekretbarilo install agent-hook claude --settings .claude/settings.local.json");
+    eprintln!("  sekretbarilo install agent-hook codex --global");
     eprintln!("  sekretbarilo install all                      install all hooks locally");
     eprintln!("  sekretbarilo install all --global             install all hooks globally");
+    eprintln!("  sekretbarilo install all --mode redact");
 }
 
 /// apply cli overrides on top of a loaded project config.
@@ -521,33 +639,93 @@ fn run_install_pre_commit(global: bool) -> i32 {
     }
 }
 
-fn run_install_agent_hook(global: bool) -> i32 {
-    match agent::install_claude_hook(global) {
-        Ok(result) => {
-            eprintln!("[OK] {}", result);
-            0
+fn run_install_agent_hook(
+    target: AgentTarget,
+    global: bool,
+    mode: Option<agent::ClaudeHookMode>,
+    settings: Option<PathBuf>,
+) -> i32 {
+    match target {
+        AgentTarget::Claude => {
+            let result = match settings {
+                Some(path) => agent::install_claude_hook_to_target(
+                    agent::ClaudeSettingsTarget::Explicit(path),
+                    mode,
+                ),
+                None if mode.is_none() => agent::install_claude_hook(global),
+                None => agent::install_claude_hook_with_mode(global, mode),
+            };
+            match result {
+                Ok(result) => {
+                    eprintln!("[OK] {}", result.describe("claude code"));
+                    0
+                }
+                Err(e) => {
+                    eprintln!("[ERROR] {}", e);
+                    2
+                }
+            }
         }
-        Err(e) => {
-            eprintln!("[ERROR] {}", e);
-            2
-        }
+        AgentTarget::Codex => match agent::install_codex_hook(global) {
+            Ok(_) => 0,
+            Err(e) => {
+                eprintln!("[ERROR] {}", e);
+                2
+            }
+        },
     }
 }
 
-fn run_install_all(global: bool) -> i32 {
+fn run_install_all(
+    global: bool,
+    mode: Option<agent::ClaudeHookMode>,
+    settings: Option<PathBuf>,
+) -> i32 {
+    let mut failed = false;
+
     // install pre-commit hook
     eprintln!("installing pre-commit hook...");
-    let pre_commit_result = run_install_pre_commit(global);
+    if run_install_pre_commit(global) != 0 {
+        failed = true;
+    }
 
     // install claude code agent hook
     eprintln!("installing claude code agent hook...");
-    let agent_result = run_install_agent_hook(global);
+    if run_install_agent_hook(AgentTarget::Claude, global, mode, settings) != 0 {
+        failed = true;
+    }
 
-    // return non-zero if either install failed
-    if pre_commit_result != 0 || agent_result != 0 {
+    eprintln!("installing codex cli agent hook...");
+    if codex_cli_present() {
+        if run_install_agent_hook(AgentTarget::Codex, global, None, None) != 0 {
+            failed = true;
+        }
+    } else {
+        eprintln!(
+            "[SKIP] codex cli not detected on this machine; skipping codex agent hook install"
+        );
+    }
+
+    if failed {
         return 2;
     }
     0
+}
+
+fn codex_cli_present() -> bool {
+    let on_path = std::process::Command::new("sh")
+        .args(["-c", "command -v codex"])
+        .output()
+        .map(|output| output.status.success())
+        .unwrap_or(false);
+    if on_path {
+        return true;
+    }
+
+    match agent::resolve_codex_home(std::env::var_os("CODEX_HOME"), std::env::var_os("HOME")) {
+        Ok(codex_home) => codex_home.is_dir(),
+        Err(_) => false,
+    }
 }
 
 fn run_scan(overrides: &CliOverrides) -> i32 {
@@ -632,6 +810,76 @@ fn run_audit_cmd(overrides: &CliOverrides, audit_flags: &AuditFlags) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_redact_requires_stdin_and_rejects_overrides() {
+        let (command, _, _, flags, _) = parse_cli(&args("redact-claude --stdin-json")).unwrap();
+        assert_eq!(command, Command::RedactClaude);
+        assert!(flags.stdin_json);
+        assert!(parse_cli(&args("redact-claude")).is_err());
+        assert!(parse_cli(&args("redact-claude --stdin-json config.txt")).is_err());
+        assert!(parse_cli(&args("redact-claude --stdin-json --no-defaults")).is_err());
+    }
+
+    #[test]
+    fn claude_install_mode_is_optional_and_scoped() {
+        for target in ["install agent-hook claude", "install all"] {
+            let (_, _, _, _, flags) = parse_cli(&args(target)).unwrap();
+            assert_eq!(flags.mode, None);
+            for (mode, expected) in [
+                ("block", agent::ClaudeHookMode::Block),
+                ("redact", agent::ClaudeHookMode::Redact),
+            ] {
+                let (_, _, _, _, flags) =
+                    parse_cli(&args(&format!("{target} --global --mode {mode}"))).unwrap();
+                assert_eq!(flags.mode, Some(expected));
+                assert!(flags.global);
+            }
+        }
+        for invalid in [
+            "scan --mode redact",
+            "install agent-hook codex --mode redact",
+            "install pre-commit --mode block",
+            "install all --mode unknown",
+        ] {
+            assert!(parse_cli(&args(invalid)).is_err());
+        }
+    }
+
+    #[test]
+    fn claude_settings_path_is_scoped_and_resolved_from_current_directory() {
+        let current_dir = std::env::current_dir().unwrap();
+        for target in ["install agent-hook claude", "install all", "doctor"] {
+            let (_, _, _, _, flags) =
+                parse_cli(&args(&format!("{target} --settings config.json"))).unwrap();
+            assert_eq!(flags.settings, Some(current_dir.join("config.json")));
+        }
+    }
+
+    #[test]
+    fn claude_settings_rejects_invalid_combinations_and_scopes() {
+        for invalid in [
+            "install agent-hook claude --settings settings.json --global",
+            "install agent-hook claude --global --settings settings.json",
+            "scan --settings settings.json",
+            "audit --settings settings.json",
+            "check-file --settings settings.json",
+            "install pre-commit --settings settings.json",
+            "install agent-hook codex --settings settings.json",
+            "install all --settings a.json --settings b.json",
+        ] {
+            assert!(parse_cli(&args(invalid)).is_err(), "{invalid}");
+        }
+        assert!(
+            parse_cli(&[
+                "doctor".to_string(),
+                "--settings".to_string(),
+                "".to_string(),
+            ])
+            .is_err()
+        );
+        assert!(parse_cli(&args("doctor --settings")).is_err());
+    }
 
     fn args(s: &str) -> Vec<String> {
         if s.is_empty() {
@@ -904,6 +1152,20 @@ mod tests {
     }
 
     #[test]
+    fn parse_cli_check_codex_stdin_json() {
+        let (cmd, _, _, cf_flags, _) = parse_cli(&args("check-codex --stdin-json")).unwrap();
+        assert_eq!(cmd, Command::CheckCodex);
+        assert!(cf_flags.stdin_json);
+        assert!(cf_flags.file_path.is_none());
+    }
+
+    #[test]
+    fn parse_cli_check_codex_without_stdin_json_rejected() {
+        let err = parse_cli(&args("check-codex")).unwrap_err();
+        assert!(err.contains("requires --stdin-json"));
+    }
+
+    #[test]
     fn parse_cli_stdin_json_on_scan_rejected() {
         let err = parse_cli(&args("scan --stdin-json")).unwrap_err();
         assert!(err.contains("only valid with check-file"));
@@ -963,14 +1225,28 @@ mod tests {
     #[test]
     fn parse_cli_install_agent_hook_claude() {
         let (cmd, _, _, _, flags) = parse_cli(&args("install agent-hook claude")).unwrap();
-        assert_eq!(cmd, Command::InstallAgentHook);
+        assert_eq!(cmd, Command::InstallAgentHook(AgentTarget::Claude));
         assert!(!flags.global);
     }
 
     #[test]
     fn parse_cli_install_agent_hook_claude_global() {
         let (cmd, _, _, _, flags) = parse_cli(&args("install agent-hook claude --global")).unwrap();
-        assert_eq!(cmd, Command::InstallAgentHook);
+        assert_eq!(cmd, Command::InstallAgentHook(AgentTarget::Claude));
+        assert!(flags.global);
+    }
+
+    #[test]
+    fn parse_cli_install_agent_hook_codex() {
+        let (cmd, _, _, _, flags) = parse_cli(&args("install agent-hook codex")).unwrap();
+        assert_eq!(cmd, Command::InstallAgentHook(AgentTarget::Codex));
+        assert!(!flags.global);
+    }
+
+    #[test]
+    fn parse_cli_install_agent_hook_codex_global() {
+        let (cmd, _, _, _, flags) = parse_cli(&args("install agent-hook codex --global")).unwrap();
+        assert_eq!(cmd, Command::InstallAgentHook(AgentTarget::Codex));
         assert!(flags.global);
     }
 
@@ -997,12 +1273,6 @@ mod tests {
     fn parse_cli_install_agent_hook_missing_target() {
         let err = parse_cli(&args("install agent-hook")).unwrap_err();
         assert!(err.contains("requires a target"));
-    }
-
-    #[test]
-    fn parse_cli_install_agent_hook_codex_not_yet_supported() {
-        let err = parse_cli(&args("install agent-hook codex")).unwrap_err();
-        assert!(err.contains("not yet supported"));
     }
 
     #[test]
