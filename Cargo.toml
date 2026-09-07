@@ -20,7 +20,7 @@ mimalloc = { version = "0.1", default-features = false }
 [dev-dependencies]
 criterion = { version = "0.8", features = ["html_reports"] }
 tempfile = "3"
-serial_test = "3"
+serial_test = "4"
 
 [[bench]]
 name = "scan_benchmark"
