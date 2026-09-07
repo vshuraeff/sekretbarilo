@@ -13,6 +13,8 @@ pub struct Rule {
     #[serde(rename = "regex")]
     pub regex_pattern: String,
     pub secret_group: usize,
+    #[serde(default)]
+    pub secret_groups: Vec<usize>,
     pub keywords: Vec<String>,
     pub entropy_threshold: Option<f64>,
     #[serde(default)]
@@ -43,6 +45,7 @@ pub struct CompiledRule {
     pub id: String,
     pub regex: Regex,
     pub secret_group: usize,
+    pub secret_groups: Vec<usize>,
     pub keywords: Vec<String>,
     pub entropy_threshold: Option<f64>,
     /// true if the rule uses context-dependent matching (case-insensitive
@@ -55,6 +58,7 @@ impl std::fmt::Debug for CompiledRule {
         f.debug_struct("CompiledRule")
             .field("id", &self.id)
             .field("secret_group", &self.secret_group)
+            .field("secret_groups", &self.secret_groups)
             .field("keywords", &self.keywords)
             .field("entropy_threshold", &self.entropy_threshold)
             .finish()
@@ -118,6 +122,7 @@ pub fn compile_rules(rules: &[Rule]) -> Result<CompiledScanner, String> {
             id: rule.id.clone(),
             regex,
             secret_group: rule.secret_group,
+            secret_groups: rule.secret_groups.clone(),
             keywords: rule.keywords.clone(),
             entropy_threshold: rule.entropy_threshold,
             context_dependent,
@@ -163,6 +168,7 @@ mod tests {
             description: id.into(),
             regex_pattern: pattern.into(),
             secret_group: 0,
+            secret_groups: Vec::new(),
             keywords: keywords.into_iter().map(String::from).collect(),
             entropy_threshold: None,
             allowlist: RuleAllowlist::default(),
@@ -305,15 +311,14 @@ paths = ["test/.*"]
     }
 
     #[test]
-    fn default_rules_have_keywords() {
+    fn only_generic_entropy_default_rule_is_keywordless() {
         let rules = load_default_rules().unwrap();
-        for rule in &rules {
-            assert!(
-                !rule.keywords.is_empty(),
-                "rule '{}' has no keywords",
-                rule.id
-            );
-        }
+        let keywordless: Vec<_> = rules
+            .iter()
+            .filter(|rule| rule.keywords.is_empty())
+            .map(|rule| rule.id.as_str())
+            .collect();
+        assert_eq!(keywordless, ["generic-high-entropy-value"]);
     }
 
     #[test]

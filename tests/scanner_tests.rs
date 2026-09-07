@@ -5,7 +5,9 @@
 //   - tier-2 context-dependent rules
 //   - tier-3 generic catch-all rule
 //   - entropy calculation accuracy
-//   - hash detection (should NOT be flagged)
+//   - subthreshold hash controls and strict entropy detection
+
+mod common;
 
 use sekretbarilo::config;
 use sekretbarilo::diff::parser::{AddedLine, DiffFile};
@@ -67,6 +69,844 @@ fn assert_not_detected(path: &str, line: &[u8]) {
         String::from_utf8_lossy(line),
         findings.iter().map(|f| &f.rule_id).collect::<Vec<_>>()
     );
+}
+
+mod high_entropy_values {
+    use super::*;
+    use sekretbarilo::config::allowlist::CompiledAllowlist;
+    use sekretbarilo::scanner::engine::{redact_text, scan_text};
+    use sekretbarilo::scanner::rules::CompiledScanner;
+
+    const RULE: &str = "generic-high-entropy-value";
+
+    fn distinct_token(len: usize) -> String {
+        (b'A'..=b'Z')
+            .chain(b'a'..=b'z')
+            .take(len)
+            .map(char::from)
+            .collect()
+    }
+
+    fn balanced_hex() -> String {
+        (0..32)
+            .map(|i| char::from_digit(i % 16, 16).unwrap())
+            .collect()
+    }
+
+    fn scanner_and_key_allowlist(keys: &[&str]) -> (CompiledScanner, CompiledAllowlist) {
+        let rules = load_default_rules().unwrap();
+        let scanner = compile_rules(&rules).unwrap();
+        let config = config::ProjectConfig {
+            allowlist: config::AllowlistConfig {
+                rules: vec![config::AllowlistRuleOverride {
+                    id: RULE.to_string(),
+                    regexes: vec![],
+                    paths: vec![],
+                    keys: keys.iter().map(|key| (*key).to_string()).collect(),
+                }],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let allowlist = config::build_allowlist(&config, &rules).unwrap();
+        (scanner, allowlist)
+    }
+
+    fn assert_values(
+        path: &str,
+        input: &str,
+        expected: &[&str],
+        scanner: &CompiledScanner,
+        al: &CompiledAllowlist,
+    ) {
+        let file = make_file(
+            path,
+            input
+                .lines()
+                .enumerate()
+                .map(|(i, line)| (i + 1, line.as_bytes()))
+                .collect(),
+        );
+        let findings = scan(&[file], scanner, al);
+        let values: Vec<_> = findings
+            .iter()
+            .filter(|finding| finding.rule_id == RULE)
+            .map(|finding| finding.matched_value.as_slice())
+            .collect();
+        let expected_bytes: Vec<_> = expected.iter().map(|value| value.as_bytes()).collect();
+        assert_eq!(values, expected_bytes, "diff input: {input:?}");
+
+        let matches = scan_text(input, scanner, al);
+        let ranges: Vec<_> = matches
+            .iter()
+            .filter(|found| found.rule_id == RULE)
+            .map(|found| found.range.clone())
+            .collect();
+        let mut offset = 0;
+        let expected_ranges: Vec<_> = expected
+            .iter()
+            .map(|value| {
+                let start = offset + input[offset..].find(value).unwrap();
+                offset = start + value.len();
+                start..offset
+            })
+            .collect();
+        assert_eq!(ranges, expected_ranges, "text input: {input:?}");
+    }
+
+    #[test]
+    fn assignments_and_bare_tokens_have_exact_complete_captures() {
+        let (scanner, al) = default_scanner_and_allowlist();
+        let value = distinct_token(32);
+        assert_eq!(entropy::shannon_entropy(value.as_bytes()), 5.0);
+        for input in [
+            format!("ALPHA={value}"),
+            format!("export ALPHA={value}"),
+            format!("\tALPHA : {value}\r\n"),
+            format!("name = \"{value}\";"),
+            format!("name = '{value}'"),
+            format!("{{\"name\": \"{value}\"}}"),
+            format!("{{\"arbitrary mapping key\":\"{value}\",\"other\":\"short\"}}"),
+            format!("'{value}'"),
+            format!("\t\"{value}\" \r\n"),
+            format!(" \t{value}\t "),
+            format!("before\n{value}\nafter"),
+        ] {
+            assert_values("config.txt", &input, &[&value], &scanner, &al);
+        }
+        for value in [
+            format!("{value}+/=="),
+            format!("{value}-_="),
+            format!("{value}/+="),
+        ] {
+            for input in [
+                value.clone(),
+                format!("'{value}'"),
+                format!("ALPHA={value}"),
+            ] {
+                assert_values("config.txt", &input, &[&value], &scanner, &al);
+            }
+        }
+    }
+
+    #[test]
+    fn entropy_key_capture_indices_match_configured_value_groups() {
+        let (scanner, _) = default_scanner_and_allowlist();
+        let rule = scanner.rules.iter().find(|rule| rule.id == RULE).unwrap();
+        let captures: Vec<_> = rule
+            .regex
+            .capture_names()
+            .enumerate()
+            .filter_map(|(index, name)| name.map(|name| (name, index)))
+            .collect();
+        assert_eq!(
+            captures,
+            vec![
+                ("entropy_reference", 1),
+                ("entropy_bare_double", 2),
+                ("entropy_bare_single", 3),
+                ("entropy_url", 4),
+                ("entropy_key", 5),
+                ("entropy_double", 6),
+                ("entropy_single", 7),
+                ("entropy_bracket", 8),
+                ("entropy_unquoted", 9),
+                ("entropy_bare", 10),
+            ]
+        );
+
+        let value_indices: Vec<_> = captures
+            .iter()
+            .filter(|(name, _)| *name != "entropy_key")
+            .map(|(_, index)| *index)
+            .collect();
+        let configured_groups: Vec<_> = std::iter::once(rule.secret_group)
+            .chain(rule.secret_groups.iter().copied())
+            .collect();
+        assert_eq!(configured_groups, value_indices);
+    }
+
+    #[test]
+    fn key_allowlist_suppresses_only_matching_assignment_keys() {
+        let (scanner, al) = scanner_and_key_allowlist(&["TMPDIR"]);
+        let allowed = distinct_token(32);
+        let disallowed: String = allowed.chars().rev().collect();
+
+        for input in [
+            format!("TMPDIR={allowed}"),
+            format!("export TMPDIR={allowed}"),
+            format!("TMPDIR:{allowed}"),
+            format!("\"TMPDIR\":{allowed}"),
+            format!("'TMPDIR':{allowed}"),
+            format!("\t TMPDIR = {allowed}\r\n"),
+        ] {
+            assert_values("config.txt", &input, &[], &scanner, &al);
+        }
+
+        for (input, expected) in [
+            (
+                format!("TMPDIR={allowed},DISALLOWED={disallowed}"),
+                disallowed.as_str(),
+            ),
+            (
+                format!("DISALLOWED={disallowed},TMPDIR={allowed}"),
+                disallowed.as_str(),
+            ),
+        ] {
+            assert_values("config.txt", &input, &[expected], &scanner, &al);
+        }
+    }
+
+    #[test]
+    fn key_allowlist_does_not_affect_values_without_a_matching_assignment_key() {
+        let (scanner, al) = scanner_and_key_allowlist(&["TMPDIR"]);
+        let token = distinct_token(24);
+        let inside_value = format!("{}TMPDIR{}", &token[..12], &token[12..]);
+        assert!(entropy::shannon_entropy(inside_value.as_bytes()) >= 4.0);
+        assert_values(
+            "config.txt",
+            &format!("OTHER={inside_value}"),
+            &[&inside_value],
+            &scanner,
+            &al,
+        );
+
+        let url = format!("https://{}", distinct_token(13));
+        assert!(entropy::shannon_entropy(url.as_bytes()) >= 4.0);
+        assert_values("config.txt", &token, &[&token], &scanner, &al);
+        assert_values("config.txt", &url, &[&url], &scanner, &al);
+        assert_values("config.txt", &format!("TMPDIR={url}"), &[], &scanner, &al);
+    }
+
+    #[test]
+    fn key_allowlist_never_suppresses_named_secret_rules() {
+        let (scanner, al) = scanner_and_key_allowlist(&["TMPDIR"]);
+        let input = b"TMPDIR=AKIAIOSFODNN7REALKEY";
+        let findings = scan(&[make_file("config.txt", vec![(1, input)])], &scanner, &al);
+        assert!(
+            findings
+                .iter()
+                .any(|finding| finding.rule_id == "aws-access-key-id"),
+            "named AWS rule was unexpectedly suppressed: {findings:?}"
+        );
+    }
+
+    #[test]
+    fn adjacent_fields_escaped_quotes_and_syntax_are_preserved() {
+        let (scanner, al) = default_scanner_and_allowlist();
+        let value = distinct_token(32);
+        let double = format!("{value}\\\"suffix");
+        let single = format!("{value}\\'suffix");
+        let doubled = format!("{value}''suffix");
+        let unquoted = format!("{value}\\;suffix");
+        for (input, expected) in [
+            (
+                format!("{{\"key\\\"with space\":\"{double}\",\"next\":\"{value}\"}}\r\n"),
+                vec![double.as_str(), value.as_str()],
+            ),
+            (
+                format!("'key with space' = '{single}'; next='{doubled}'"),
+                vec![single.as_str(), doubled.as_str()],
+            ),
+            (
+                format!("ALPHA={unquoted};BRAVO={value},CHARLIE={value}"),
+                vec![unquoted.as_str(), value.as_str(), value.as_str()],
+            ),
+        ] {
+            assert_values("config.txt", &input, &expected, &scanner, &al);
+        }
+    }
+
+    #[test]
+    fn punctuated_unquoted_assignments_capture_complete_values() {
+        let (scanner, al) = default_scanner_and_allowlist();
+        let token = distinct_token(24);
+        for punctuation in
+            (b'!'..=b'~').filter(|byte| byte.is_ascii_punctuation() && !b"\"'`".contains(byte))
+        {
+            let value = format!("{}{}{}", &token[..7], char::from(punctuation), &token[7..]);
+            assert!(entropy::shannon_entropy(value.as_bytes()) >= 4.0);
+            assert_values(
+                "config.txt",
+                &format!("SESSION_SECRET={value}"),
+                &[&value],
+                &scanner,
+                &al,
+            );
+        }
+        for delimiter in [",", ";", ")", "]", "}", ">", ")};"] {
+            assert_values(
+                "config.txt",
+                &format!("ALPHA={token}{delimiter}\r\n"),
+                &[&token],
+                &scanner,
+                &al,
+            );
+        }
+        let raw_crlf = format!("ALPHA={token}\r");
+        let file = make_file("config.txt", vec![(1, raw_crlf.as_bytes())]);
+        let findings = scan(&[file], &scanner, &al);
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].rule_id, RULE);
+        assert_eq!(findings[0].matched_value, token.as_bytes());
+    }
+
+    #[test]
+    fn punctuated_bare_lines_capture_complete_values() {
+        let (scanner, al) = default_scanner_and_allowlist();
+        let token = distinct_token(24);
+        for punctuation in
+            (b'!'..=b'~').filter(|byte| byte.is_ascii_punctuation() && !b"\"'`=".contains(byte))
+        {
+            let value = format!("{}{}{}", &token[..7], char::from(punctuation), &token[7..]);
+            assert!(entropy::shannon_entropy(value.as_bytes()) >= 4.0);
+            for input in [
+                value.clone(),
+                format!("\t'{value}' \r\n"),
+                format!("\"{value}\""),
+            ] {
+                let expected = if punctuation == b':' && input == value {
+                    vec![]
+                } else {
+                    vec![value.as_str()]
+                };
+                assert_values("config.txt", &input, &expected, &scanner, &al);
+            }
+        }
+    }
+
+    #[test]
+    fn bare_url_and_colon_boundary_preserve_complete_values() {
+        let (scanner, al) = default_scanner_and_allowlist();
+        let url = format!("https://{}", distinct_token(13));
+        assert_eq!(url.len(), 21);
+        assert!(entropy::shannon_entropy(url.as_bytes()) >= 4.0);
+        assert_values("config.txt", &url, &[&url], &scanner, &al);
+        let value = distinct_token(24);
+        let assignment = format!("ALPHA:{value}");
+        assert_values("config.txt", &assignment, &[&value], &scanner, &al);
+        assert_values(
+            "config.txt",
+            &format!("ALPHA: {value}"),
+            &[&value],
+            &scanner,
+            &al,
+        );
+        let assignment_with_comma = format!("ALPHA:{value},");
+        assert_values(
+            "config.txt",
+            &assignment_with_comma,
+            &[&value],
+            &scanner,
+            &al,
+        );
+        assert_values(
+            "config.txt",
+            &format!("\"ALPHA\":\"{value}\""),
+            &[&value],
+            &scanner,
+            &al,
+        );
+        assert_values("config.txt", &format!("{value}=short"), &[], &scanner, &al);
+    }
+
+    mod structural_precedence {
+        use super::*;
+
+        fn hash_line() -> String {
+            let hash = ["a94a8fe5ccb19ba61", "c4c0873d391e987982fbbd3"].concat();
+            assert!(entropy::shannon_entropy(hash.as_bytes()) < 4.0);
+            let line = format!("commit:{hash}");
+            assert!(entropy::shannon_entropy(line.as_bytes()) >= 4.0);
+            line
+        }
+
+        #[test]
+        fn whole_line_urls_preserve_complete_spans_and_assignment_keys() {
+            let (scanner, al) = default_scanner_and_allowlist();
+            let url = format!("https://{}", distinct_token(13));
+            assert_eq!(url.len(), 21);
+            assert!(entropy::shannon_entropy(url.as_bytes()) >= 4.0);
+            for url in [
+                url,
+                format!("git+ssh.2://{}", distinct_token(13)),
+                format!("https://{}?q=x", distinct_token(13)),
+            ] {
+                for (input, expected) in [
+                    (url.clone(), "[REDACTED]".to_string()),
+                    (format!("\t {url} \r\n"), "\t [REDACTED] \r\n".into()),
+                    (format!("\"{url}\""), "\"[REDACTED]\"".into()),
+                    (format!("\t'{url}'\r\n"), "\t'[REDACTED]'\r\n".into()),
+                    (format!("ALPHA={url}"), "ALPHA=[REDACTED]".into()),
+                    (
+                        format!("LEFT=short,ALPHA={url}"),
+                        "LEFT=short,ALPHA=[REDACTED]".into(),
+                    ),
+                ] {
+                    assert_values("config.txt", &input, &[&url], &scanner, &al);
+                    assert_eq!(redact_text(&input, &scanner, &al), expected);
+                }
+            }
+        }
+
+        #[test]
+        fn colon_assignments_exclude_keys_and_preserve_complete_output() {
+            let (scanner, al) = default_scanner_and_allowlist();
+            let value = distinct_token(24);
+            for (input, expected) in [
+                (format!("ALPHA:{value}"), "ALPHA:[REDACTED]"),
+                (format!("ALPHA: {value}"), "ALPHA: [REDACTED]"),
+                (format!("\tALPHA:{value}\r\n"), "\tALPHA:[REDACTED]\r\n"),
+                (format!("\"ALPHA\":\"{value}\""), "\"ALPHA\":\"[REDACTED]\""),
+                (format!("ALPHA:{value},"), "ALPHA:[REDACTED],"),
+            ] {
+                assert_values("config.txt", &input, &[&value], &scanner, &al);
+                assert_eq!(redact_text(&input, &scanner, &al), expected);
+            }
+        }
+
+        #[test]
+        fn keys_do_not_contribute_to_length_or_entropy() {
+            let (scanner, al) = default_scanner_and_allowlist();
+            let short = distinct_token(19);
+            assert!(entropy::shannon_entropy(short.as_bytes()) >= 4.0);
+            for input in [format!("long_variable_name:{short}"), "ALPHA:short".into()] {
+                assert_values("config.txt", &input, &[], &scanner, &al);
+                assert_eq!(redact_text(&input, &scanner, &al), input);
+            }
+        }
+
+        #[test]
+        fn commit_key_does_not_raise_hash_entropy() {
+            let (scanner, al) = default_scanner_and_allowlist();
+            let input = hash_line();
+            assert_values("config.txt", &input, &[], &scanner, &al);
+            assert_eq!(redact_text(&input, &scanner, &al), input);
+        }
+
+        #[test]
+        fn check_file_accepts_subthreshold_hash_after_colon_key() {
+            let environment = common::IsolatedEnv::new();
+            let file = environment.root().join("config.txt");
+            std::fs::write(&file, hash_line()).unwrap();
+            let output = environment
+                .command()
+                .arg("check-file")
+                .arg(&file)
+                .current_dir(environment.root())
+                .output()
+                .unwrap();
+            assert_eq!(
+                output.status.code(),
+                Some(0),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+
+        #[test]
+        fn configured_stopwords_do_not_match_assignment_keys() {
+            let (scanner, _) = default_scanner_and_allowlist();
+            let al = CompiledAllowlist::new(&[], &["test".into()], None, &[], false).unwrap();
+            let value = distinct_token(28);
+            assert!(!value.to_lowercase().contains("test"));
+            let input = format!("test_api_key:{value}");
+            assert_values("config.txt", &input, &[&value], &scanner, &al);
+            assert_eq!(
+                redact_text(&input, &scanner, &al),
+                "test_api_key:[REDACTED]"
+            );
+        }
+
+        #[test]
+        fn audit_stopword_in_key_keeps_exactly_one_entropy_finding() {
+            let environment = common::IsolatedEnv::new();
+            let repo = environment.git_repo();
+            let value = distinct_token(28);
+            assert!(!value.to_lowercase().contains("test"));
+            assert!(entropy::shannon_entropy(value.as_bytes()) >= 4.0);
+            std::fs::write(repo.join("config.txt"), format!("test_api_key:{value}")).unwrap();
+            let staged = std::process::Command::new("git")
+                .args(["add", "config.txt"])
+                .env("GIT_CONFIG_GLOBAL", environment.git_config_global())
+                .current_dir(&repo)
+                .output()
+                .unwrap();
+            assert!(staged.status.success());
+            let output = environment
+                .command()
+                .args(["audit", "--stopword", "test"])
+                .current_dir(&repo)
+                .output()
+                .unwrap();
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert_eq!(output.status.code(), Some(1), "{stderr}");
+            assert_eq!(
+                stderr
+                    .lines()
+                    .filter(|line| line.trim_start().starts_with("rule:"))
+                    .collect::<Vec<_>>(),
+                ["  rule: generic-high-entropy-value"]
+            );
+            assert!(stderr.contains("1 secret(s) in 1 file(s)"), "{stderr}");
+        }
+
+        #[test]
+        fn mixed_case_stopwords_inside_values_remain_suppressed() {
+            let (scanner, _) = default_scanner_and_allowlist();
+            let al = CompiledAllowlist::new(&[], &["test".into()], None, &[], false).unwrap();
+            let token = distinct_token(28);
+            let value = format!("{}TeSt{}", &token[..8], &token[8..]);
+            assert!(entropy::shannon_entropy(value.as_bytes()) >= 4.0);
+            for delimiter in ["=", ":"] {
+                let input = format!("ALPHA{delimiter}{value}");
+                assert_values("config.txt", &input, &[], &scanner, &al);
+                assert_eq!(redact_text(&input, &scanner, &al), input);
+            }
+        }
+
+        #[test]
+        fn anchored_value_allowlist_applies_to_both_assignment_delimiters() {
+            let (scanner, _) = default_scanner_and_allowlist();
+            let allowed = distinct_token(24);
+            let other = distinct_token(28);
+            let al = CompiledAllowlist::new(
+                &[],
+                &[],
+                None,
+                &[(RULE.into(), vec![format!("^{allowed}$")], vec![])],
+                false,
+            )
+            .unwrap();
+            for delimiter in ["=", ":"] {
+                let input = format!("ALPHA{delimiter}{allowed}");
+                assert_values("config.txt", &input, &[], &scanner, &al);
+                assert_eq!(redact_text(&input, &scanner, &al), input);
+                let input = format!("ALPHA{delimiter}{other}");
+                assert_values("config.txt", &input, &[&other], &scanner, &al);
+                assert_eq!(
+                    redact_text(&input, &scanner, &al),
+                    format!("ALPHA{delimiter}[REDACTED]")
+                );
+            }
+        }
+
+        #[test]
+        fn bracket_wrappers_are_symmetric_and_quoted_brackets_are_value_bytes() {
+            let (scanner, al) = default_scanner_and_allowlist();
+            let value = distinct_token(24);
+            let input = format!("ALPHA=[{value}]");
+            assert_values("config.txt", &input, &[&value], &scanner, &al);
+            assert_eq!(redact_text(&input, &scanner, &al), "ALPHA=[[REDACTED]]");
+            let quoted_value = format!("[{value}]");
+            let input = format!("ALPHA=\"{quoted_value}\"");
+            assert_values("config.txt", &input, &[&quoted_value], &scanner, &al);
+            assert_eq!(redact_text(&input, &scanner, &al), "ALPHA=\"[REDACTED]\"");
+        }
+
+        #[test]
+        fn quoting_distinguishes_standalone_colons_from_assignments() {
+            let (scanner, al) = default_scanner_and_allowlist();
+            let value = distinct_token(24);
+            let rhs = format!("bar{value}");
+            let input = format!("foo:{rhs}");
+            assert_values("config.txt", &input, &[&rhs], &scanner, &al);
+            assert_eq!(redact_text(&input, &scanner, &al), "foo:[REDACTED]");
+            let quoted = format!("\"{input}\"");
+            assert_values("config.txt", &quoted, &[&input], &scanner, &al);
+            assert_eq!(redact_text(&quoted, &scanner, &al), "\"[REDACTED]\"");
+            let rhs = format!("prefix:{value}");
+            let input = format!("ALPHA={rhs}");
+            assert_values("config.txt", &input, &[&rhs], &scanner, &al);
+            assert_eq!(redact_text(&input, &scanner, &al), "ALPHA=[REDACTED]");
+        }
+
+        #[test]
+        fn adjacent_assignments_keep_both_keys_and_ranges() {
+            let (scanner, al) = default_scanner_and_allowlist();
+            let first = distinct_token(24);
+            let second = distinct_token(28);
+            let input = format!("A={first},B={second}");
+            assert_values("config.txt", &input, &[&first, &second], &scanner, &al);
+            assert_eq!(
+                redact_text(&input, &scanner, &al),
+                "A=[REDACTED],B=[REDACTED]"
+            );
+        }
+    }
+
+    #[test]
+    fn length_and_raw_entropy_boundaries_use_complete_values() {
+        let (scanner, al) = default_scanner_and_allowlist();
+        let short = distinct_token(19);
+        let minimum = distinct_token(20);
+        let boundary = balanced_hex();
+        let below = format!("{}0", &boundary[..31]);
+        assert!((entropy::shannon_entropy(short.as_bytes()) - 19_f64.log2()).abs() < 1e-12);
+        assert!((entropy::shannon_entropy(minimum.as_bytes()) - 20_f64.log2()).abs() < 1e-12);
+        assert_eq!(entropy::shannon_entropy(boundary.as_bytes()), 4.0);
+        assert!(entropy::shannon_entropy(below.as_bytes()) < 4.0);
+        for value in [&short, &minimum, &boundary, &below] {
+            let expected: Vec<_> = if value == &minimum || value == &boundary {
+                vec![value.as_str()]
+            } else {
+                vec![]
+            };
+            for input in [
+                format!("ALPHA={value}"),
+                format!("ALPHA='{value}'"),
+                value.clone(),
+            ] {
+                assert_values("config.txt", &input, &expected, &scanner, &al);
+            }
+        }
+        let diluted = format!("{minimum}{}", "a".repeat(300));
+        assert!(entropy::shannon_entropy(diluted.as_bytes()) < 4.0);
+        for value in [diluted, "1234567890".repeat(4), "a".repeat(64)] {
+            for input in [
+                format!("ALPHA={value}"),
+                format!("ALPHA=\"{value}\""),
+                value.clone(),
+            ] {
+                assert_values("config.txt", &input, &[], &scanner, &al);
+            }
+        }
+        let lower_override = CompiledAllowlist::new(&[], &[], Some(3.0), &[], false).unwrap();
+        assert_values(
+            "config.txt",
+            &format!("ALPHA={below}"),
+            &[],
+            &scanner,
+            &lower_override,
+        );
+        let higher_override = CompiledAllowlist::new(&[], &[], Some(4.5), &[], false).unwrap();
+        assert_values(
+            "config.txt",
+            &format!("ALPHA={minimum}"),
+            &[],
+            &scanner,
+            &higher_override,
+        );
+        let value = distinct_token(32);
+        assert_values(
+            "config.txt",
+            &format!("ALPHA={value}"),
+            &[&value],
+            &scanner,
+            &higher_override,
+        );
+    }
+
+    #[test]
+    fn names_shapes_templates_and_documentation_do_not_exempt_literals() {
+        let (scanner, al) = default_scanner_and_allowlist();
+        let value = balanced_hex();
+        for name in [
+            "ALPHA",
+            "DB_TOKEN",
+            "PATH",
+            "MANPATH",
+            "LS_COLORS",
+            "TERM_SESSION_ID",
+            "commit_token",
+            "hash",
+            "checksum",
+        ] {
+            for path in ["config.txt", "docs/guide.md"] {
+                let input = format!("{name}={value}");
+                assert_values(path, &input, &[&value], &scanner, &al);
+            }
+        }
+        for input in [
+            format!("{{\"arbitrary mapping key\":\"{value}\",\"checksum\":\"short\"}}"),
+            format!("ALPHA={value} # hash checksum"),
+            format!("{{{{ reference }}}} ALPHA=\"{value}\""),
+            format!("{{\"ref\":\"{{{{ reference }}}}\",\"literal\":\"{value}\"}}"),
+            format!("<%= reference %> ALPHA='{value}'"),
+            format!("{{{{ 'ALPHA={value}' }}}}"),
+            format!("{{{{\"ALPHA\":\"{value}\"}}}}"),
+        ] {
+            assert_values("docs/guide.md", &input, &[&value], &scanner, &al);
+        }
+        let token = distinct_token(32);
+        for value in [
+            format!("/{token}"),
+            format!("~/{token}"),
+            format!("https://{token}"),
+            format!("one:two:three:four:{token}"),
+            format!("example_{token}"),
+            format!("XXX_{token}"),
+            format!(
+                "{}-{}-{}-{}-{}",
+                &token[..8],
+                &token[8..12],
+                &token[12..16],
+                &token[16..20],
+                &token[20..]
+            ),
+        ] {
+            assert!(entropy::shannon_entropy(value.as_bytes()) >= 4.0);
+            assert_values(
+                "config.txt",
+                &format!("PATH={value}"),
+                &[&value],
+                &scanner,
+                &al,
+            );
+        }
+    }
+
+    #[test]
+    fn references_whitespace_non_ascii_and_prose_are_outside_eligibility() {
+        let (scanner, al) = default_scanner_and_allowlist();
+        let token = distinct_token(32);
+        for value in [
+            format!("${token}"),
+            format!("${{{token}}}"),
+            format!("%{token}%"),
+            format!("{{{{{token}}}}}"),
+            format!("${{var.{token}}}"),
+            format!("process.env.{token}"),
+            format!("${{LONG_NAME:-{token}}}"),
+            format!("{{{{lookup('ALPHA={token}')}}}}"),
+            format!("{token} prose"),
+            format!("{token}\tmore"),
+            format!("{token}é"),
+            format!("{token}\\ more"),
+            format!("{token}\nmore"),
+        ] {
+            assert_values(
+                "config.txt",
+                &format!("ALPHA=\"{value}\""),
+                &[],
+                &scanner,
+                &al,
+            );
+        }
+        for input in [
+            format!("{token}=short"),
+            format!("ALPHA=${{LONG_NAME:-{token}}}"),
+            format!("ALPHA={{{{lookup('BRAVO={token}')}}}}"),
+            format!("ALPHA=<%=lookup('BRAVO={token}')%>"),
+            format!("{{{{lookup('BRAVO={token}')}}}}"),
+            format!("ALPHA={token}é"),
+            format!("ALPHA={token}\\ more"),
+            format!("ALPHA=`{token}`"),
+            format!("here is {token} in prose"),
+            format!("\"{token} with spaces\""),
+            "WORD=configuration".into(),
+            "GREETING=hello world".into(),
+            "NUMBER=12345".into(),
+            "PATHLIKE=/usr/local/bin/tooling".into(),
+        ] {
+            assert_values("config.txt", &input, &[], &scanner, &al);
+        }
+    }
+
+    #[test]
+    fn explicit_stopwords_and_value_allowlists_still_apply() {
+        let (scanner, _) = default_scanner_and_allowlist();
+        let value = format!("example_{}", distinct_token(32));
+        let input = format!("ALPHA={value}");
+        let stopword = CompiledAllowlist::new(&[], &["EXAMPLE".into()], None, &[], false).unwrap();
+        assert_values("config.txt", &input, &[], &scanner, &stopword);
+        let allowed = CompiledAllowlist::new(
+            &[],
+            &[],
+            None,
+            &[(RULE.into(), vec![format!("^{value}$")], vec![])],
+            false,
+        )
+        .unwrap();
+        assert_values("config.txt", &input, &[], &scanner, &allowed);
+        let other: String = distinct_token(32).chars().rev().collect();
+        assert_values(
+            "config.txt",
+            &format!("ALPHA={value};BRAVO={other}"),
+            &[&other],
+            &scanner,
+            &allowed,
+        );
+    }
+
+    #[test]
+    fn cli_and_config_stopwords_suppress_embedded_text_but_defaults_do_not() {
+        let environment = common::IsolatedEnv::new();
+        let repo = environment.git_repo();
+        let token = distinct_token(16);
+        let value = format!("example_{token}mystopword{}", token.to_lowercase());
+        assert!(entropy::shannon_entropy(value.as_bytes()) >= 4.0);
+        let config_path = repo.join(".sekretbarilo.toml");
+        std::fs::write(&config_path, "[allowlist]\nstopwords = [\"unrelated\"]\n").unwrap();
+        std::fs::write(repo.join("config.py"), format!("ALPHA = '{value}'\n")).unwrap();
+        let staged = std::process::Command::new("git")
+            .args(["add", "config.py"])
+            .env("GIT_CONFIG_GLOBAL", environment.git_config_global())
+            .current_dir(&repo)
+            .output()
+            .unwrap();
+        assert!(staged.status.success());
+
+        let baseline = environment
+            .command()
+            .arg("audit")
+            .current_dir(&repo)
+            .output()
+            .unwrap();
+        assert_eq!(baseline.status.code(), Some(1));
+        assert!(String::from_utf8_lossy(&baseline.stderr).contains(RULE));
+
+        let from_cli = environment
+            .command()
+            .args(["audit", "--stopword", "MyStopWord"])
+            .current_dir(&repo)
+            .output()
+            .unwrap();
+        assert_eq!(from_cli.status.code(), Some(0));
+        assert!(String::from_utf8_lossy(&from_cli.stderr).contains("0 secret(s) found"));
+
+        std::fs::write(&config_path, "[allowlist]\nstopwords = [\"MyStopWord\"]\n").unwrap();
+        let from_config = environment
+            .command()
+            .arg("audit")
+            .current_dir(&repo)
+            .output()
+            .unwrap();
+        assert_eq!(from_config.status.code(), Some(0));
+        assert!(String::from_utf8_lossy(&from_config.stderr).contains("0 secret(s) found"));
+    }
+
+    #[test]
+    fn global_and_rule_paths_and_public_key_suppression_are_preserved() {
+        let (scanner, al) = default_scanner_and_allowlist();
+        let value = distinct_token(32);
+        let input = format!("ALPHA={value}");
+        let custom = CompiledAllowlist::new(
+            &["ignored/".into()],
+            &[],
+            None,
+            &[(RULE.into(), vec![], vec!["safe/".into()])],
+            false,
+        )
+        .unwrap();
+        for (path, al) in [
+            ("Cargo.lock", &al),
+            ("ignored/config.txt", &custom),
+            ("safe/config.txt", &custom),
+        ] {
+            let file = make_file(path, vec![(1, input.as_bytes())]);
+            assert!(scan(&[file], &scanner, al).is_empty());
+            assert!(
+                scan_text(&input, &scanner, al)
+                    .iter()
+                    .any(|found| found.rule_id == RULE)
+            );
+        }
+        let public = format!("-----BEGIN PUBLIC KEY-----\n{value}\n-----END PUBLIC KEY-----");
+        assert_values("key.pem", &public, &[], &scanner, &al);
+        let enabled = CompiledAllowlist::new(&[], &[], None, &[], true).unwrap();
+        assert_values("key.pem", &public, &[&value], &scanner, &enabled);
+    }
 }
 
 // ============================================================================
@@ -1141,11 +1981,16 @@ fn tier2_cohere_api_key() {
 // ============================================================================
 
 #[test]
-fn credential_rule_skips_common_password() {
-    // weak password "password" should NOT be flagged in connection strings
-    assert_not_detected(
+fn credential_rule_skips_common_password_but_entropy_flags_complete_url() {
+    let findings = scan_line(
         "config.rs",
         b"let url = \"postgres://admin:password@db.host.com:5432/mydb\"",
+    );
+    assert_eq!(findings.len(), 1);
+    assert_eq!(findings[0].rule_id, "generic-high-entropy-value");
+    assert_eq!(
+        findings[0].matched_value,
+        b"postgres://admin:password@db.host.com:5432/mydb"
     );
 }
 

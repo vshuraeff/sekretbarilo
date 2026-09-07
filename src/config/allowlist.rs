@@ -6,6 +6,9 @@
 use memchr::memmem;
 use regex::bytes::{Regex, RegexBuilder};
 
+pub type PerRuleAllowlistWithKeys = (String, Vec<String>, Vec<String>, Vec<String>);
+type CompiledPerRuleAllowlist = (String, Vec<Regex>, Vec<Regex>, Vec<Regex>);
+
 /// default file extensions to skip (binary and non-source files)
 const BINARY_EXTENSIONS: &[&str] = &[
     "png", "jpg", "jpeg", "gif", "bmp", "ico", "svg", "woff", "woff2", "ttf", "eot", "otf", "pdf",
@@ -97,7 +100,7 @@ fn contains_word(haystack: &str, needle: &str) -> bool {
         return false;
     }
     let mut start = 0;
-    while let Some(pos) = haystack[start..].find(needle) {
+    while let Some(pos) = memmem::find(&haystack.as_bytes()[start..], needle.as_bytes()) {
         let abs_pos = start + pos;
         let before_ok = abs_pos == 0 || {
             let b = haystack.as_bytes()[abs_pos - 1];
@@ -187,6 +190,47 @@ fn build_user_path_regex(pattern: &str) -> Result<Regex, regex::Error> {
     build_user_regex(&anchored)
 }
 
+/// check whether a key allowlist pattern contains at least one literal
+/// character, i.e. is not composed entirely of `*`/`?` wildcards (which
+/// would match every key).
+pub(crate) fn key_pattern_has_literal(pattern: &str) -> bool {
+    pattern.chars().any(|ch| ch != '*' && ch != '?')
+}
+
+fn build_key_pattern_regex(pattern: &str) -> Result<Regex, String> {
+    if pattern.is_empty() {
+        return Err("key allowlist patterns must not be empty".to_string());
+    }
+    if !key_pattern_has_literal(pattern) {
+        return Err(format!(
+            "key pattern '{}' matches every key; patterns need at least one literal character",
+            pattern
+        ));
+    }
+
+    let mut regex = String::from("^");
+    let mut literal = String::new();
+    for ch in pattern.chars() {
+        match ch {
+            '*' => {
+                regex.push_str(&regex::escape(&literal));
+                literal.clear();
+                regex.push_str(".*");
+            }
+            '?' => {
+                regex.push_str(&regex::escape(&literal));
+                literal.clear();
+                regex.push('.');
+            }
+            _ => literal.push(ch),
+        }
+    }
+    regex.push_str(&regex::escape(&literal));
+    regex.push('$');
+
+    build_user_regex(&regex).map_err(|e| e.to_string())
+}
+
 /// compiled allowlist configuration for use during scanning
 pub struct CompiledAllowlist {
     /// compiled regex patterns for variable reference detection
@@ -199,8 +243,8 @@ pub struct CompiledAllowlist {
     pub entropy_threshold_override: Option<f64>,
     /// whether to detect public keys as findings (default: false)
     pub detect_public_keys: bool,
-    /// per-rule allowlist compiled regexes: maps rule_id -> (value_regexes, path_regexes)
-    per_rule_allowlists: Vec<(String, Vec<Regex>, Vec<Regex>)>,
+    /// per-rule allowlist compiled regexes: maps rule_id -> (value_regexes, path_regexes, key_patterns)
+    per_rule_allowlists: Vec<CompiledPerRuleAllowlist>,
 }
 
 impl CompiledAllowlist {
@@ -216,6 +260,27 @@ impl CompiledAllowlist {
         user_stopwords: &[String],
         entropy_override: Option<f64>,
         per_rule: &[(String, Vec<String>, Vec<String>)],
+        detect_public_keys: bool,
+    ) -> Result<Self, String> {
+        let per_rule_with_keys: Vec<_> = per_rule
+            .iter()
+            .map(|(id, regexes, paths)| (id.clone(), regexes.clone(), paths.clone(), Vec::new()))
+            .collect();
+        Self::new_with_keys(
+            user_paths,
+            user_stopwords,
+            entropy_override,
+            &per_rule_with_keys,
+            detect_public_keys,
+        )
+    }
+
+    /// create a compiled allowlist from user configuration with per-rule key patterns
+    pub fn new_with_keys(
+        user_paths: &[String],
+        user_stopwords: &[String],
+        entropy_override: Option<f64>,
+        per_rule: &[PerRuleAllowlistWithKeys],
         detect_public_keys: bool,
     ) -> Result<Self, String> {
         let mut var_ref_patterns = Vec::with_capacity(VAR_PATTERNS.len());
@@ -237,7 +302,13 @@ impl CompiledAllowlist {
         }
 
         let mut per_rule_allowlists = Vec::with_capacity(per_rule.len());
-        for (rule_id, value_regexes, path_regexes) in per_rule {
+        for (rule_id, value_regexes, path_regexes, key_patterns) in per_rule {
+            if !key_patterns.is_empty() && rule_id != "generic-high-entropy-value" {
+                return Err(format!(
+                    "allowlist keys are only supported for rule 'generic-high-entropy-value', not '{}'",
+                    rule_id
+                ));
+            }
             let mut compiled_values = Vec::new();
             for pattern in value_regexes {
                 let re = build_user_regex(pattern).map_err(|e| {
@@ -258,7 +329,22 @@ impl CompiledAllowlist {
                 })?;
                 compiled_paths.push(re);
             }
-            per_rule_allowlists.push((rule_id.clone(), compiled_values, compiled_paths));
+            let mut compiled_keys = Vec::new();
+            for pattern in key_patterns {
+                let re = build_key_pattern_regex(pattern).map_err(|e| {
+                    format!(
+                        "failed to compile allowlist key pattern '{}' for rule '{}': {}",
+                        pattern, rule_id, e
+                    )
+                })?;
+                compiled_keys.push(re);
+            }
+            per_rule_allowlists.push((
+                rule_id.clone(),
+                compiled_values,
+                compiled_paths,
+                compiled_keys,
+            ));
         }
 
         Ok(Self {
@@ -352,6 +438,14 @@ impl CompiledAllowlist {
         }
 
         false
+    }
+
+    /// match explicit user stopwords as case-insensitive substrings of opaque values.
+    pub fn contains_user_stopword(&self, secret: &[u8]) -> bool {
+        let lower = String::from_utf8_lossy(secret).to_lowercase();
+        self.user_stopwords
+            .iter()
+            .any(|stopword| !stopword.is_empty() && lower.contains(stopword.as_str()))
     }
 
     /// check if the captured secret is a placeholder pattern (e.g. XXXX...).
@@ -452,7 +546,16 @@ impl CompiledAllowlist {
     /// check per-rule allowlist: returns true if the finding should be skipped
     /// based on the rule's specific allowlist configuration
     pub fn is_rule_allowlisted(&self, rule_id: &str, secret: &[u8], file_path: &str) -> bool {
-        for (id, value_regexes, path_regexes) in &self.per_rule_allowlists {
+        self.rule_allowlisted(rule_id, secret, Some(file_path))
+    }
+
+    /// check value exclusions without applying any file path exclusions.
+    pub fn is_rule_value_allowlisted(&self, rule_id: &str, secret: &[u8]) -> bool {
+        self.rule_allowlisted(rule_id, secret, None)
+    }
+
+    fn rule_allowlisted(&self, rule_id: &str, secret: &[u8], file_path: Option<&str>) -> bool {
+        for (id, value_regexes, path_regexes, _) in &self.per_rule_allowlists {
             if id == rule_id {
                 // check value regexes
                 for re in value_regexes {
@@ -461,14 +564,26 @@ impl CompiledAllowlist {
                     }
                 }
                 // check path regexes
-                for re in path_regexes {
-                    if re.is_match(file_path.as_bytes()) {
-                        return true;
+                if let Some(file_path) = file_path {
+                    for re in path_regexes {
+                        if re.is_match(file_path.as_bytes()) {
+                            return true;
+                        }
                     }
                 }
             }
         }
         false
+    }
+
+    /// check whether a generic entropy assignment key is explicitly allowlisted.
+    pub fn is_entropy_key_allowlisted(&self, key: &[u8]) -> bool {
+        self.per_rule_allowlists
+            .iter()
+            .any(|(rule_id, _, _, key_patterns)| {
+                rule_id == "generic-high-entropy-value"
+                    && key_patterns.iter().any(|pattern| pattern.is_match(key))
+            })
     }
 }
 
@@ -592,6 +707,23 @@ mod tests {
         assert!(!al.contains_stopword(b"real-production-secret"));
     }
 
+    #[test]
+    fn user_only_stopwords_match_case_insensitive_substrings() {
+        let al = CompiledAllowlist::new(&[], &["SaFe".into()], None, &[], false).unwrap();
+        assert!(al.contains_user_stopword(b"SAFE_token"));
+        assert!(al.contains_user_stopword(b"safeguard"));
+        assert!(al.contains_user_stopword(b"prefixSAFEsuffix"));
+        assert!(!al.contains_stopword(b"safeguard"));
+        assert!(!al.contains_user_stopword(b"example_token"));
+        assert!(!al.contains_user_stopword(b"XXX_token"));
+        assert!(al.contains_stopword(b"example_token"));
+        assert!(al.contains_stopword(b"XXX_token"));
+        let explicit = CompiledAllowlist::new(&[], &["example".into()], None, &[], false).unwrap();
+        assert!(explicit.contains_user_stopword(b"EXAMPLE_token"));
+        let empty = CompiledAllowlist::new(&[], &[String::new()], None, &[], false).unwrap();
+        assert!(!empty.contains_user_stopword(b"opaque_value"));
+    }
+
     // -- per-rule allowlist tests (5.3) --
 
     #[test]
@@ -610,6 +742,119 @@ mod tests {
         .unwrap();
         assert!(al.is_rule_allowlisted("aws-access-key-id", b"AKIAIOSFODNN7EXAMPLE", "config.py"));
         assert!(!al.is_rule_allowlisted("aws-access-key-id", b"AKIAIOSFODNN7REALKEY", "config.py"));
+    }
+
+    #[test]
+    fn per_rule_key_allowlist_uses_case_sensitive_whole_key_patterns() {
+        let al = CompiledAllowlist::new_with_keys(
+            &[],
+            &[],
+            None,
+            &[(
+                "generic-high-entropy-value".to_string(),
+                vec![],
+                vec![],
+                vec![
+                    "TMPDIR".to_string(),
+                    "GHOSTTY_*".to_string(),
+                    "XPC_SERVICE_?AME".to_string(),
+                    "A.B".to_string(),
+                ],
+            )],
+            false,
+        )
+        .unwrap();
+
+        assert!(al.is_entropy_key_allowlisted(b"TMPDIR"));
+        assert!(!al.is_entropy_key_allowlisted(b"TMPDIR2"));
+        assert!(!al.is_entropy_key_allowlisted(b"XTMPDIR"));
+        assert!(!al.is_entropy_key_allowlisted(b"tmpdir"));
+        assert!(al.is_entropy_key_allowlisted(b"GHOSTTY_RESOURCES_DIR"));
+        assert!(al.is_entropy_key_allowlisted(b"XPC_SERVICE_NAME"));
+        assert!(!al.is_entropy_key_allowlisted(b"XPC_SERVICE_NNAME"));
+        assert!(al.is_entropy_key_allowlisted(b"A.B"));
+        assert!(!al.is_entropy_key_allowlisted(b"AXB"));
+    }
+
+    #[test]
+    fn per_rule_key_allowlist_rejects_wildcard_only_patterns() {
+        for bad_pattern in ["*", "**", "?"] {
+            let err = CompiledAllowlist::new_with_keys(
+                &[],
+                &[],
+                None,
+                &[(
+                    "generic-high-entropy-value".to_string(),
+                    vec![],
+                    vec![],
+                    vec![bad_pattern.to_string()],
+                )],
+                false,
+            )
+            .err()
+            .unwrap();
+            assert!(
+                err.contains("matches every key"),
+                "pattern '{}' should be rejected, got: {}",
+                bad_pattern,
+                err
+            );
+        }
+    }
+
+    #[test]
+    fn per_rule_key_allowlist_accepts_patterns_with_a_literal_character() {
+        let al = CompiledAllowlist::new_with_keys(
+            &[],
+            &[],
+            None,
+            &[(
+                "generic-high-entropy-value".to_string(),
+                vec![],
+                vec![],
+                vec!["TMP*".to_string(), "*_SOCK".to_string(), "A?B".to_string()],
+            )],
+            false,
+        )
+        .unwrap();
+        assert!(al.is_entropy_key_allowlisted(b"TMPDIR"));
+        assert!(al.is_entropy_key_allowlisted(b"SSH_AUTH_SOCK"));
+        assert!(al.is_entropy_key_allowlisted(b"AXB"));
+    }
+
+    #[test]
+    fn per_rule_key_allowlist_rejects_empty_patterns_and_unsupported_rules() {
+        let empty = CompiledAllowlist::new_with_keys(
+            &[],
+            &[],
+            None,
+            &[(
+                "generic-high-entropy-value".to_string(),
+                vec![],
+                vec![],
+                vec![String::new()],
+            )],
+            false,
+        )
+        .err()
+        .unwrap();
+        assert!(empty.contains("must not be empty"));
+
+        let unsupported = CompiledAllowlist::new_with_keys(
+            &[],
+            &[],
+            None,
+            &[(
+                "aws-access-key-id".to_string(),
+                vec![],
+                vec![],
+                vec!["TMPDIR".to_string()],
+            )],
+            false,
+        )
+        .err()
+        .unwrap();
+        assert!(unsupported.contains("only supported"));
     }
 
     #[test]

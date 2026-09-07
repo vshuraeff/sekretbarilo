@@ -237,9 +237,19 @@ keywords = ["redis://"]
 
 [[rules]]
 id = "generic-password-assignment"
-description = "Password assignment in code"
-regex = "(?i)(?:password|passwd|pwd)\\s*[=:]\\s*['\"]([^'\"]{8,})['\"]"
+description = "Quoted or unquoted password assignment in code and configuration"
+# alternative captures keep matching quote pairs and preserve surrounding syntax.
+regex = '''(?ix)
+(?:password|passwd|pwd)["'`]?\]?[\t\x20]*[=:][\t\x20]*
+(?:
+  "((?:\\[^\r\n]|[^"\\\r\n]){8,})"
+  | '(?P<password_single>(?:\\[^\r\n]|''|[^'\\\r\n]){8,}\\?)'
+  | `(?P<password_backtick>(?:\\[^\r\n]|[^`\\\r\n]){8,}\\?)`
+  | (?P<password_unquoted>(?:\\[^\r\n]|[^\s"'`,;\#()\[\]{}<>\\])(?:\\[^\r\n]|[^\s"'`,;()\[\]{}<>\\]){7,}\\?)
+)
+'''
 secret_group = 1
+secret_groups = [2, 3, 4]
 keywords = ["password", "passwd", "pwd"]
 # note: password rules use the password strength heuristic instead of entropy
 
@@ -313,7 +323,59 @@ keywords = ["heroku"]
 entropy_threshold = 3.0
 
 # tier 3: catch-all rules (highest false positive risk)
-# keyword + assignment pattern + high entropy
+# assignment or standalone token patterns + high entropy
+
+[[rules]]
+id = "generic-high-entropy-value"
+description = "High-entropy ASCII token in an assignment or on a bare line"
+# an unquoted identifier followed by : or = introduces an assignment, even without whitespace.
+# whole-line scheme:// values and quoted standalone literals precede assignment matching.
+# assignment captures exclude keys and paired square-bracket wrappers; quoted brackets are data.
+# the unquoted bare fallback excludes colons and admits equals signs only as trailing padding.
+# unquoted punctuation is literal internally; trailing , ; ) ] } > delimit syntax.
+# a comma or semicolon also separates a following syntactic key assignment.
+# capture whole values before applying the byte-length and whitespace checks.
+# consume complete references so their contents are not scanned as assignments.
+regex = '''(?mx)
+  (?:
+    (?:\b[A-Za-z_][A-Za-z0-9_.-]*|"(?:\\[^\r\n]|[^"\\\r\n])+"|'(?:\\[^\r\n]|''|[^'\\\r\n])+')
+    [\t\x20]*[=:][\t\x20]*
+  )?
+  (?P<entropy_reference>
+    \$\{\{[\t\x20]*[A-Za-z_.][^}\r\n]*\}\}
+    | \$\{[A-Za-z_]\w*(?::[+\-=?][^}\r\n]*)?\}
+    | \$\{(?:var|data|local|module)\.\w[\w.]*\}|\$!\{[\w.]+\}
+    | \{\{\{[\t\x20]*[\w.]+[\t\x20]*\}\}\}
+    | \{\{-?[\t\x20]*[A-Za-z_.][^}\r\n]*\}\}
+    | \#\{[\w.]+\}|%\{[^}\r\n]+\}
+    | <%[=-]?[\t\x20]*[A-Za-z_$@][^%\r\n]*-?%>
+    | <\?=[\t\x20]*\$\w[^?\r\n]*\?>
+  )
+  | ^[\t\x20]*(?:
+    "(?P<entropy_bare_double>[\x21-\x7e&&[^"'`=]]+={0,2}|[A-Za-z][A-Za-z0-9+.-]*://[\x21-\x7e&&[^"'`]]+)"
+    | '(?P<entropy_bare_single>[\x21-\x7e&&[^"'`=]]+={0,2}|[A-Za-z][A-Za-z0-9+.-]*://[\x21-\x7e&&[^"'`]]+)'
+  )[\t\x20]*\r?$
+  | ^[\t\x20]*(?P<entropy_url>[A-Za-z][A-Za-z0-9+.-]*://[\x21-\x7e&&[^"'`]]+)[\t\x20]*\r?$
+  | (?P<entropy_key>
+    \b[A-Za-z_][A-Za-z0-9_.-]*
+    | "(?:\\[^\r\n]|[^"\\\r\n])+"
+    | '(?:\\[^\r\n]|''|[^'\\\r\n])+'
+  )[\t\x20]*[=:][\t\x20]*(?:
+    "(?P<entropy_double>(?:\\[^\r\n]|[^"\\\r\n])*)"
+    | '(?P<entropy_single>(?:\\[^\r\n]|''|[^'\\\r\n])*\\?)'
+    | \[(?P<entropy_bracket>(?:\\[^\r\n]|[^\s"'`\\\]])+)\]
+    | (?P<entropy_unquoted>=*(?:\\[^\r\n]|[^\s"'`\\=]|\\$)(?:\\[^\r\n]|[^\s"'`\\]|\\$)*?)
+      (?:
+        [,;][\t\x20]*(?:\b[A-Za-z_][A-Za-z0-9_.-]*|"(?:\\[^\r\n]|[^"\\\r\n])+"|'(?:\\[^\r\n]|''|[^'\\\r\n])+')[\t\x20]*[=:]
+        | [,;)\]}>]*(?:[\t\x20\r\n]|["'`]|$)
+      )
+  )
+  | ^[\t\x20]*(?P<entropy_bare>[\x21-\x7e&&[^"'`=:]]+={0,2})[\t\x20]*\r?$
+'''
+secret_group = 1
+secret_groups = [2, 3, 4, 6, 7, 8, 9, 10]
+keywords = []
+entropy_threshold = 4.0
 
 [[rules]]
 id = "generic-api-key"

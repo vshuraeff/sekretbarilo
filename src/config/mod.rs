@@ -3,8 +3,9 @@ pub mod discovery;
 pub mod merge;
 
 use crate::scanner::rules::{self, Rule};
-use allowlist::CompiledAllowlist;
+use allowlist::{CompiledAllowlist, PerRuleAllowlistWithKeys};
 use serde::Deserialize;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 /// top-level project configuration from .sekretbarilo.toml
@@ -58,6 +59,8 @@ pub struct AllowlistRuleOverride {
     pub regexes: Vec<String>,
     #[serde(default)]
     pub paths: Vec<String>,
+    #[serde(default)]
+    pub keys: Vec<String>,
 }
 
 /// settings section of the config file
@@ -83,7 +86,8 @@ pub fn load_single_config(path: &Path) -> Option<ProjectConfig> {
             match toml::from_str::<ProjectConfig>(&content) {
                 Ok(config) => Some(config),
                 Err(e) => {
-                    eprintln!(
+                    let _ = writeln!(
+                        std::io::stderr(),
                         "[WARN] failed to parse {}: {} (skipping)",
                         path.display(),
                         e
@@ -93,7 +97,12 @@ pub fn load_single_config(path: &Path) -> Option<ProjectConfig> {
             }
         }
         Err(e) => {
-            eprintln!("[WARN] failed to read {}: {} (skipping)", path.display(), e);
+            let _ = writeln!(
+                std::io::stderr(),
+                "[WARN] failed to read {}: {} (skipping)",
+                path.display(),
+                e
+            );
             None
         }
     }
@@ -132,7 +141,9 @@ pub fn load_project_config(repo_root: Option<&Path>) -> Result<ProjectConfig, St
         return Ok(ProjectConfig::default());
     }
 
-    Ok(merge::merge_all(configs))
+    let config = merge::merge_all(configs);
+    validate_allowlist_rule_overrides(&config.allowlist.rules)?;
+    Ok(config)
 }
 
 /// load the complete set of rules: defaults merged with optional user overrides
@@ -179,7 +190,37 @@ pub fn load_project_config_from_paths(paths: &[PathBuf]) -> Result<ProjectConfig
         configs.push(config);
     }
 
-    Ok(merge::merge_all(configs))
+    let config = merge::merge_all(configs);
+    validate_allowlist_rule_overrides(&config.allowlist.rules)?;
+    Ok(config)
+}
+
+fn validate_allowlist_rule_overrides(overrides: &[AllowlistRuleOverride]) -> Result<(), String> {
+    for override_rule in overrides {
+        if !override_rule.keys.is_empty() && override_rule.id != "generic-high-entropy-value" {
+            return Err(format!(
+                "allowlist keys are only supported for rule 'generic-high-entropy-value', not '{}'",
+                override_rule.id
+            ));
+        }
+        if override_rule.keys.iter().any(String::is_empty) {
+            return Err(format!(
+                "allowlist key patterns for rule '{}' must not be empty",
+                override_rule.id
+            ));
+        }
+        if let Some(bad_pattern) = override_rule
+            .keys
+            .iter()
+            .find(|pattern| !allowlist::key_pattern_has_literal(pattern))
+        {
+            return Err(format!(
+                "allowlist rule '{}': key pattern '{}' matches every key; patterns need at least one literal character",
+                override_rule.id, bad_pattern
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// build a compiled allowlist from project config, incorporating both global
@@ -190,7 +231,9 @@ pub fn build_allowlist(
     rules: &[Rule],
 ) -> Result<CompiledAllowlist, String> {
     // collect per-rule allowlists from rule definitions + config overrides
-    let mut per_rule: Vec<(String, Vec<String>, Vec<String>)> = Vec::new();
+    validate_allowlist_rule_overrides(&config.allowlist.rules)?;
+
+    let mut per_rule: Vec<PerRuleAllowlistWithKeys> = Vec::new();
 
     // first, gather from rule definitions themselves
     for rule in rules {
@@ -199,6 +242,7 @@ pub fn build_allowlist(
                 rule.id.clone(),
                 rule.allowlist.regexes.clone(),
                 rule.allowlist.paths.clone(),
+                Vec::new(),
             ));
         }
     }
@@ -207,20 +251,22 @@ pub fn build_allowlist(
     for override_rule in &config.allowlist.rules {
         if let Some(existing) = per_rule
             .iter_mut()
-            .find(|(id, _, _)| id == &override_rule.id)
+            .find(|(id, _, _, _)| id == &override_rule.id)
         {
             existing.1.extend(override_rule.regexes.clone());
             existing.2.extend(override_rule.paths.clone());
+            existing.3.extend(override_rule.keys.clone());
         } else {
             per_rule.push((
                 override_rule.id.clone(),
                 override_rule.regexes.clone(),
                 override_rule.paths.clone(),
+                override_rule.keys.clone(),
             ));
         }
     }
 
-    CompiledAllowlist::new(
+    CompiledAllowlist::new_with_keys(
         &config.allowlist.paths,
         &config.allowlist.stopwords,
         config.settings.entropy_threshold,
@@ -304,6 +350,17 @@ stopwords = ["safe_token"]
     }
 
     #[test]
+    fn parse_key_allowlist_config() {
+        let toml = r#"
+[[allowlist.rules]]
+id = "generic-high-entropy-value"
+keys = ["TMPDIR", "GHOSTTY_*"]
+"#;
+        let config: ProjectConfig = toml::from_str(toml).unwrap();
+        assert_eq!(config.allowlist.rules[0].keys, vec!["TMPDIR", "GHOSTTY_*"]);
+    }
+
+    #[test]
     fn parse_audit_config() {
         let toml = r#"
 [audit]
@@ -339,6 +396,7 @@ entropy_threshold = 3.5
                     id: "aws-access-key-id".to_string(),
                     regexes: vec!["AKIAIOSFODNN7EXAMPLE".to_string()],
                     paths: vec![],
+                    keys: vec![],
                 }],
             },
             settings: SettingsConfig {
@@ -363,6 +421,7 @@ entropy_threshold = 3.5
             description: "AWS key".to_string(),
             regex_pattern: "(AKIA[A-Z0-9]{16})".to_string(),
             secret_group: 1,
+            secret_groups: Vec::new(),
             keywords: vec!["akia".to_string()],
             entropy_threshold: None,
             allowlist: rules::RuleAllowlist {
@@ -379,6 +438,7 @@ entropy_threshold = 3.5
                     id: "aws-access-key-id".to_string(),
                     regexes: vec!["AKIATHISISALSOKNOWN".to_string()],
                     paths: vec!["test/.*".to_string()],
+                    keys: vec![],
                 }],
             },
             settings: SettingsConfig::default(),
@@ -403,6 +463,26 @@ entropy_threshold = 3.5
             b"AKIAANYVALUEHERE123",
             "test/fixtures/keys.yml"
         ));
+    }
+
+    #[test]
+    fn build_allowlist_rejects_keys_for_unsupported_rule() {
+        let config = ProjectConfig {
+            allowlist: AllowlistConfig {
+                rules: vec![AllowlistRuleOverride {
+                    id: "aws-access-key-id".to_string(),
+                    regexes: vec![],
+                    paths: vec![],
+                    keys: vec!["TMPDIR".to_string()],
+                }],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let error = build_allowlist(&config, &[]).err().unwrap();
+        assert!(error.contains("only supported"));
+        assert!(error.contains("aws-access-key-id"));
     }
 
     #[test]
@@ -486,5 +566,33 @@ stopwords = ["from_b"]
         let result = load_project_config_from_paths(&[path]);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("failed to parse"));
+    }
+
+    #[test]
+    fn load_from_paths_rejects_empty_key_pattern() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("empty-key.toml");
+        std::fs::write(
+            &path,
+            "[[allowlist.rules]]\nid = \"generic-high-entropy-value\"\nkeys = [\"\"]\n",
+        )
+        .unwrap();
+
+        let error = load_project_config_from_paths(&[path]).err().unwrap();
+        assert!(error.contains("must not be empty"));
+    }
+
+    #[test]
+    fn load_from_paths_rejects_wildcard_only_key_pattern() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("wildcard-key.toml");
+        std::fs::write(
+            &path,
+            "[[allowlist.rules]]\nid = \"generic-high-entropy-value\"\nkeys = [\"**\"]\n",
+        )
+        .unwrap();
+
+        let error = load_project_config_from_paths(&[path]).err().unwrap();
+        assert!(error.contains("matches every key"));
     }
 }

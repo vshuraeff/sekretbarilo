@@ -1,0 +1,14 @@
+{
+  "session_id": "session-apply-patch-move-into-env",
+  "turn_id": "turn-apply-patch-move-into-env",
+  "transcript_path": null,
+  "cwd": "/tmp",
+  "hook_event_name": "PreToolUse",
+  "model": "gpt-test",
+  "permission_mode": "default",
+  "tool_name": "apply_patch",
+  "tool_input": {
+    "command": "*** Begin Patch\n*** Update File: settings.txt\n*** Move to: .env\n@@\n-DEBUG=false\n+DEBUG=true\n*** End Patch"
+  },
+  "tool_use_id": "tool-apply-patch-move-into-env"
+}

@@ -3,61 +3,21 @@
 // these tests exercise the full end-to-end workflows using the compiled binary
 // and the library API, including install + doctor verification flows.
 
-use std::process::Command;
+mod common;
 
-/// get the path to the compiled binary
-fn bin() -> String {
-    env!("CARGO_BIN_EXE_sekretbarilo").to_string()
-}
-
-/// create a temp git repo for pre-commit hook install tests.
-/// isolates from user's global git config to prevent core.hooksPath leakage.
-fn setup_git_repo() -> tempfile::TempDir {
-    let dir = tempfile::tempdir().unwrap();
-    let root = dir.path();
-
-    // create an empty file to use as global git config, preventing leakage
-    // from the user's actual global config (e.g. core.hooksPath)
-    let fake_global = root.join(".fake-gitconfig");
-    std::fs::write(&fake_global, "").unwrap();
-
-    Command::new("git")
-        .args(["init"])
-        .env("GIT_CONFIG_GLOBAL", &fake_global)
-        .current_dir(root)
-        .output()
-        .expect("git init failed");
-
-    Command::new("git")
-        .args(["config", "user.email", "test@test.com"])
-        .env("GIT_CONFIG_GLOBAL", &fake_global)
-        .current_dir(root)
-        .output()
-        .unwrap();
-    Command::new("git")
-        .args(["config", "user.name", "Test"])
-        .env("GIT_CONFIG_GLOBAL", &fake_global)
-        .current_dir(root)
-        .output()
-        .unwrap();
-
-    dir
-}
-
-/// get the path to the fake global gitconfig inside a test repo dir
-fn fake_gitconfig(dir: &tempfile::TempDir) -> std::path::PathBuf {
-    dir.path().join(".fake-gitconfig")
-}
+use common::IsolatedEnv;
 
 // -- check-file E2E tests --
 
 #[test]
 fn e2e_check_file_clean_file() {
     let dir = tempfile::tempdir().unwrap();
+    let env = IsolatedEnv::new();
     let file_path = dir.path().join("clean.py");
     std::fs::write(&file_path, "x = 42\nprint(x)\n").unwrap();
 
-    let output = Command::new(bin())
+    let output = env
+        .command()
         .args(["check-file", file_path.to_str().unwrap()])
         .output()
         .expect("failed to run sekretbarilo");
@@ -68,10 +28,12 @@ fn e2e_check_file_clean_file() {
 #[test]
 fn e2e_check_file_with_secret() {
     let dir = tempfile::tempdir().unwrap();
+    let env = IsolatedEnv::new();
     let file_path = dir.path().join("secret.py");
     std::fs::write(&file_path, "aws_key = \"AKIAIOSFODNN7REALKEYZ\"\n").unwrap();
 
-    let output = Command::new(bin())
+    let output = env
+        .command()
         .args(["check-file", file_path.to_str().unwrap()])
         .output()
         .expect("failed to run sekretbarilo");
@@ -96,6 +58,7 @@ fn e2e_check_file_with_secret() {
 #[test]
 fn e2e_check_file_stdin_json() {
     let dir = tempfile::tempdir().unwrap();
+    let env = IsolatedEnv::new();
     let file_path = dir.path().join("secret.py");
     std::fs::write(&file_path, "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij\n").unwrap();
 
@@ -109,7 +72,8 @@ fn e2e_check_file_stdin_json() {
         "cwd": dir.path().to_str().unwrap()
     });
 
-    let output = Command::new(bin())
+    let output = env
+        .command()
         .args(["check-file", "--stdin-json"])
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
@@ -137,6 +101,7 @@ fn e2e_check_file_stdin_json() {
 #[test]
 fn e2e_check_file_stdin_json_clean() {
     let dir = tempfile::tempdir().unwrap();
+    let env = IsolatedEnv::new();
     let file_path = dir.path().join("clean.rs");
     std::fs::write(&file_path, "fn main() {\n    println!(\"hello\");\n}\n").unwrap();
 
@@ -147,7 +112,8 @@ fn e2e_check_file_stdin_json_clean() {
         "cwd": dir.path().to_str().unwrap()
     });
 
-    let output = Command::new(bin())
+    let output = env
+        .command()
         .args(["check-file", "--stdin-json"])
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
@@ -174,7 +140,9 @@ fn e2e_check_file_stdin_json_clean() {
 
 #[test]
 fn e2e_check_file_no_arg_exits_2() {
-    let output = Command::new(bin())
+    let env = IsolatedEnv::new();
+    let output = env
+        .command()
         .args(["check-file"])
         .output()
         .expect("failed to run sekretbarilo");
@@ -188,7 +156,9 @@ fn e2e_check_file_no_arg_exits_2() {
 
 #[test]
 fn e2e_check_file_malformed_stdin_json() {
-    let output = Command::new(bin())
+    let env = IsolatedEnv::new();
+    let output = env
+        .command()
         .args(["check-file", "--stdin-json"])
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
@@ -219,13 +189,15 @@ fn e2e_check_file_malformed_stdin_json() {
 #[test]
 fn e2e_check_file_binary_skipped() {
     let dir = tempfile::tempdir().unwrap();
+    let env = IsolatedEnv::new();
     let file_path = dir.path().join("binary.dat");
     // write binary content with null bytes + a secret pattern
     let mut content = vec![0u8; 100];
     content.extend_from_slice(b"AKIAIOSFODNN7REALKEYZ");
     std::fs::write(&file_path, &content).unwrap();
 
-    let output = Command::new(bin())
+    let output = env
+        .command()
         .args(["check-file", file_path.to_str().unwrap()])
         .output()
         .expect("failed to run sekretbarilo");
@@ -240,6 +212,7 @@ fn e2e_check_file_binary_skipped() {
 #[test]
 fn e2e_check_file_vendor_path_skipped() {
     let dir = tempfile::tempdir().unwrap();
+    let env = IsolatedEnv::new();
     let vendor_dir = dir.path().join("node_modules").join("pkg");
     std::fs::create_dir_all(&vendor_dir).unwrap();
     let file_path = vendor_dir.join("secret.js");
@@ -253,7 +226,8 @@ fn e2e_check_file_vendor_path_skipped() {
         "cwd": dir.path().to_str().unwrap()
     });
 
-    let output = Command::new(bin())
+    let output = env
+        .command()
         .args(["check-file", "--stdin-json"])
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
@@ -278,13 +252,78 @@ fn e2e_check_file_vendor_path_skipped() {
     );
 }
 
+#[test]
+fn e2e_check_file_exit_code_is_stable_when_stderr_reader_closes_early() {
+    use std::io::{Read, Write};
+
+    let dir = tempfile::tempdir().unwrap();
+    let env = IsolatedEnv::new();
+    let file_path = dir.path().join("many-secrets.rs");
+    let secret = "AKIAIOSFODNN7ABCDEFG";
+    let mut content = String::new();
+    for i in 0..5000 {
+        content.push_str(&format!("const K{i}: &str = \"{secret}{i}\";\n"));
+    }
+    std::fs::write(&file_path, content).unwrap();
+    let input = serde_json::to_vec(&serde_json::json!({
+        "tool_input": {"file_path": file_path},
+        "cwd": dir.path(),
+    }))
+    .unwrap();
+
+    let mut child = env
+        .command()
+        .args(["check-file", "--stdin-json"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("failed to spawn sekretbarilo check-file");
+    child.stdin.take().unwrap().write_all(&input).unwrap();
+
+    let mut stdout = child.stdout.take().unwrap();
+    let stdout_reader = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        let _ = stdout.read_to_end(&mut buf);
+        buf
+    });
+
+    let mut stderr = child.stderr.take().unwrap();
+    let mut prefix = [0u8; 64];
+    let _ = stderr.read(&mut prefix);
+    drop(stderr);
+
+    // Findings have been capped at MAX_RENDERED_FINDINGS (20) since 876172a, so this no longer
+    // forces a blocking write through a full pipe buffer. It instead pins the exit-2 contract
+    // upstream Codex depends on, under whichever profile cargo test uses.
+    let status = child.wait().expect("failed to wait on sekretbarilo");
+    assert_eq!(
+        status.code(),
+        Some(2),
+        "an early-closing stderr reader must not change the exit code"
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+
+        assert!(
+            status.signal().is_none(),
+            "check-file was killed by signal {:?}",
+            status.signal()
+        );
+    }
+    assert!(stdout_reader.join().unwrap().is_empty());
+}
+
 // -- install agent-hook claude E2E tests --
 
 #[test]
 fn e2e_install_agent_hook_claude_local() {
     let dir = tempfile::tempdir().unwrap();
+    let env = IsolatedEnv::new();
 
-    let output = Command::new(bin())
+    let output = env
+        .command()
         .args(["install", "agent-hook", "claude"])
         .current_dir(dir.path())
         .output()
@@ -311,16 +350,18 @@ fn e2e_install_agent_hook_claude_local() {
 #[test]
 fn e2e_install_agent_hook_claude_idempotent() {
     let dir = tempfile::tempdir().unwrap();
+    let env = IsolatedEnv::new();
 
     // first install
-    Command::new(bin())
+    env.command()
         .args(["install", "agent-hook", "claude"])
         .current_dir(dir.path())
         .output()
         .expect("failed to run sekretbarilo");
 
     // second install
-    let output = Command::new(bin())
+    let output = env
+        .command()
         .args(["install", "agent-hook", "claude"])
         .current_dir(dir.path())
         .output()
@@ -338,12 +379,13 @@ fn e2e_install_agent_hook_claude_idempotent() {
 
 #[test]
 fn e2e_install_pre_commit_local() {
-    let dir = setup_git_repo();
+    let env = IsolatedEnv::new();
+    let repo = env.git_repo();
 
-    let output = Command::new(bin())
+    let output = env
+        .command()
         .args(["install", "pre-commit"])
-        .env("GIT_CONFIG_GLOBAL", fake_gitconfig(&dir))
-        .current_dir(dir.path())
+        .current_dir(&repo)
         .output()
         .expect("failed to run sekretbarilo");
 
@@ -357,7 +399,7 @@ fn e2e_install_pre_commit_local() {
     assert!(stderr.contains("[OK]"), "should output OK status");
 
     // verify hook file exists
-    let hook_file = dir.path().join(".git").join("hooks").join("pre-commit");
+    let hook_file = repo.join(".git").join("hooks").join("pre-commit");
     assert!(hook_file.exists(), "pre-commit hook file should exist");
 
     let content = std::fs::read_to_string(&hook_file).unwrap();
@@ -368,26 +410,27 @@ fn e2e_install_pre_commit_local() {
 
 #[test]
 fn e2e_install_all_installs_both() {
-    let dir = setup_git_repo();
+    let env = IsolatedEnv::new();
+    let repo = env.git_repo();
 
-    let output = Command::new(bin())
+    let output = env
+        .command()
         .args(["install", "all"])
-        .env("GIT_CONFIG_GLOBAL", fake_gitconfig(&dir))
-        .current_dir(dir.path())
+        .current_dir(&repo)
         .output()
         .expect("failed to run sekretbarilo");
 
     assert_eq!(output.status.code(), Some(0), "install all should exit 0");
 
     // verify pre-commit hook
-    let hook_file = dir.path().join(".git").join("hooks").join("pre-commit");
+    let hook_file = repo.join(".git").join("hooks").join("pre-commit");
     assert!(
         hook_file.exists(),
         "pre-commit hook should exist after install all"
     );
 
     // verify claude hook config
-    let config_path = dir.path().join(".claude").join("settings.json");
+    let config_path = repo.join(".claude").join("settings.json");
     assert!(
         config_path.exists(),
         ".claude/settings.json should exist after install all"
@@ -398,21 +441,21 @@ fn e2e_install_all_installs_both() {
 
 #[test]
 fn e2e_install_agent_hook_then_doctor() {
-    let dir = setup_git_repo();
+    let env = IsolatedEnv::new();
+    let repo = env.git_repo();
 
     // install claude hook
-    Command::new(bin())
+    env.command()
         .args(["install", "agent-hook", "claude"])
-        .env("GIT_CONFIG_GLOBAL", fake_gitconfig(&dir))
-        .current_dir(dir.path())
+        .current_dir(&repo)
         .output()
         .expect("failed to run sekretbarilo");
 
     // run doctor and verify it finds the installed hook
-    let output = Command::new(bin())
+    let output = env
+        .command()
         .args(["doctor"])
-        .env("GIT_CONFIG_GLOBAL", fake_gitconfig(&dir))
-        .current_dir(dir.path())
+        .current_dir(&repo)
         .output()
         .expect("failed to run sekretbarilo");
 
@@ -426,21 +469,21 @@ fn e2e_install_agent_hook_then_doctor() {
 
 #[test]
 fn e2e_install_pre_commit_then_doctor() {
-    let dir = setup_git_repo();
+    let env = IsolatedEnv::new();
+    let repo = env.git_repo();
 
     // install pre-commit hook
-    Command::new(bin())
+    env.command()
         .args(["install", "pre-commit"])
-        .env("GIT_CONFIG_GLOBAL", fake_gitconfig(&dir))
-        .current_dir(dir.path())
+        .current_dir(&repo)
         .output()
         .expect("failed to run sekretbarilo");
 
     // run doctor and verify it finds the installed hook
-    let output = Command::new(bin())
+    let output = env
+        .command()
         .args(["doctor"])
-        .env("GIT_CONFIG_GLOBAL", fake_gitconfig(&dir))
-        .current_dir(dir.path())
+        .current_dir(&repo)
         .output()
         .expect("failed to run sekretbarilo");
 
@@ -456,25 +499,25 @@ fn e2e_install_pre_commit_then_doctor() {
 
 #[test]
 fn e2e_doctor_detects_deleted_hook_after_install() {
-    let dir = setup_git_repo();
+    let env = IsolatedEnv::new();
+    let repo = env.git_repo();
 
     // install pre-commit hook
-    Command::new(bin())
+    env.command()
         .args(["install", "pre-commit"])
-        .env("GIT_CONFIG_GLOBAL", fake_gitconfig(&dir))
-        .current_dir(dir.path())
+        .current_dir(&repo)
         .output()
         .unwrap();
 
     // delete the hook file
-    let hook_file = dir.path().join(".git").join("hooks").join("pre-commit");
+    let hook_file = repo.join(".git").join("hooks").join("pre-commit");
     std::fs::remove_file(&hook_file).unwrap();
 
     // doctor should detect the missing hook
-    let output = Command::new(bin())
+    let output = env
+        .command()
         .args(["doctor"])
-        .env("GIT_CONFIG_GLOBAL", fake_gitconfig(&dir))
-        .current_dir(dir.path())
+        .current_dir(&repo)
         .output()
         .unwrap();
 
@@ -488,25 +531,25 @@ fn e2e_doctor_detects_deleted_hook_after_install() {
 
 #[test]
 fn e2e_doctor_detects_corrupt_claude_config() {
-    let dir = setup_git_repo();
+    let env = IsolatedEnv::new();
+    let repo = env.git_repo();
 
     // install claude hook
-    Command::new(bin())
+    env.command()
         .args(["install", "agent-hook", "claude"])
-        .env("GIT_CONFIG_GLOBAL", fake_gitconfig(&dir))
-        .current_dir(dir.path())
+        .current_dir(&repo)
         .output()
         .unwrap();
 
     // corrupt the JSON config
-    let config_path = dir.path().join(".claude").join("settings.json");
+    let config_path = repo.join(".claude").join("settings.json");
     std::fs::write(&config_path, "not valid json{{{").unwrap();
 
     // doctor should detect the malformed config
-    let output = Command::new(bin())
+    let output = env
+        .command()
         .args(["doctor"])
-        .env("GIT_CONFIG_GLOBAL", fake_gitconfig(&dir))
-        .current_dir(dir.path())
+        .current_dir(&repo)
         .output()
         .unwrap();
 
@@ -523,16 +566,13 @@ fn e2e_doctor_detects_corrupt_claude_config() {
 #[test]
 fn e2e_install_agent_hook_claude_global_flag() {
     // test that --global flag is accepted and creates file in the right location.
-    // we can't test actual HOME modification, but we verify the flag is parsed and the
-    // command runs without error.
-    let dir = setup_git_repo();
+    let env = IsolatedEnv::new();
+    let repo = env.git_repo();
 
-    // use HOME override to isolate global install to temp dir
-    let output = Command::new(bin())
+    let output = env
+        .command()
         .args(["install", "agent-hook", "claude", "--global"])
-        .current_dir(dir.path())
-        .env("HOME", dir.path().to_str().unwrap())
-        .env("GIT_CONFIG_GLOBAL", fake_gitconfig(&dir))
+        .current_dir(&repo)
         .output()
         .expect("failed to run sekretbarilo");
 
@@ -544,7 +584,7 @@ fn e2e_install_agent_hook_claude_global_flag() {
     );
 
     // verify the config was created under $HOME/.claude/settings.json
-    let config_path = dir.path().join(".claude").join("settings.json");
+    let config_path = env.home().join(".claude").join("settings.json");
     assert!(
         config_path.exists(),
         "~/.claude/settings.json should exist after global install"
@@ -553,13 +593,13 @@ fn e2e_install_agent_hook_claude_global_flag() {
 
 #[test]
 fn e2e_install_pre_commit_global_flag() {
-    let dir = setup_git_repo();
+    let env = IsolatedEnv::new();
+    let repo = env.git_repo();
 
-    let output = Command::new(bin())
+    let output = env
+        .command()
         .args(["install", "pre-commit", "--global"])
-        .current_dir(dir.path())
-        .env("HOME", dir.path().to_str().unwrap())
-        .env("GIT_CONFIG_GLOBAL", fake_gitconfig(&dir))
+        .current_dir(&repo)
         .output()
         .expect("failed to run sekretbarilo");
 

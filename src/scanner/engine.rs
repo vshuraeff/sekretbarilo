@@ -1,6 +1,10 @@
 // core scanning engine (aho-corasick + regex)
 
 use rayon::prelude::*;
+use std::ops::Range;
+
+#[allow(unused_imports)]
+pub use crate::scanner::text::{TextMatch, redact_text, scan_text};
 
 use crate::config::allowlist::CompiledAllowlist;
 use crate::diff::parser::DiffFile;
@@ -28,7 +32,7 @@ pub struct Finding {
 /// pipeline per line:
 ///   1. global path allowlist (skip binary, vendor, generated files)
 ///   2. aho-corasick keyword pre-filter (single pass)
-///   3. regex matching (only for rules whose keywords matched)
+///   3. regex matching (keywordless rules and rules whose keywords matched)
 ///   4. extract secret via capture group
 ///   5. per-rule allowlist check (value regex + path match)
 ///   6. variable reference detection (skip $VAR, ${VAR}, etc.)
@@ -145,17 +149,71 @@ struct ScanLineContext<'a> {
 /// scan a single line against all rules using the aho-corasick pre-filter.
 /// uses a reusable bitset to avoid allocations per line.
 fn scan_line(ctx: &ScanLineContext<'_>, candidate_bits: &mut [bool], findings: &mut Vec<Finding>) {
-    // clear bitset
-    for bit in candidate_bits.iter_mut() {
-        *bit = false;
+    let matches = MatchContext {
+        file_path: Some(ctx.file_path),
+        input: ctx.line,
+        line_starts: &[],
+        scanner: ctx.scanner,
+        allowlist: ctx.allowlist,
+        is_doc_file: ctx.is_doc_file,
+    };
+    scan_matches(&matches, candidate_bits, |rule_id, range| {
+        findings.push(Finding {
+            file: ctx.file_path.to_string(),
+            line: ctx.line_number,
+            rule_id: rule_id.to_string(),
+            matched_value: ctx.line[range].to_vec(),
+        });
+    });
+}
+
+/// matching policy shared by line-oriented diffs and complete tool text.
+pub(super) struct MatchContext<'a> {
+    pub file_path: Option<&'a str>,
+    pub input: &'a [u8],
+    pub line_starts: &'a [usize],
+    pub scanner: &'a CompiledScanner,
+    pub allowlist: &'a CompiledAllowlist,
+    pub is_doc_file: bool,
+}
+
+impl MatchContext<'_> {
+    fn surrounding_lines(&self, range: Range<usize>) -> &[u8] {
+        let start_index = self
+            .line_starts
+            .partition_point(|&start| start <= range.start);
+        let end_index = self.line_starts.partition_point(|&start| start < range.end);
+        let start = self
+            .line_starts
+            .get(start_index.saturating_sub(1))
+            .copied()
+            .unwrap_or(0);
+        let end = self
+            .line_starts
+            .get(end_index)
+            .copied()
+            .unwrap_or(self.input.len());
+        &self.input[start..end]
+    }
+}
+
+pub(super) fn scan_matches(
+    ctx: &MatchContext<'_>,
+    candidate_bits: &mut [bool],
+    mut emit: impl FnMut(&str, Range<usize>),
+) {
+    // keywordless rules are always eligible; reset all other candidate bits.
+    let mut has_candidates = false;
+    for (bit, rule) in candidate_bits.iter_mut().zip(&ctx.scanner.rules) {
+        *bit = rule.keywords.is_empty();
+        has_candidates |= *bit;
     }
 
     // step 2: aho-corasick keyword pre-filter
     // find which rules have keywords present in this line.
     // uses overlapping iteration to ensure longer keywords (e.g. "age-secret-key-")
     // are found even when a shorter keyword (e.g. "secret") overlaps with them.
-    let mut has_candidates = false;
-    for mat in ctx.scanner.automaton.find_overlapping_iter(ctx.line) {
+    for mat in ctx.scanner.automaton.find_overlapping_iter(ctx.input) {
         let pattern_idx = mat.pattern().as_usize();
         if let Some(rule_indices) = ctx.scanner.keyword_to_rules.get(pattern_idx) {
             for &rule_idx in rule_indices {
@@ -178,6 +236,7 @@ fn scan_line(ctx: &ScanLineContext<'_>, candidate_bits: &mut [bool], findings: &
         }
 
         let rule = &ctx.scanner.rules[rule_idx];
+        let is_entropy_value = rule.id == "generic-high-entropy-value";
 
         // step 0: skip public key detection rules unless enabled
         if is_public_key_rule(&rule.id) && !ctx.allowlist.detect_public_keys {
@@ -187,28 +246,80 @@ fn scan_line(ctx: &ScanLineContext<'_>, candidate_bits: &mut [bool], findings: &
         // evaluate all matches for this rule on the line, not just the first.
         // if the first match is filtered (allowlist/stopword/var-ref), a later
         // match on the same line could still be a real secret.
-        for captures in rule.regex.captures_iter(ctx.line) {
+        let mut ordinary_matches = rule.regex.captures_iter(ctx.input);
+        let mut entropy_offset = 0;
+        let captures_iter = std::iter::from_fn(|| {
+            if !is_entropy_value {
+                return ordinary_matches.next();
+            }
+            if entropy_offset > ctx.input.len() {
+                return None;
+            }
+            let captures = rule.regex.captures_at(ctx.input, entropy_offset)?;
+            let matched = captures.get(0)?;
+            // an unquoted boundary may consume the next assignment's key.
+            // resume after the value so that assignment is still evaluated.
+            entropy_offset = captures
+                .name("entropy_unquoted")
+                .map_or(matched.end(), |value| value.end())
+                .max(matched.start().saturating_add(1));
+            Some(captures)
+        });
+        for captures in captures_iter {
             // step 4: extract secret value via capture group
-            let secret = if rule.secret_group > 0 {
-                captures
-                    .get(rule.secret_group)
-                    .map(|m| m.as_bytes())
-                    .unwrap_or_else(|| captures.get(0).map(|m| m.as_bytes()).unwrap_or(b""))
-            } else {
-                captures.get(0).map(|m| m.as_bytes()).unwrap_or(b"")
+            let Some(secret_match) = captures
+                .get(rule.secret_group)
+                .or_else(|| {
+                    rule.secret_groups
+                        .iter()
+                        .find_map(|&group| captures.get(group))
+                })
+                .or_else(|| captures.get(0))
+            else {
+                continue;
             };
+            let secret = secret_match.as_bytes();
 
             if secret.is_empty() {
                 continue;
             }
-
-            // step 5: per-rule allowlist check
-            if ctx
-                .allowlist
-                .is_rule_allowlisted(&rule.id, secret, ctx.file_path)
+            if is_entropy_value
+                && (secret.len() < entropy::MIN_ENTROPY_LENGTH
+                    || !secret.iter().all(u8::is_ascii_graphic))
             {
                 continue;
             }
+
+            if is_entropy_value && let Some(key_match) = captures.name("entropy_key") {
+                let key = key_match.as_bytes();
+                let key = if key.len() >= 2
+                    && matches!(key[0], b'\'' | b'"')
+                    && key[0] == key[key.len() - 1]
+                {
+                    &key[1..key.len() - 1]
+                } else {
+                    key
+                };
+                if !key.is_empty() && ctx.allowlist.is_entropy_key_allowlisted(key) {
+                    continue;
+                }
+            }
+
+            // step 5: per-rule allowlist check
+            let allowlisted = match ctx.file_path {
+                Some(path) => ctx.allowlist.is_rule_allowlisted(&rule.id, secret, path),
+                None => ctx.allowlist.is_rule_value_allowlisted(&rule.id, secret),
+            };
+            if allowlisted {
+                continue;
+            }
+
+            let line = ctx.surrounding_lines(
+                captures
+                    .get(0)
+                    .map(|m| m.range())
+                    .unwrap_or_else(|| secret_match.range()),
+            );
 
             // step 6: variable reference detection
             if ctx.allowlist.is_variable_reference(secret) {
@@ -220,10 +331,11 @@ fn scan_line(ctx: &ScanLineContext<'_>, candidate_bits: &mut [bool], findings: &
             // skip findings from context-dependent rules (tier 2/3). tier 1
             // prefix rules are NOT affected — a real AKIA... key on a template
             // line is still a finding, even if the rule uses entropy.
-            if (rule.context_dependent
-                || is_password_rule(&rule.id)
-                || is_credential_rule(&rule.id))
-                && ctx.allowlist.is_template_line(ctx.line)
+            if !is_entropy_value
+                && (rule.context_dependent
+                    || is_password_rule(&rule.id)
+                    || is_credential_rule(&rule.id))
+                && ctx.allowlist.is_template_line(line)
             {
                 continue;
             }
@@ -235,7 +347,11 @@ fn scan_line(ctx: &ScanLineContext<'_>, candidate_bits: &mut [bool], findings: &
             // sk_test_ inherently contain "test".
             // tier 2+ rules, password rules, and credential rules get the
             // full stopword check.
-            if rule.entropy_threshold.is_some()
+            if is_entropy_value {
+                if ctx.allowlist.contains_user_stopword(secret) {
+                    continue;
+                }
+            } else if rule.entropy_threshold.is_some()
                 || is_password_rule(&rule.id)
                 || is_credential_rule(&rule.id)
             {
@@ -247,7 +363,7 @@ fn scan_line(ctx: &ScanLineContext<'_>, candidate_bits: &mut [bool], findings: &
             }
 
             // step 8: hash detection - skip hashes
-            if hash_detect::is_hash_in_context(secret, ctx.line) {
+            if !is_entropy_value && hash_detect::is_hash_in_context(secret, line) {
                 continue;
             }
 
@@ -273,7 +389,7 @@ fn scan_line(ctx: &ScanLineContext<'_>, candidate_bits: &mut [bool], findings: &
             // step 8.7: OpenSSH public key detection (single-line format).
             // lines like "ssh-rsa AAAA... user@host" contain high-entropy
             // base64 that triggers token rules. skip unless detect_public_keys is on.
-            if !ctx.allowlist.detect_public_keys && pubkey::is_openssh_public_key(ctx.line) {
+            if !ctx.allowlist.detect_public_keys && pubkey::is_openssh_public_key(line) {
                 continue;
             }
 
@@ -290,7 +406,7 @@ fn scan_line(ctx: &ScanLineContext<'_>, candidate_bits: &mut [bool], findings: &
                     threshold = threshold.max(override_val);
                 }
                 // apply doc file bonus (raise threshold = less likely to flag)
-                if ctx.is_doc_file {
+                if ctx.is_doc_file && !is_entropy_value {
                     threshold += ctx.allowlist.doc_entropy_bonus();
                 }
                 if !entropy::passes_entropy_check(secret, threshold) {
@@ -298,12 +414,7 @@ fn scan_line(ctx: &ScanLineContext<'_>, candidate_bits: &mut [bool], findings: &
                 }
             }
 
-            findings.push(Finding {
-                file: ctx.file_path.to_string(),
-                line: ctx.line_number,
-                rule_id: rule.id.clone(),
-                matched_value: secret.to_vec(),
-            });
+            emit(&rule.id, secret_match.range());
         }
     }
 }
@@ -326,6 +437,7 @@ mod tests {
             description: id.into(),
             regex_pattern: pattern.into(),
             secret_group: group,
+            secret_groups: Vec::new(),
             keywords: keywords.into_iter().map(String::from).collect(),
             entropy_threshold: threshold,
             allowlist: RuleAllowlist::default(),
@@ -355,6 +467,43 @@ mod tests {
 
     fn default_al() -> CompiledAllowlist {
         CompiledAllowlist::default_allowlist().unwrap()
+    }
+
+    #[test]
+    fn scan_keywordless_only_scanner() {
+        let scanner = make_scanner(vec![make_rule("always", r"opaque", 0, vec![], None)]);
+        let file = make_file("config.txt", vec![(1, b"opaque"), (2, b"clean")]);
+        let findings = scan(&[file], &scanner, &default_al());
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].rule_id, "always");
+        assert_eq!(findings[0].matched_value, b"opaque");
+        assert_eq!(scan_text("opaque", &scanner, &default_al()).len(), 1);
+    }
+
+    #[test]
+    fn scan_mixed_rules_preserves_and_resets_keyword_prefilter() {
+        let scanner = make_scanner(vec![
+            make_rule("always", r"opaque", 0, vec![], None),
+            make_rule("prefiltered", r"opaque", 0, vec!["marker"], None),
+        ]);
+        let file = make_file("config.txt", vec![(1, b"marker opaque"), (2, b"opaque")]);
+        let findings = scan(&[file], &scanner, &default_al());
+        let ids: Vec<_> = findings
+            .iter()
+            .map(|finding| (finding.line, finding.rule_id.as_str()))
+            .collect();
+        assert_eq!(ids, [(1, "always"), (1, "prefiltered"), (2, "always")]);
+        let matches = scan_text("opaque", &scanner, &default_al());
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].rule_id, "always");
+    }
+
+    #[test]
+    fn scan_empty_rules() {
+        let scanner = make_scanner(vec![]);
+        let file = make_file("config.txt", vec![(1, b"opaque")]);
+        assert!(scan(&[file], &scanner, &default_al()).is_empty());
+        assert!(scan_text("opaque", &scanner, &default_al()).is_empty());
     }
 
     #[test]
@@ -767,6 +916,7 @@ mod tests {
             description: "AWS key".to_string(),
             regex_pattern: r"(AKIA[A-Z0-9]{16})".to_string(),
             secret_group: 1,
+            secret_groups: Vec::new(),
             keywords: vec!["akia".to_string()],
             entropy_threshold: None,
             allowlist: RuleAllowlist {
@@ -837,6 +987,7 @@ mod tests {
             description: "AWS key".to_string(),
             regex_pattern: r"(AKIA[A-Z0-9]{16})".to_string(),
             secret_group: 1,
+            secret_groups: Vec::new(),
             keywords: vec!["akia".to_string()],
             entropy_threshold: None,
             allowlist: RuleAllowlist {

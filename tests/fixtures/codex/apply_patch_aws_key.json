@@ -1,0 +1,14 @@
+{
+  "session_id": "session-apply-patch-aws-key",
+  "turn_id": "turn-apply-patch-aws-key",
+  "transcript_path": null,
+  "cwd": "/tmp",
+  "hook_event_name": "PreToolUse",
+  "model": "gpt-test",
+  "permission_mode": "default",
+  "tool_name": "apply_patch",
+  "tool_input": {
+    "command": "*** Begin Patch\n*** Add File: config.py\n+AWS_ACCESS_KEY_ID = \"AKIAIOSFODNN7ABCDEFG\"\n+AWS_SECRET_ACCESS_KEY = \"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\"\n+DEBUG = True\n*** End Patch"
+  },
+  "tool_use_id": "tool-apply-patch-aws-key"
+}

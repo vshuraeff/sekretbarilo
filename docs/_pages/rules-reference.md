@@ -6,7 +6,7 @@ nav_order: 6
 
 # Rules Reference
 
-sekretbarilo ships **109 built-in detection rules** organized into three precision tiers.
+sekretbarilo ships **110 built-in detection rules that are enabled by default** organized into three precision tiers. There are **113 total rules**, including 3 optional public-key rules that must be opted in.
 
 ## Three-Tier Detection System
 
@@ -18,9 +18,9 @@ Match distinctive, service-specific prefixes (e.g., `AKIA`, `ghp_`, `sk-ant-`). 
 
 Require keyword context (e.g., `password=`, `postgres://`) and/or entropy thresholds. Full stopword filtering. Password rules use strength heuristics instead of entropy.
 
-### Tier 3: Catch-All (2 rules)
+### Tier 3: Catch-All (3 rules)
 
-Generic patterns with the highest entropy threshold (4.0). Broad keyword matching (`api_key`, `auth_token`, etc.).
+Generic patterns with the highest entropy threshold (4.0). Keyword-oriented patterns cover `api_key`, `auth_token`, and similar names; generic-high-entropy-value has no keywords and uses bounded value-shape matching.
 
 ---
 
@@ -256,6 +256,12 @@ These rules require keyword context and apply additional validation (entropy thr
 
 Password rules (`generic-password-assignment`, `password-in-url`) only flag strong passwords: 8+ chars, mixed case, digits.
 
+`generic-password-assignment` detects `password`, `passwd`, and `pwd` assignments with `=` or `:`, including names such as `DB_PASSWORD` and quoted mapping keys. Values can be double-quoted, single-quoted, backtick-quoted, or unquoted. Quoted captures preserve internal spaces, opposite quote characters, and escaped quotes. Unquoted captures stop at whitespace or syntax delimiters such as commas, semicolons, brackets, and parentheses; escaped whitespace and delimiters are included. Quote passwords containing literal delimiters. Masking replaces the complete captured value while retaining its surrounding quotes and adjacent fields.
+
+All forms retain the same rule ID and its value allowlists and password-strength filters. Shell variables, supported template expressions, and weak or placeholder passwords remain excluded. This is pattern detection rather than a parser for every configuration language.
+
+Raw single-quoted and backtick strings can be ambiguous with languages that interpret backslash escapes. When a backslash precedes a possible closing quote and another matching quote follows, detection conservatively includes the longer interpretation. This can mask adjacent text in raw-string formats. Multiline quoting and mixed shell quoting are not parsed as password assignments.
+
 ---
 
 ## Tier 3: Catch-All Rules
@@ -264,6 +270,15 @@ Password rules (`generic-password-assignment`, `password-in-url`) only flag stro
 |---------|----------|---------|
 | `generic-api-key` | `api_key`, `apikey`, `api-key`, `api_token`, `api-token` | 4.0 |
 | `generic-token-assignment` | `auth_token`, `access_token`, `secret_token` | 4.0 |
+| `generic-high-entropy-value` | none | 4.0 |
+
+generic-high-entropy-value detects a complete single-line ASCII token value when the captured value is at least 20 bytes and its raw, case-sensitive byte Shannon entropy is at least 4.0 bits per byte. It scores only the captured value, excluding the variable or key name, delimiter, and surrounding quotes; it does not normalize case or adjust for charset size. Whitespace-containing values and complete variable references are not candidates.
+
+Supported assignment forms are NAME=VALUE, export NAME=VALUE, NAME: VALUE, name = "VALUE", name = 'VALUE', and JSON "name": "VALUE", including multiple fields on one line. A standalone otherwise-bare alphanumeric, base64, or base64url token line also qualifies, including normal trailing base64 padding and optional surrounding single or double quotes and horizontal whitespace.
+
+The variable or key name is irrelevant: there are no exemptions for PATH, MANPATH, LS_COLORS, TERM_SESSION_ID, DB_TOKEN, or similar names. This intentional broadness can flag harmless high-entropy data such as base64 blobs and lockfile-style checksums. To suppress a specific false positive, add a matching value to [allowlist].stopwords, or preferably add a [[allowlist.rules]] entry for generic-high-entropy-value with regexes matched against the captured value. For known-safe assignment names, its per-rule `keys` allowlist provides case-sensitive whole-key matching without weakening other rules.
+
+This rule bypasses the built-in default stopword list, surrounding-line hash/checksum suppression, and documentation-file entropy bonus used by other rules. Explicit user-configured `[allowlist].stopwords` still apply as case-insensitive plain substrings of the captured value, not word-boundary matches. A per-rule `[[allowlist.rules]]` value regex for `generic-high-entropy-value` is narrower and more precise; anchor it to an exact known-safe value instead of using a broad pattern. Path allowlists, public-key suppression, and a higher global `[settings]` entropy-threshold override still apply normally; the override is a floor that can raise, never lower, this rule's 4.0 threshold.
 
 ---
 
@@ -298,11 +313,11 @@ sekretbarilo audit --detect-public-keys
 
 ## False Positive Reduction
 
-1. **Entropy thresholds** — tier 2/3 rules filter low-randomness strings; doc files get +1.0 bonus
-2. **Stopwords** — `example`, `test`, `placeholder`, `changeme`, `fake`, `mock`, `dummy`, etc.
-3. **Hash detection** — SHA-1, SHA-256, MD5, git commit hashes
+1. **Entropy thresholds** — tier 2/3 rules filter low-randomness strings; doc files get +1.0 bonus (the bonus does not apply to `generic-high-entropy-value`)
+2. **Stopwords** — `example`, `test`, `placeholder`, `changeme`, `fake`, `mock`, `dummy`, etc. (`generic-high-entropy-value` uses only explicit user-configured stopwords)
+3. **Hash detection** — SHA-1, SHA-256, MD5, git commit hashes (`generic-high-entropy-value` bypasses this suppression)
 4. **Variable references** — `${VAR}`, `process.env.VAR`, `os.environ["VAR"]`, etc.
-5. **Template handling** — Jinja2/Helm/Mustache/Handlebars `{{ }}`, GitHub Actions `${{ }}`, ERB `<%= %>`, Terraform `${var.}`, etc.
+5. **Template handling** — Jinja2/Helm/Mustache/Handlebars `{{ }}`, GitHub Actions `${{ }}`, ERB `<%= %>`, Terraform `${var.}`, etc. (`generic-high-entropy-value` bypasses this suppression)
 6. **Public key suppression** — PEM, PGP, and OpenSSH public key blocks are suppressed by default (prevents base64 content from triggering token rules)
 7. **Password strength** — only flags strong passwords (8+ chars, mixed case, digits); also applied to connection string passwords
 8. **Path allowlists** — binary, generated, lock files, vendor dirs auto-skipped
@@ -337,6 +352,7 @@ paths = ["test/.*"]
 
 ### Optional fields
 
+- `secret_groups` — alternative capture group indices, checked in order if `secret_group` did not participate. Defaults to `[]`. If no configured group participates, the full match is used. Overrides replace the complete rule, including this list.
 - `entropy_threshold` — minimum Shannon entropy (typical: 3.0–4.0)
 - `allowlist.regexes` — value patterns to skip
 - `allowlist.paths` — file path patterns to skip
@@ -358,7 +374,7 @@ keywords = ["__never_match__"]
 
 Rules merge in this order (later overrides earlier):
 
-1. Built-in defaults (109 rules)
+1. Built-in defaults (113 definitions, 110 enabled by default)
 2. System config (`/etc/sekretbarilo.toml`)
 3. User config (`~/.config/sekretbarilo.toml`)
 4. Project config (`.sekretbarilo.toml`)

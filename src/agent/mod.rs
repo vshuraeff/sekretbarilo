@@ -1,228 +1,37 @@
-// agent hook support: check-file command and hook installation for claude code
+// agent hook support: machine-facing checks and hook installation
 
+// codex hook parsing, scanning, and installation are wired through the cli
+mod apply_patch;
+pub(crate) mod claude;
+mod codex;
+mod hooks_json;
+mod redact;
+
+use std::fmt::Write as FmtWrite;
 use std::io::{Read, Write as IoWrite};
 use std::path::{Path, PathBuf};
 
+#[allow(unused_imports)]
+pub use claude::{
+    ClaudeHookMode, ClaudeSettingsTarget, HOOK_COMMAND, install_claude_hook,
+    install_claude_hook_to_target, install_claude_hook_with_mode, is_sekretbarilo_hook_command,
+};
+#[allow(unused_imports)]
+pub(crate) use codex::resolve_codex_home;
+#[allow(unused_imports)]
+pub use codex::{CODEX_HOOK_COMMAND, CODEX_HOOK_MATCHER, install_codex_hook, run_check_codex};
+#[allow(unused_imports)]
+pub use hooks_json::HookInstallResult;
+pub use redact::{redact_cli_error, run_redact_claude};
+
+pub(crate) use hooks_json::find_hook;
+
+use crate::audit::history::sanitize_display;
 use crate::audit::{ReadFileResult, read_file_to_diff_result};
 use crate::config;
 use crate::config::allowlist::CompiledAllowlist;
 use crate::output::masking::mask_secret;
-use crate::scanner::engine::scan;
-
-/// result of claude code hook installation
-#[derive(Debug, PartialEq)]
-pub enum ClaudeHookResult {
-    Created,
-    Updated,
-    AlreadyInstalled,
-}
-
-impl std::fmt::Display for ClaudeHookResult {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ClaudeHookResult::Created => write!(f, "created claude code hook configuration"),
-            ClaudeHookResult::Updated => write!(f, "updated claude code hook configuration"),
-            ClaudeHookResult::AlreadyInstalled => {
-                write!(f, "sekretbarilo already installed in claude code hooks")
-            }
-        }
-    }
-}
-
-/// the hook command used in claude code settings
-pub const HOOK_COMMAND: &str = "sekretbarilo check-file --stdin-json";
-
-/// install claude code hook into settings.json.
-/// global: true = ~/.claude/settings.json, false = .claude/settings.json (project root)
-pub fn install_claude_hook(global: bool) -> Result<ClaudeHookResult, String> {
-    let config_path = if global {
-        let home = std::env::var_os("HOME")
-            .ok_or_else(|| "could not determine home directory".to_string())?;
-        PathBuf::from(home).join(".claude").join("settings.json")
-    } else {
-        // resolve project root via git, fall back to cwd with warning
-        let base = match resolve_project_root() {
-            Some(root) => root,
-            None => {
-                let cwd = std::env::current_dir().map_err(|_| {
-                    "could not determine project root or current directory".to_string()
-                })?;
-                eprintln!(
-                    "[WARN] not inside a git repository, using current directory for local hook placement: {}",
-                    cwd.display()
-                );
-                cwd
-            }
-        };
-        base.join(".claude").join("settings.json")
-    };
-
-    install_claude_hook_to_path(&config_path)
-}
-
-/// install claude code hook into a specific settings file path.
-/// creates parent directories if needed.
-fn install_claude_hook_to_path(config_path: &Path) -> Result<ClaudeHookResult, String> {
-    // create parent directory if needed
-    if let Some(parent) = config_path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| format!("failed to create directory {}: {}", parent.display(), e))?;
-    }
-
-    // read existing config or start fresh (read unconditionally to avoid TOCTOU race)
-    let mut root: serde_json::Value = match std::fs::read_to_string(config_path) {
-        Ok(content) => serde_json::from_str(&content)
-            .map_err(|e| format!("malformed JSON in {}: {}", config_path.display(), e))?,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => serde_json::json!({}),
-        Err(e) => return Err(format!("failed to read {}: {}", config_path.display(), e)),
-    };
-
-    // ensure root is an object
-    let obj = root
-        .as_object_mut()
-        .ok_or_else(|| format!("{} is not a JSON object", config_path.display()))?;
-
-    // navigate to hooks.PreToolUse array, creating path if needed
-    if !obj.contains_key("hooks") {
-        obj.insert("hooks".to_string(), serde_json::json!({}));
-    }
-    let hooks = obj
-        .get_mut("hooks")
-        .unwrap()
-        .as_object_mut()
-        .ok_or_else(|| "hooks is not an object".to_string())?;
-
-    if !hooks.contains_key("PreToolUse") {
-        hooks.insert("PreToolUse".to_string(), serde_json::json!([]));
-    }
-    let pre_tool_use = hooks
-        .get_mut("PreToolUse")
-        .unwrap()
-        .as_array_mut()
-        .ok_or_else(|| "hooks.PreToolUse is not an array".to_string())?;
-
-    // look for existing Read matcher entry that has our hook.
-    // two-pass approach: first scan all Read matchers for existing sekretbarilo hooks
-    // (already-installed or update cases), then install into the first suitable Read matcher.
-    let our_hook_entry = serde_json::json!({
-        "type": "command",
-        "command": HOOK_COMMAND,
-        "timeout": 10,
-        "statusMessage": "Scanning file for secrets..."
-    });
-
-    // pass 1: check all Read matchers for existing sekretbarilo hooks
-    let mut update_target: Option<(usize, usize)> = None; // (entry_idx, hook_idx)
-    let mut first_read_idx: Option<usize> = None;
-
-    for (entry_idx, entry) in pre_tool_use.iter().enumerate() {
-        if entry.get("matcher").and_then(|m| m.as_str()) != Some("Read") {
-            continue;
-        }
-        if first_read_idx.is_none() {
-            first_read_idx = Some(entry_idx);
-        }
-        if let Some(hooks_array) = entry.get("hooks").and_then(|h| h.as_array()) {
-            for (hook_idx, hook) in hooks_array.iter().enumerate() {
-                if let Some(cmd_str) = hook.get("command").and_then(|c| c.as_str()) {
-                    if cmd_str == HOOK_COMMAND {
-                        return Ok(ClaudeHookResult::AlreadyInstalled);
-                    }
-                    if cmd_str.contains("sekretbarilo") && update_target.is_none() {
-                        update_target = Some((entry_idx, hook_idx));
-                    }
-                }
-            }
-        }
-    }
-
-    // pass 2: apply changes based on what we found
-    if let Some((entry_idx, hook_idx)) = update_target {
-        // older sekretbarilo version found - update it
-        pre_tool_use[entry_idx]["hooks"][hook_idx] = our_hook_entry;
-        write_config(config_path, &root)?;
-        return Ok(ClaudeHookResult::Updated);
-    }
-
-    if let Some(idx) = first_read_idx {
-        // Read matcher exists - add our hook to it
-        if let Some(hooks_array) = pre_tool_use[idx].get_mut("hooks") {
-            let arr = hooks_array.as_array_mut().ok_or_else(|| {
-                format!(
-                    "malformed settings: hooks.PreToolUse Read matcher has non-array 'hooks' field in {}",
-                    config_path.display()
-                )
-            })?;
-            arr.push(our_hook_entry);
-        } else {
-            // Read matcher exists but has no 'hooks' field - create it
-            pre_tool_use[idx]["hooks"] = serde_json::json!([our_hook_entry]);
-        }
-        write_config(config_path, &root)?;
-        return Ok(ClaudeHookResult::Created);
-    }
-
-    // no Read matcher found - create new entry
-    let new_entry = serde_json::json!({
-        "matcher": "Read",
-        "hooks": [our_hook_entry]
-    });
-    pre_tool_use.push(new_entry);
-
-    write_config(config_path, &root)?;
-    Ok(ClaudeHookResult::Created)
-}
-
-/// resolve the project root directory via git rev-parse
-fn resolve_project_root() -> Option<PathBuf> {
-    crate::doctor::resolve_repo_root()
-}
-
-/// write the JSON config back to disk with pretty printing.
-/// uses atomic write (write to temp file, then rename) to prevent corruption.
-fn write_config(path: &Path, value: &serde_json::Value) -> Result<(), String> {
-    let content = serde_json::to_string_pretty(value)
-        .map_err(|e| format!("failed to serialize JSON: {}", e))?;
-    // use pid + timestamp for unique temp file name to avoid races
-    let pid = std::process::id();
-    let ts = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    let tmp_name = format!(
-        ".{}.{}.{}.tmp",
-        path.file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_else(|| "config".to_string()),
-        pid,
-        ts,
-    );
-    let tmp = path.with_file_name(tmp_name);
-    // use exclusive create (O_CREAT | O_EXCL) to prevent symlink following and path collisions
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&tmp)
-        .map_err(|e| format!("failed to create {}: {}", tmp.display(), e))?;
-    file.write_all((content + "\n").as_bytes()).map_err(|e| {
-        let _ = std::fs::remove_file(&tmp);
-        format!("failed to write {}: {}", tmp.display(), e)
-    })?;
-    file.sync_all().map_err(|e| {
-        let _ = std::fs::remove_file(&tmp);
-        format!("failed to sync {}: {}", tmp.display(), e)
-    })?;
-    drop(file);
-    std::fs::rename(&tmp, path).map_err(|e| {
-        let _ = std::fs::remove_file(&tmp);
-        format!(
-            "failed to rename {} -> {}: {}",
-            tmp.display(),
-            path.display(),
-            e
-        )
-    })
-}
+use crate::scanner::engine::{Finding, scan};
 
 /// claude code hook stdin payload
 #[derive(serde::Deserialize)]
@@ -338,6 +147,34 @@ fn should_skip_file(
     Ok(false)
 }
 
+fn file_findings_reason(file_path: &str, findings: &[Finding]) -> String {
+    let file_path = sanitize_display(file_path);
+    let mut reason = String::new();
+    let _ = writeln!(reason);
+    let _ = writeln!(reason, "[AGENT] secret(s) detected in {file_path}");
+    let _ = writeln!(reason);
+    for finding in findings.iter().take(codex::MAX_RENDERED_FINDINGS) {
+        let file = sanitize_display(&finding.file);
+        let rule_id = sanitize_display(&finding.rule_id);
+        let masked = sanitize_display(&mask_secret(&finding.matched_value));
+        let _ = writeln!(reason, "  file: {file}");
+        let _ = writeln!(reason, "  line: {}", finding.line);
+        let _ = writeln!(reason, "  rule: {rule_id}");
+        let _ = writeln!(reason, "  match: {masked}");
+        let _ = writeln!(reason);
+    }
+    if findings.len() > codex::MAX_RENDERED_FINDINGS {
+        let omitted = findings.len() - codex::MAX_RENDERED_FINDINGS;
+        let _ = writeln!(reason, "... and {omitted} more finding(s) omitted");
+    }
+    let _ = writeln!(
+        reason,
+        "file contains {} secret(s). reading blocked to prevent secret exposure.",
+        findings.len()
+    );
+    reason
+}
+
 /// run the check-file command.
 /// reads a single file, scans it for secrets, and returns an exit code.
 ///
@@ -350,7 +187,8 @@ pub fn run_check_file(stdin_json: bool, file_arg: Option<&str>) -> i32 {
         match parse_hook_stdin() {
             Ok((path, cwd)) => (path, cwd),
             Err(e) => {
-                eprintln!("[ERROR] {}", e);
+                let error = sanitize_display(&e);
+                let _ = writeln!(std::io::stderr(), "[ERROR] {error}");
                 return 2;
             }
         }
@@ -358,7 +196,10 @@ pub fn run_check_file(stdin_json: bool, file_arg: Option<&str>) -> i32 {
         match file_arg {
             Some(path) => (path.to_string(), None),
             None => {
-                eprintln!("[ERROR] check-file requires a file path argument or --stdin-json");
+                let _ = writeln!(
+                    std::io::stderr(),
+                    "[ERROR] check-file requires a file path argument or --stdin-json"
+                );
                 return 2;
             }
         }
@@ -368,16 +209,18 @@ pub fn run_check_file(stdin_json: bool, file_arg: Option<&str>) -> i32 {
     let (relative_path, base_dir) = match resolve_file_path(&file_path, cwd.as_deref()) {
         Ok(resolved) => resolved,
         Err(e) => {
-            eprintln!("[ERROR] {}", e);
+            let error = sanitize_display(&e);
+            let _ = writeln!(std::io::stderr(), "[ERROR] {error}");
             return 2;
         }
     };
 
     // step 2a: validate base directory exists
     if !base_dir.is_dir() {
-        eprintln!(
-            "[ERROR] base directory does not exist: {}",
-            base_dir.display()
+        let base_dir = sanitize_display(&base_dir.to_string_lossy());
+        let _ = writeln!(
+            std::io::stderr(),
+            "[ERROR] base directory does not exist: {base_dir}"
         );
         return 2;
     }
@@ -385,9 +228,11 @@ pub fn run_check_file(stdin_json: bool, file_arg: Option<&str>) -> i32 {
     // step 2b: block .env files unconditionally (same policy as pre-commit scan).
     // .env files almost always contain secrets; block reading them entirely.
     if crate::diff::is_blocked_env_file(&relative_path) {
-        eprintln!();
-        eprintln!("[AGENT] .env file blocked: {}", file_path);
-        eprintln!("file likely contains environment secrets. reading blocked.");
+        let file_path = sanitize_display(&file_path);
+        let _ = writeln!(
+            std::io::stderr(),
+            "\n[AGENT] .env file blocked: {file_path}\nfile likely contains environment secrets. reading blocked."
+        );
         return 2;
     }
 
@@ -400,10 +245,11 @@ pub fn run_check_file(stdin_json: bool, file_arg: Option<&str>) -> i32 {
     }
 
     // step 4: load config and build full allowlist for user-configured patterns
-    let project_config = match config::load_project_config(Some(&base_dir)) {
+    let project_config = match codex::load_trusted_project_config(&base_dir) {
         Ok(cfg) => cfg,
         Err(e) => {
-            eprintln!("[ERROR] {}", e);
+            let error = sanitize_display(&e);
+            let _ = writeln!(std::io::stderr(), "[ERROR] {error}");
             return 2;
         }
     };
@@ -411,7 +257,8 @@ pub fn run_check_file(stdin_json: bool, file_arg: Option<&str>) -> i32 {
     let rules_list = match config::load_rules_with_config(&project_config) {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("[ERROR] {}", e);
+            let error = sanitize_display(&e);
+            let _ = writeln!(std::io::stderr(), "[ERROR] {error}");
             return 2;
         }
     };
@@ -419,7 +266,8 @@ pub fn run_check_file(stdin_json: bool, file_arg: Option<&str>) -> i32 {
     let allowlist = match config::build_allowlist(&project_config, &rules_list) {
         Ok(al) => al,
         Err(e) => {
-            eprintln!("[ERROR] {}", e);
+            let error = sanitize_display(&e);
+            let _ = writeln!(std::io::stderr(), "[ERROR] {error}");
             return 2;
         }
     };
@@ -429,7 +277,8 @@ pub fn run_check_file(stdin_json: bool, file_arg: Option<&str>) -> i32 {
         Ok(true) => return 0,
         Ok(false) => {}
         Err(e) => {
-            eprintln!("[ERROR] {}", e);
+            let error = sanitize_display(&e);
+            let _ = writeln!(std::io::stderr(), "[ERROR] {error}");
             return 2;
         }
     }
@@ -443,7 +292,12 @@ pub fn run_check_file(stdin_json: bool, file_arg: Option<&str>) -> i32 {
         }
         ReadFileResult::ReadError(e) => {
             // read errors must block: failing open would let secrets through
-            eprintln!("[ERROR] failed to read {}: {}", file_path, e);
+            let file_path = sanitize_display(&file_path);
+            let error = sanitize_display(&e);
+            let _ = writeln!(
+                std::io::stderr(),
+                "[ERROR] failed to read {file_path}: {error}"
+            );
             return 2;
         }
     };
@@ -452,7 +306,11 @@ pub fn run_check_file(stdin_json: bool, file_arg: Option<&str>) -> i32 {
     let compiled = match crate::scanner::rules::compile_rules(&rules_list) {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("[ERROR] failed to compile rules: {}", e);
+            let error = sanitize_display(&e);
+            let _ = writeln!(
+                std::io::stderr(),
+                "[ERROR] failed to compile rules: {error}"
+            );
             return 2;
         }
     };
@@ -465,26 +323,16 @@ pub fn run_check_file(stdin_json: bool, file_arg: Option<&str>) -> i32 {
     }
 
     // step 9: report findings to stderr (agent reads stderr for feedback)
-    eprintln!();
-    eprintln!("[AGENT] secret(s) detected in {}", file_path);
-    eprintln!();
-    for finding in &findings {
-        let masked = mask_secret(&finding.matched_value);
-        eprintln!("  line: {}", finding.line);
-        eprintln!("  rule: {}", finding.rule_id);
-        eprintln!("  match: {}", masked);
-        eprintln!();
-    }
-    eprintln!(
-        "file contains {} secret(s). reading blocked to prevent secret exposure.",
-        findings.len()
-    );
+    let reason = file_findings_reason(&file_path, &findings);
+    let _ = write!(std::io::stderr(), "{reason}");
 
     2
 }
 
 #[cfg(test)]
 mod tests {
+    use std::process::{Command, Stdio};
+
     use super::*;
     use serial_test::serial;
 
@@ -494,6 +342,49 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::env::set_current_dir(&self.0);
         }
+    }
+
+    fn compiled_binary() -> PathBuf {
+        if let Some(path) = option_env!("CARGO_BIN_EXE_sekretbarilo") {
+            return PathBuf::from(path);
+        }
+
+        let profile_dir = std::env::current_exe()
+            .unwrap()
+            .parent()
+            .and_then(Path::parent)
+            .unwrap()
+            .to_path_buf();
+        profile_dir.join(format!("sekretbarilo{}", std::env::consts::EXE_SUFFIX))
+    }
+
+    fn git_success(repo: &Path, args: &[&str]) {
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(repo)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    fn init_git_repo() -> tempfile::TempDir {
+        let repo = tempfile::tempdir().unwrap();
+        git_success(repo.path(), &["init"]);
+        git_success(
+            repo.path(),
+            &["config", "user.email", "fixture@example.invalid"],
+        );
+        git_success(repo.path(), &["config", "user.name", "Fixture User"]);
+        repo
+    }
+
+    fn permissive_config() -> &'static str {
+        "[[allowlist.rules]]\nid = \"aws-access-key-id\"\nregexes = [\".*\"]\n"
     }
 
     // -- stdin JSON parsing tests --
@@ -635,6 +526,129 @@ mod tests {
     }
 
     #[test]
+    fn epipe_on_check_file_stderr_does_not_change_the_exit_code() {
+        use std::io::{Read, Write};
+
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("many-secrets.rs");
+        let secret = "AKIAIOSFODNN7ABCDEFG";
+        let mut content = String::new();
+        for i in 0..5000 {
+            content.push_str(&format!("const K{i}: &str = \"{secret}{i}\";\n"));
+        }
+        std::fs::write(&file_path, content).unwrap();
+        let input = serde_json::to_vec(&serde_json::json!({
+            "tool_input": {"file_path": file_path},
+            "cwd": dir.path(),
+        }))
+        .unwrap();
+
+        let binary = compiled_binary();
+        assert!(
+            binary.is_file(),
+            "compiled binary missing at {}",
+            binary.display()
+        );
+        let mut child = Command::new(binary)
+            .args(["check-file", "--stdin-json"])
+            .env("HOME", dir.path())
+            .env("CODEX_HOME", dir.path().join(".codex"))
+            .env("GIT_CONFIG_GLOBAL", dir.path().join("gitconfig-empty"))
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+
+        child.stdin.take().unwrap().write_all(&input).unwrap();
+
+        let mut stdout = child.stdout.take().unwrap();
+        let stdout_reader = std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            let _ = stdout.read_to_end(&mut buf);
+            buf
+        });
+
+        let mut stderr = child.stderr.take().unwrap();
+        let mut prefix = [0u8; 64];
+        let _ = stderr.read(&mut prefix);
+        drop(stderr);
+
+        let status = child.wait().unwrap();
+        assert_eq!(
+            status.code(),
+            Some(2),
+            "an early-closing stderr reader must not change the exit code"
+        );
+        assert!(stdout_reader.join().unwrap().is_empty());
+    }
+
+    #[test]
+    fn check_file_report_sanitizes_untrusted_fields() {
+        let findings = vec![Finding {
+            file: "file\x1b\r\u{202e}.rs".to_string(),
+            line: 1,
+            rule_id: "rule\x1b\r\u{202e}".to_string(),
+            matched_value: "\u{202e}abcde\r".as_bytes().to_vec(),
+        }];
+        let reason = file_findings_reason("name\x1b\r\u{202e}.rs", &findings);
+
+        assert!(!reason.contains('\x1b'));
+        assert!(!reason.contains('\r'));
+        assert!(!reason.contains('\u{202e}'));
+    }
+
+    #[test]
+    fn check_file_report_caps_rendered_findings() {
+        let total = codex::MAX_RENDERED_FINDINGS + 7;
+        let findings = (0..total)
+            .map(|index| Finding {
+                file: format!("file-{index}.rs"),
+                line: index + 1,
+                rule_id: "fixture-rule".to_string(),
+                matched_value: b"fixture-secret".to_vec(),
+            })
+            .collect::<Vec<_>>();
+        let reason = file_findings_reason("fixture.rs", &findings);
+
+        assert_eq!(
+            reason.matches("  file: ").count(),
+            codex::MAX_RENDERED_FINDINGS
+        );
+        assert!(reason.contains("... and 7 more finding(s) omitted"));
+        assert!(reason.contains(&format!("file contains {total} secret(s).")));
+    }
+
+    #[test]
+    fn check_file_agent_written_inworkspace_config_is_not_trusted() {
+        let repo = init_git_repo();
+        let file_path = repo.path().join("secret.py");
+        std::fs::write(&file_path, "aws_key = \"AKIAIOSFODNN7ABCDEFG\"\n").unwrap();
+        assert_eq!(run_check_file(false, file_path.to_str()), 2);
+
+        std::fs::write(repo.path().join(".sekretbarilo.toml"), permissive_config()).unwrap();
+
+        assert_eq!(run_check_file(false, file_path.to_str()), 2);
+    }
+
+    #[test]
+    fn check_file_committed_inworkspace_config_allowlist_is_honored() {
+        let repo = init_git_repo();
+        let file_path = repo.path().join("secret.py");
+        std::fs::write(&file_path, "aws_key = \"AKIAIOSFODNN7ABCDEFG\"\n").unwrap();
+        assert_eq!(run_check_file(false, file_path.to_str()), 2);
+
+        std::fs::write(repo.path().join(".sekretbarilo.toml"), permissive_config()).unwrap();
+        git_success(repo.path(), &["add", ".sekretbarilo.toml"]);
+        git_success(
+            repo.path(),
+            &["commit", "--no-verify", "-m", "add fixture config"],
+        );
+
+        assert_eq!(run_check_file(false, file_path.to_str()), 0);
+    }
+
+    #[test]
     fn check_file_nonexistent() {
         let result = run_check_file(false, Some("/tmp/nonexistent_sekretbarilo_test_file.py"));
         // nonexistent file is a read error - must block to avoid failing open
@@ -718,270 +732,5 @@ mod tests {
         let al = CompiledAllowlist::default_allowlist().unwrap();
         let audit = config::AuditConfig::default();
         assert!(should_skip_file(&rel, &al, &audit).unwrap());
-    }
-
-    // -- claude code hook installation tests --
-
-    #[test]
-    fn install_claude_hook_creates_new_config() {
-        let dir = tempfile::tempdir().unwrap();
-        let config_path = dir.path().join(".claude").join("settings.json");
-
-        let result = install_claude_hook_to_path(&config_path).unwrap();
-        assert_eq!(result, ClaudeHookResult::Created);
-
-        // verify file was created with correct structure
-        let content = std::fs::read_to_string(&config_path).unwrap();
-        let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
-
-        let hooks = &parsed["hooks"]["PreToolUse"];
-        assert!(hooks.is_array());
-        let arr = hooks.as_array().unwrap();
-        assert_eq!(arr.len(), 1);
-        assert_eq!(arr[0]["matcher"], "Read");
-        let hook_arr = arr[0]["hooks"].as_array().unwrap();
-        assert_eq!(hook_arr.len(), 1);
-        assert_eq!(hook_arr[0]["command"], HOOK_COMMAND);
-        assert_eq!(hook_arr[0]["timeout"], 10);
-        assert_eq!(hook_arr[0]["statusMessage"], "Scanning file for secrets...");
-    }
-
-    #[test]
-    fn install_claude_hook_preserves_existing_settings() {
-        let dir = tempfile::tempdir().unwrap();
-        let claude_dir = dir.path().join(".claude");
-        std::fs::create_dir_all(&claude_dir).unwrap();
-        let config_path = claude_dir.join("settings.json");
-
-        // write existing config with unrelated settings
-        let existing = serde_json::json!({
-            "model": "claude-sonnet-4-5-20250929",
-            "permissions": {"allow": ["Read"]}
-        });
-        std::fs::write(
-            &config_path,
-            serde_json::to_string_pretty(&existing).unwrap(),
-        )
-        .unwrap();
-
-        let result = install_claude_hook_to_path(&config_path).unwrap();
-        assert_eq!(result, ClaudeHookResult::Created);
-
-        // verify existing settings are preserved
-        let content = std::fs::read_to_string(&config_path).unwrap();
-        let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
-        assert_eq!(parsed["model"], "claude-sonnet-4-5-20250929");
-        assert!(parsed["permissions"]["allow"].is_array());
-        // and hook was added
-        assert!(parsed["hooks"]["PreToolUse"].is_array());
-    }
-
-    #[test]
-    fn install_claude_hook_idempotent() {
-        let dir = tempfile::tempdir().unwrap();
-        let config_path = dir.path().join(".claude").join("settings.json");
-
-        // first install
-        let result1 = install_claude_hook_to_path(&config_path).unwrap();
-        assert_eq!(result1, ClaudeHookResult::Created);
-
-        // second install should detect already installed
-        let result2 = install_claude_hook_to_path(&config_path).unwrap();
-        assert_eq!(result2, ClaudeHookResult::AlreadyInstalled);
-
-        // verify only one hook entry
-        let content = std::fs::read_to_string(&config_path).unwrap();
-        let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
-        let arr = parsed["hooks"]["PreToolUse"].as_array().unwrap();
-        assert_eq!(arr.len(), 1);
-    }
-
-    #[test]
-    fn install_claude_hook_preserves_other_pre_tool_use_matchers() {
-        let dir = tempfile::tempdir().unwrap();
-        let claude_dir = dir.path().join(".claude");
-        std::fs::create_dir_all(&claude_dir).unwrap();
-        let config_path = claude_dir.join("settings.json");
-
-        // write existing config with another PreToolUse hook
-        let existing = serde_json::json!({
-            "hooks": {
-                "PreToolUse": [
-                    {
-                        "matcher": "Write",
-                        "hooks": [{"type": "command", "command": "echo write hook"}]
-                    }
-                ]
-            }
-        });
-        std::fs::write(
-            &config_path,
-            serde_json::to_string_pretty(&existing).unwrap(),
-        )
-        .unwrap();
-
-        let result = install_claude_hook_to_path(&config_path).unwrap();
-        assert_eq!(result, ClaudeHookResult::Created);
-
-        // verify both entries exist
-        let content = std::fs::read_to_string(&config_path).unwrap();
-        let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
-        let arr = parsed["hooks"]["PreToolUse"].as_array().unwrap();
-        assert_eq!(arr.len(), 2);
-        assert_eq!(arr[0]["matcher"], "Write");
-        assert_eq!(arr[1]["matcher"], "Read");
-    }
-
-    #[test]
-    fn install_claude_hook_appends_to_existing_read_matcher() {
-        let dir = tempfile::tempdir().unwrap();
-        let claude_dir = dir.path().join(".claude");
-        std::fs::create_dir_all(&claude_dir).unwrap();
-        let config_path = claude_dir.join("settings.json");
-
-        // write existing config with Read matcher and another hook
-        let existing = serde_json::json!({
-            "hooks": {
-                "PreToolUse": [
-                    {
-                        "matcher": "Read",
-                        "hooks": [{"type": "command", "command": "echo other hook"}]
-                    }
-                ]
-            }
-        });
-        std::fs::write(
-            &config_path,
-            serde_json::to_string_pretty(&existing).unwrap(),
-        )
-        .unwrap();
-
-        let result = install_claude_hook_to_path(&config_path).unwrap();
-        assert_eq!(result, ClaudeHookResult::Created);
-
-        // verify our hook was appended to the existing Read hooks array
-        let content = std::fs::read_to_string(&config_path).unwrap();
-        let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
-        let arr = parsed["hooks"]["PreToolUse"].as_array().unwrap();
-        assert_eq!(arr.len(), 1); // still one Read entry
-        let hooks = arr[0]["hooks"].as_array().unwrap();
-        assert_eq!(hooks.len(), 2); // two hooks in it
-        assert_eq!(hooks[0]["command"], "echo other hook");
-        assert_eq!(hooks[1]["command"], HOOK_COMMAND);
-    }
-
-    #[test]
-    fn install_claude_hook_malformed_json() {
-        let dir = tempfile::tempdir().unwrap();
-        let claude_dir = dir.path().join(".claude");
-        std::fs::create_dir_all(&claude_dir).unwrap();
-        let config_path = claude_dir.join("settings.json");
-
-        std::fs::write(&config_path, "not valid json{{{").unwrap();
-
-        let result = install_claude_hook_to_path(&config_path);
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("malformed JSON"));
-    }
-
-    #[test]
-    fn install_claude_hook_preserves_other_hook_events() {
-        let dir = tempfile::tempdir().unwrap();
-        let claude_dir = dir.path().join(".claude");
-        std::fs::create_dir_all(&claude_dir).unwrap();
-        let config_path = claude_dir.join("settings.json");
-
-        // config with PostToolUse hooks (should be untouched)
-        let existing = serde_json::json!({
-            "hooks": {
-                "PostToolUse": [
-                    {"matcher": "Bash", "hooks": [{"type": "command", "command": "echo done"}]}
-                ]
-            }
-        });
-        std::fs::write(
-            &config_path,
-            serde_json::to_string_pretty(&existing).unwrap(),
-        )
-        .unwrap();
-
-        let result = install_claude_hook_to_path(&config_path).unwrap();
-        assert_eq!(result, ClaudeHookResult::Created);
-
-        let content = std::fs::read_to_string(&config_path).unwrap();
-        let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
-        // PostToolUse preserved
-        assert!(parsed["hooks"]["PostToolUse"].is_array());
-        // PreToolUse added
-        assert!(parsed["hooks"]["PreToolUse"].is_array());
-    }
-
-    #[test]
-    fn install_claude_hook_updates_old_sekretbarilo_command() {
-        let dir = tempfile::tempdir().unwrap();
-        let claude_dir = dir.path().join(".claude");
-        std::fs::create_dir_all(&claude_dir).unwrap();
-        let config_path = claude_dir.join("settings.json");
-
-        // config with an older sekretbarilo command
-        let existing = serde_json::json!({
-            "hooks": {
-                "PreToolUse": [
-                    {
-                        "matcher": "Read",
-                        "hooks": [{"type": "command", "command": "sekretbarilo scan-file --old-flag", "timeout": 5}]
-                    }
-                ]
-            }
-        });
-        std::fs::write(
-            &config_path,
-            serde_json::to_string_pretty(&existing).unwrap(),
-        )
-        .unwrap();
-
-        let result = install_claude_hook_to_path(&config_path).unwrap();
-        assert_eq!(result, ClaudeHookResult::Updated);
-
-        // verify the command was updated
-        let content = std::fs::read_to_string(&config_path).unwrap();
-        let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
-        let arr = parsed["hooks"]["PreToolUse"].as_array().unwrap();
-        let hooks = arr[0]["hooks"].as_array().unwrap();
-        assert_eq!(hooks.len(), 1);
-        assert_eq!(hooks[0]["command"], HOOK_COMMAND);
-        assert_eq!(hooks[0]["timeout"], 10);
-        assert_eq!(hooks[0]["statusMessage"], "Scanning file for secrets...");
-    }
-
-    #[test]
-    fn install_claude_hook_global_path_resolution() {
-        // test that install_claude_hook constructs the correct path for global mode
-        // we can't easily test the actual HOME-based path, but we can test install_claude_hook_to_path
-        // with a path that simulates ~/.claude/settings.json
-        let dir = tempfile::tempdir().unwrap();
-        let global_claude_dir = dir.path().join(".claude");
-        let config_path = global_claude_dir.join("settings.json");
-
-        // should create the .claude directory and settings.json
-        let result = install_claude_hook_to_path(&config_path).unwrap();
-        assert_eq!(result, ClaudeHookResult::Created);
-        assert!(global_claude_dir.exists());
-        assert!(config_path.exists());
-    }
-
-    #[test]
-    fn install_claude_hook_root_not_object() {
-        let dir = tempfile::tempdir().unwrap();
-        let claude_dir = dir.path().join(".claude");
-        std::fs::create_dir_all(&claude_dir).unwrap();
-        let config_path = claude_dir.join("settings.json");
-
-        // JSON array instead of object
-        std::fs::write(&config_path, "[1, 2, 3]").unwrap();
-
-        let result = install_claude_hook_to_path(&config_path);
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("not a JSON object"));
     }
 }

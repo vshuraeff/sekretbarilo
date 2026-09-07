@@ -1,0 +1,9 @@
+{
+  "session_id": "session-apply-patch-control-chars",
+  "hook_event_name": "PreToolUse",
+  "tool_name": "apply_patch",
+  "tool_input": {
+    "command": "*** Begin Patch\n*** Add File: spoof\u001b[2K\rname\u202e.rs\n+const KEY: &str = \"AKIAIOSFODNN7ABCDEFG\";\n*** End Patch\n"
+  },
+  "cwd": "/tmp"
+}

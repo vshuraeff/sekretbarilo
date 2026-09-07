@@ -1,0 +1,14 @@
+{
+  "session_id": "session-bash-clean",
+  "turn_id": "turn-bash-clean",
+  "transcript_path": null,
+  "cwd": "/tmp",
+  "hook_event_name": "PreToolUse",
+  "model": "gpt-test",
+  "permission_mode": "default",
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "ls -la /tmp"
+  },
+  "tool_use_id": "tool-bash-clean"
+}
