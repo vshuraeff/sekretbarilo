@@ -546,3 +546,40 @@ fn key_allowlist_preserves_tmpdir_in_redact_and_check_file() {
         "{stderr}"
     );
 }
+
+#[test]
+fn unquoted_quote_and_backtick_values_are_redacted_in_full_by_the_hook() {
+    let env = IsolatedEnv::new();
+    let mut generator = SplitMix64::new(0x9552_3ac8_2b7f_0441);
+    let token = high_entropy_value(&mut generator, 32);
+    let double = format!("{}\"{}", &token[..2], &token[2..]);
+    let single = format!("{}'{}", &token[..28], &token[28..]);
+    let backtick = format!("{}{}{}", &token[..11], '`', &token[11..]);
+    let escaped = format!("{}\\`{}", &token[..9], &token[9..]);
+    let values = vec![double, single, backtick, escaped];
+    let stdout = format!(
+        "DOUBLE={}\nSINGLE={}\nBACKTICK={}\nESCAPED={}\n",
+        values[0], values[1], values[2], values[3]
+    );
+
+    assert_new_rule_detects(
+        &env,
+        &stdout,
+        "DOUBLE=[REDACTED]\nSINGLE=[REDACTED]\nBACKTICK=[REDACTED]\nESCAPED=[REDACTED]\n",
+        &stdout,
+        &values,
+    );
+}
+
+#[test]
+fn rooted_path_hook_output_is_preserved_while_the_next_token_is_redacted() {
+    let env = IsolatedEnv::new();
+    let path = "/Users/example/work/rust/sekretbarilo/.claude/backlog/tasks/2026-09-08-redact-claude-masks-plain-absolute-files-9zVZK8LgjmLKdXZG.md";
+    let mut generator = SplitMix64::new(0x4fae_9473_986d_12c5);
+    let token = high_entropy_value(&mut generator, 32);
+    let stdout = format!("PATH={path},TOKEN={token}\n");
+
+    let output = run_bash(&env, &stdout);
+    assert_values_absent(&output, std::slice::from_ref(&token));
+    assert_hook_envelope(&output, &format!("PATH={path},TOKEN=[REDACTED]\n"));
+}

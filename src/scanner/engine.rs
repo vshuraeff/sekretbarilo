@@ -126,6 +126,47 @@ fn is_password_rule(rule_id: &str) -> bool {
     rule_id == "generic-password-assignment" || rule_id == "password-in-url"
 }
 
+// keep unquoted quote bytes only for line-start/export keys with whitespace and no `(` value byte.
+// other generic entropy shapes retain the legacy pre-quote truncation boundary.
+fn is_env_style_assignment(input: &[u8], key_start: usize, value: &[u8]) -> bool {
+    if value.contains(&b'(') {
+        return false;
+    }
+
+    let line_start = input[..key_start]
+        .iter()
+        .rposition(|&byte| byte == b'\n')
+        .map_or(0, |index| index + 1);
+    let prefix = &input[line_start..key_start];
+    if prefix.iter().all(|&byte| matches!(byte, b'\t' | b' ')) {
+        return true;
+    }
+
+    let prefix = &prefix[prefix
+        .iter()
+        .position(|&byte| !matches!(byte, b'\t' | b' '))
+        .unwrap_or(prefix.len())..];
+    let Some(prefix) = prefix.strip_prefix(b"export") else {
+        return false;
+    };
+    !prefix.is_empty() && prefix.iter().all(|&byte| matches!(byte, b'\t' | b' '))
+}
+
+// find the legacy boundary when the env-style gate declines the full unquoted capture.
+fn first_unescaped_quote(value: &[u8]) -> Option<usize> {
+    let mut escaped = false;
+    for (index, &byte) in value.iter().enumerate() {
+        if escaped {
+            escaped = false;
+        } else if byte == b'\\' {
+            escaped = true;
+        } else if matches!(byte, b'\'' | b'"' | b'`') {
+            return Some(index);
+        }
+    }
+    None
+}
+
 /// check if a rule extracts credentials from connection strings/URLs.
 /// these rules use the password strength heuristic to filter weak/placeholder
 /// passwords, but still fall through to entropy evaluation as a safety net
@@ -278,7 +319,22 @@ pub(super) fn scan_matches(
             else {
                 continue;
             };
-            let secret = secret_match.as_bytes();
+            let mut secret = secret_match.as_bytes();
+            let mut secret_range = secret_match.range();
+
+            // non-env-style unquoted matches use their first unescaped quote as the legacy boundary.
+            if is_entropy_value
+                && let (Some(unquoted), Some(key)) = (
+                    captures.name("entropy_unquoted"),
+                    captures.name("entropy_key"),
+                )
+                && unquoted.range() == secret_range
+                && !is_env_style_assignment(ctx.input, key.start(), secret)
+                && let Some(end) = first_unescaped_quote(secret)
+            {
+                secret = &secret[..end];
+                secret_range.end = secret_range.start + end;
+            }
 
             if secret.is_empty() {
                 continue;
@@ -287,6 +343,9 @@ pub(super) fn scan_matches(
                 && (secret.len() < entropy::MIN_ENTROPY_LENGTH
                     || !secret.iter().all(u8::is_ascii_graphic))
             {
+                continue;
+            }
+            if is_entropy_value && entropy::is_path_shaped(secret) {
                 continue;
             }
 
@@ -414,7 +473,7 @@ pub(super) fn scan_matches(
                 }
             }
 
-            emit(&rule.id, secret_match.range());
+            emit(&rule.id, secret_range);
         }
     }
 }
