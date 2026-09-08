@@ -947,6 +947,21 @@ mod high_entropy_values {
     }
 
     #[test]
+    fn indented_export_unquoted_quote_byte_keeps_complete_value_range() {
+        let (scanner, al) = default_scanner_and_allowlist();
+        let token = distinct_token(32);
+        let value = format!("{}'{}", &token[..5], &token[5..]);
+        assert!(entropy::shannon_entropy(value.as_bytes()) >= 4.0);
+        assert_values(
+            "config.txt",
+            &format!("    export NAME={value}"),
+            &[&value],
+            &scanner,
+            &al,
+        );
+    }
+
+    #[test]
     fn non_env_style_prefix_keeps_legacy_quote_boundary() {
         let (scanner, al) = default_scanner_and_allowlist();
         let token = distinct_token(32);
@@ -1061,15 +1076,19 @@ mod high_entropy_values {
         let token24 = distinct_token(24);
         let token32 = distinct_token(32);
         let token40 = format!("{}ABCDEFGH", token32);
+        let opaque = "aB3dEf7hIj1kLmN0pQrStUvWxYz5A6bC";
         let url = format!("https://user:{token32}@host.example/path");
         let still_flagged = [
             format!("/opt/{token24}"),
             format!("/x/{token40}"),
             format!("/data/{token32}.md"),
             format!("/data/{token32}/"),
+            format!("/mnt/secrets/{}/token.txt", &opaque[..29]),
+            format!("/tmp/cache/sess_{opaque}"),
             format!("abc/DEF+{token32}"),
             format!("some/dir/{token32}"),
             url,
+            format!("//user:{opaque}@host/path"),
             token32.clone(),
         ];
         for value in &still_flagged {

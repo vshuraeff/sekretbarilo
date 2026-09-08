@@ -142,6 +142,10 @@ fn is_env_style_assignment(input: &[u8], key_start: usize, value: &[u8]) -> bool
         return true;
     }
 
+    let prefix = &prefix[prefix
+        .iter()
+        .position(|&byte| !matches!(byte, b'\t' | b' '))
+        .unwrap_or(prefix.len())..];
     let Some(prefix) = prefix.strip_prefix(b"export") else {
         return false;
     };

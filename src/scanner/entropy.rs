@@ -70,27 +70,44 @@ fn has_wordy_path_leaf(value: &[u8]) -> bool {
         end -= 1;
     }
     let value = &value[..end];
-    let Some(mut leaf) = value
-        .rsplit(|&byte| matches!(byte, b'/' | b'\\'))
-        .find(|segment| !segment.is_empty())
-    else {
-        return false;
-    };
+    let mut segments = value
+        .split(|&byte| matches!(byte, b'/' | b'\\'))
+        .filter(|segment| !segment.is_empty())
+        .peekable();
 
-    if let Some(extension_start) = leaf.iter().rposition(|&byte| byte == b'.') {
-        let extension = &leaf[extension_start + 1..];
-        if (1..=5).contains(&extension.len()) && extension.iter().all(u8::is_ascii_alphanumeric) {
-            leaf = &leaf[..extension_start];
+    while let Some(segment) = segments.next() {
+        let is_leaf = segments.peek().is_none();
+        let mut segment = segment;
+        if is_leaf && let Some(extension_start) = segment.iter().rposition(|&byte| byte == b'.') {
+            let extension = &segment[extension_start + 1..];
+            if (1..=5).contains(&extension.len()) && extension.iter().all(u8::is_ascii_alphanumeric)
+            {
+                segment = &segment[..extension_start];
+            }
+        }
+
+        let has_segment_separator = segment
+            .iter()
+            .any(|&byte| matches!(byte, b'-' | b'_' | b'.'));
+        if is_leaf && !has_segment_separator && segment.len() >= MIN_ENTROPY_LENGTH {
+            return false;
+        }
+
+        let mut has_wordy_part = false;
+        for part in segment.split(|&byte| matches!(byte, b'-' | b'_' | b'.')) {
+            let is_wordy_part = part.len() >= 3 && part.iter().all(u8::is_ascii_alphabetic);
+            if part.len() >= MIN_ENTROPY_LENGTH && !is_wordy_part {
+                return false;
+            }
+            has_wordy_part |= is_wordy_part;
+        }
+
+        if is_leaf {
+            return has_wordy_part;
         }
     }
 
-    let has_leaf_separator = leaf.iter().any(|&byte| matches!(byte, b'-' | b'_' | b'.'));
-    if !has_leaf_separator && leaf.len() >= MIN_ENTROPY_LENGTH {
-        return false;
-    }
-
-    leaf.split(|&byte| matches!(byte, b'-' | b'_' | b'.'))
-        .any(|part| part.len() >= 3 && part.iter().all(u8::is_ascii_alphabetic))
+    false
 }
 
 /// calculate entropy only over hex charset [0-9a-fA-F]
@@ -272,9 +289,12 @@ mod tests {
             (b"/x/ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmn", false),
             (b"/data/ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef.md", false),
             (b"/data/ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef/", false),
+            (b"/mnt/secrets/aB3dEf7hIj1kLmN0pQrStUvWxYz5A/token.txt", false),
+            (b"/tmp/cache/sess_aB3dEf7hIj1kLmN0pQrStUvWxYz5A6bC", false),
             (b"abc/DEF+ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef", false),
             (b"some/dir/ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef", false),
             (b"https://user:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef@host.example/path", false),
+            (b"//user:aB3dEf7hIj1kLmN0pQrStUvWxYz5A6bC@host/path", false),
             (b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef", false),
         ];
 
