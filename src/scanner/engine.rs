@@ -126,6 +126,8 @@ fn is_password_rule(rule_id: &str) -> bool {
     rule_id == "generic-password-assignment" || rule_id == "password-in-url"
 }
 
+// keep unquoted quote bytes only for line-start/export keys with whitespace and no `(` value byte.
+// other generic entropy shapes retain the legacy pre-quote truncation boundary.
 fn is_env_style_assignment(input: &[u8], key_start: usize, value: &[u8]) -> bool {
     if value.contains(&b'(') {
         return false;
@@ -146,6 +148,7 @@ fn is_env_style_assignment(input: &[u8], key_start: usize, value: &[u8]) -> bool
     !prefix.is_empty() && prefix.iter().all(|&byte| matches!(byte, b'\t' | b' '))
 }
 
+// find the legacy boundary when the env-style gate declines the full unquoted capture.
 fn first_unescaped_quote(value: &[u8]) -> Option<usize> {
     let mut escaped = false;
     for (index, &byte) in value.iter().enumerate() {
@@ -315,6 +318,7 @@ pub(super) fn scan_matches(
             let mut secret = secret_match.as_bytes();
             let mut secret_range = secret_match.range();
 
+            // non-env-style unquoted matches use their first unescaped quote as the legacy boundary.
             if is_entropy_value
                 && let (Some(unquoted), Some(key)) = (
                     captures.name("entropy_unquoted"),

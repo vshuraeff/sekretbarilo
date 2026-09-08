@@ -333,6 +333,7 @@ description = "High-entropy ASCII token in an assignment or on a bare line"
 # assignment captures exclude keys and paired square-bracket wrappers; quoted brackets are data.
 # the unquoted bare fallback excludes colons and admits equals signs only as trailing padding.
 # env-style unquoted values treat internal ", ', and ` bytes literally after a non-quote first byte.
+# src/scanner/engine.rs::is_env_style_assignment applies the line-start/export and no-`(` gate.
 # trailing , ; ) ] } > delimit syntax; whitespace and end of line end unquoted values.
 # a comma or semicolon also separates a following syntactic key assignment.
 # capture whole values before applying the byte-length and whitespace checks.

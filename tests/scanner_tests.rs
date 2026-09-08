@@ -932,6 +932,71 @@ mod high_entropy_values {
     }
 
     #[test]
+    fn export_unquoted_quote_byte_keeps_complete_value_range() {
+        let (scanner, al) = default_scanner_and_allowlist();
+        let token = distinct_token(32);
+        let value = format!("{}\"{}", &token[..5], &token[5..]);
+        assert!(entropy::shannon_entropy(value.as_bytes()) >= 4.0);
+        assert_values(
+            "config.txt",
+            &format!("export NAME={value}"),
+            &[&value],
+            &scanner,
+            &al,
+        );
+    }
+
+    #[test]
+    fn non_env_style_prefix_keeps_legacy_quote_boundary() {
+        let (scanner, al) = default_scanner_and_allowlist();
+        let token = distinct_token(32);
+        let legacy = token[..24].to_string();
+        let value = format!("{legacy}\"{}", &token[24..]);
+        let input = format!("let NAME={value}");
+        let rule = scanner.rules.iter().find(|rule| rule.id == RULE).unwrap();
+        let captures = rule.regex.captures(input.as_bytes()).unwrap();
+        assert_eq!(
+            captures.name("entropy_unquoted").unwrap().as_bytes(),
+            value.as_bytes()
+        );
+        assert_values("config.txt", &input, &[&legacy], &scanner, &al);
+    }
+
+    #[test]
+    fn parenthesized_env_assignment_keeps_legacy_quote_boundary() {
+        let (scanner, al) = default_scanner_and_allowlist();
+        let token = distinct_token(32);
+        let legacy = format!("{}(", &token[..24]);
+        let value = format!("{legacy}\"{}", &token[24..]);
+        let input = format!("NAME={value}");
+        assert!(entropy::shannon_entropy(legacy.as_bytes()) >= 4.0);
+        assert_values("config.txt", &input, &[&legacy], &scanner, &al);
+    }
+
+    #[test]
+    fn rust_source_shapes_keep_the_generic_entropy_rule_clean() {
+        let (scanner, al) = default_scanner_and_allowlist();
+        let token = distinct_token(32);
+        let regex_source = format!("let re = Regex::new(r\"{token}\").unwrap();");
+        let rule = scanner.rules.iter().find(|rule| rule.id == RULE).unwrap();
+        let captures = rule.regex.captures(regex_source.as_bytes()).unwrap();
+        assert_eq!(
+            captures.name("entropy_unquoted").unwrap().as_bytes(),
+            format!("Regex::new(r\"{token}\").unwrap(").as_bytes()
+        );
+        assert_values("src/validator.rs", &regex_source, &[], &scanner, &al);
+
+        let assertion_source = format!("assert_eq!(x, \"{token}\");");
+        assert_values(
+            "tests/scanner_test.rs",
+            &assertion_source,
+            &[],
+            &scanner,
+            &al,
+        );
+    }
+
+    #[test]
     fn unquoted_quote_value_keeps_adjacent_assignments_and_redaction_syntax() {
         let (scanner, al) = default_scanner_and_allowlist();
         let token = distinct_token(32);
