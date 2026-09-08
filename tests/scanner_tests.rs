@@ -907,6 +907,177 @@ mod high_entropy_values {
         let enabled = CompiledAllowlist::new(&[], &[], None, &[], true).unwrap();
         assert_values("key.pem", &public, &[&value], &scanner, &enabled);
     }
+
+    #[test]
+    fn unquoted_quote_and_backtick_bytes_keep_complete_value_ranges() {
+        let (scanner, al) = default_scanner_and_allowlist();
+        let token = distinct_token(32);
+        let cases = [
+            format!("{}\"{}", &token[..2], &token[2..]),
+            format!("{}'{}", &token[..30], &token[30..]),
+            format!("{}{}{}", &token[..12], '`', &token[12..]),
+            format!("{}\\\"{}", &token[..9], &token[9..]),
+        ];
+
+        for value in &cases {
+            assert!(entropy::shannon_entropy(value.as_bytes()) >= 4.0);
+            assert_values(
+                "config.txt",
+                &format!("SESSION={value}"),
+                &[value],
+                &scanner,
+                &al,
+            );
+        }
+    }
+
+    #[test]
+    fn unquoted_quote_value_keeps_adjacent_assignments_and_redaction_syntax() {
+        let (scanner, al) = default_scanner_and_allowlist();
+        let token = distinct_token(32);
+        let first = format!("{}\"{}", &token[..8], &token[8..]);
+        let second: String = token.chars().rev().collect();
+        let input = format!("ALPHA={first};BRAVO={second}");
+
+        assert_values("config.txt", &input, &[&first, &second], &scanner, &al);
+        assert_eq!(
+            redact_text(&input, &scanner, &al),
+            "ALPHA=[REDACTED];BRAVO=[REDACTED]"
+        );
+    }
+
+    #[test]
+    fn quoted_value_still_uses_quoted_group_and_unmatched_opening_quote_is_ignored() {
+        let (scanner, al) = default_scanner_and_allowlist();
+        let token = distinct_token(32);
+        let rule = scanner.rules.iter().find(|rule| rule.id == RULE).unwrap();
+        let input = format!("NAME=\"{token}\"");
+        let captures = rule.regex.captures(input.as_bytes()).unwrap();
+        assert_eq!(
+            captures.name("entropy_double").unwrap().as_bytes(),
+            token.as_bytes()
+        );
+        assert!(captures.name("entropy_unquoted").is_none());
+        assert_values("config.txt", &format!("NAME=\"{token}"), &[], &scanner, &al);
+    }
+
+    #[test]
+    fn rooted_path_shaped_values_are_exempt_but_opaque_and_unrooted_values_remain_flagged() {
+        let (scanner, al) = default_scanner_and_allowlist();
+        let task_path = "/Users/example/work/rust/sekretbarilo/.claude/backlog/tasks/2026-09-08-redact-claude-masks-plain-absolute-files-9zVZK8LgjmLKdXZG.md";
+        let exempt = [
+            task_path,
+            "~/work/some-project/target/release/build-output.log",
+            "./a/b/config-file.toml",
+            "../x/y/data-2026.csv",
+            r"C:\Users\example\some-tool\cache-index.db",
+            r"C:\Users\example\some-tool\cache-index.db\",
+            r"C:\\Users\\example\\some-tool\\cache-index.db",
+            "/Users/example/work/rust/sekretbarilo/.claude/backlog/tasks/2026-09-08-redact-claude-masks-plain-absolute-files-9zVZK8LgjmLKdXZG.md/",
+        ];
+        for value in exempt {
+            assert_values("config.txt", &format!("PATH={value}"), &[], &scanner, &al);
+        }
+        assert_values(
+            "config.json",
+            &format!(r#"{{"path":"{task_path}"}}"#),
+            &[],
+            &scanner,
+            &al,
+        );
+        assert_values(
+            "config.json",
+            r#"{"path":"C:\\Users\\example\\some-tool\\cache-index.db"}"#,
+            &[],
+            &scanner,
+            &al,
+        );
+
+        let token24 = distinct_token(24);
+        let token32 = distinct_token(32);
+        let token40 = format!("{}ABCDEFGH", token32);
+        let url = format!("https://user:{token32}@host.example/path");
+        let still_flagged = [
+            format!("/opt/{token24}"),
+            format!("/x/{token40}"),
+            format!("/data/{token32}.md"),
+            format!("/data/{token32}/"),
+            format!("abc/DEF+{token32}"),
+            format!("some/dir/{token32}"),
+            url,
+            token32.clone(),
+        ];
+        for value in &still_flagged {
+            assert!(entropy::shannon_entropy(value.as_bytes()) >= 4.0, "{value}");
+            assert_values(
+                "config.txt",
+                &format!("VALUE={value}"),
+                &[value],
+                &scanner,
+                &al,
+            );
+        }
+    }
+
+    #[test]
+    fn path_exemption_resumes_for_the_next_assignment_and_preserves_tier_one_rules() {
+        let (scanner, al) = default_scanner_and_allowlist();
+        let path = "/Users/example/work/rust/sekretbarilo/.claude/backlog/tasks/2026-09-08-redact-claude-masks-plain-absolute-files-9zVZK8LgjmLKdXZG.md";
+        let token = distinct_token(32);
+        let input = format!("PATH={path},TOKEN={token}");
+        assert_values("config.txt", &input, &[&token], &scanner, &al);
+        assert_eq!(
+            redact_text(&input, &scanner, &al),
+            format!("PATH={path},TOKEN=[REDACTED]")
+        );
+
+        let aws_path = "/Users/example/work/AKIAIOSFODNN7ABCDEFG/cache-index.db";
+        let findings = scan(
+            &[make_file("config.txt", vec![(1, aws_path.as_bytes())])],
+            &scanner,
+            &al,
+        );
+        assert!(
+            findings
+                .iter()
+                .any(|finding| finding.rule_id == "aws-access-key-id"),
+            "tier-1 AWS rule did not see an exempt path-shaped value: {findings:?}"
+        );
+    }
+
+    #[test]
+    fn generic_password_assignment_keeps_its_quote_termination_contract() {
+        let (scanner, al) = default_scanner_and_allowlist();
+        let value = format!("ab\"cd{}", distinct_token(28));
+        let findings = scan(
+            &[make_file(
+                "config.txt",
+                vec![(1, format!("password={value}").as_bytes())],
+            )],
+            &scanner,
+            &al,
+        );
+        assert!(
+            findings
+                .iter()
+                .all(|finding| finding.rule_id != "generic-password-assignment"),
+            "generic-password-assignment changed its rule-specific quote handling: {findings:?}"
+        );
+    }
+
+    #[test]
+    fn bare_backlog_filename_remains_the_entropy_bare_alternative() {
+        let (scanner, al) = default_scanner_and_allowlist();
+        let value = "2026-09-05-doctor-e2e-tests-fail-on-macos-due-to-tm-9zQsedOXccoyIHP8.md";
+        let rule = scanner.rules.iter().find(|rule| rule.id == RULE).unwrap();
+        let captures = rule.regex.captures(value.as_bytes()).unwrap();
+        assert_eq!(
+            captures.name("entropy_bare").unwrap().as_bytes(),
+            value.as_bytes()
+        );
+        assert!(captures.name("entropy_unquoted").is_none());
+        assert_values("config.txt", value, &[value], &scanner, &al);
+    }
 }
 
 // ============================================================================

@@ -27,6 +27,72 @@ pub fn shannon_entropy(data: &[u8]) -> f64 {
     entropy
 }
 
+/// return whether a rooted value has the lexical shape of a wordy filesystem path.
+/// this is a documented lexical heuristic, not proof the value is non-secret.
+pub fn is_path_shaped(value: &[u8]) -> bool {
+    if !is_rooted_path(value)
+        || value.windows(3).any(|window| window == b"://")
+        || value.iter().any(|&byte| !is_path_byte(byte))
+        || value
+            .iter()
+            .filter(|&&byte| matches!(byte, b'/' | b'\\'))
+            .count()
+            < 2
+    {
+        return false;
+    }
+
+    has_wordy_path_leaf(value)
+}
+
+fn is_rooted_path(value: &[u8]) -> bool {
+    value.starts_with(b"/")
+        || value.starts_with(b"~/")
+        || value.starts_with(b"./")
+        || value.starts_with(b"../")
+        || (value.len() >= 3
+            && value[0].is_ascii_alphabetic()
+            && value[1] == b':'
+            && matches!(value[2], b'/' | b'\\'))
+}
+
+fn is_path_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric()
+        || matches!(
+            byte,
+            b'/' | b'\\' | b'.' | b'-' | b'_' | b'~' | b':' | b'@' | b'+' | b'%' | b','
+        )
+}
+
+fn has_wordy_path_leaf(value: &[u8]) -> bool {
+    let mut end = value.len();
+    while end > 0 && matches!(value[end - 1], b'/' | b'\\') {
+        end -= 1;
+    }
+    let value = &value[..end];
+    let Some(mut leaf) = value
+        .rsplit(|&byte| matches!(byte, b'/' | b'\\'))
+        .find(|segment| !segment.is_empty())
+    else {
+        return false;
+    };
+
+    if let Some(extension_start) = leaf.iter().rposition(|&byte| byte == b'.') {
+        let extension = &leaf[extension_start + 1..];
+        if (1..=5).contains(&extension.len()) && extension.iter().all(u8::is_ascii_alphanumeric) {
+            leaf = &leaf[..extension_start];
+        }
+    }
+
+    let has_leaf_separator = leaf.iter().any(|&byte| matches!(byte, b'-' | b'_' | b'.'));
+    if !has_leaf_separator && leaf.len() >= MIN_ENTROPY_LENGTH {
+        return false;
+    }
+
+    leaf.split(|&byte| matches!(byte, b'-' | b'_' | b'.'))
+        .any(|part| part.len() >= 3 && part.iter().all(u8::is_ascii_alphabetic))
+}
+
 /// calculate entropy only over hex charset [0-9a-fA-F]
 /// returns None if the string contains non-hex characters
 #[allow(dead_code)]
@@ -188,5 +254,32 @@ mod tests {
     fn passes_entropy_check_above_threshold() {
         let data = b"aB3dEf7hIj1kLmN0pQrStUvWxYz";
         assert!(passes_entropy_check(data, 3.0));
+    }
+
+    #[test]
+    fn path_shape_contract() {
+        let task_path = b"/Users/example/work/rust/sekretbarilo/.claude/backlog/tasks/2026-09-08-redact-claude-masks-plain-absolute-files-9zVZK8LgjmLKdXZG.md";
+        let cases: &[(&[u8], bool)] = &[
+            (task_path, true),
+            (b"~/work/some-project/target/release/build-output.log", true),
+            (b"./a/b/config-file.toml", true),
+            (b"../x/y/data-2026.csv", true),
+            (br"C:\Users\example\some-tool\cache-index.db", true),
+            (br"C:\Users\example\some-tool\cache-index.db\", true),
+            (br"C:\\Users\\example\\some-tool\\cache-index.db", true),
+            (b"/Users/example/work/rust/sekretbarilo/.claude/backlog/tasks/2026-09-08-redact-claude-masks-plain-absolute-files-9zVZK8LgjmLKdXZG.md/", true),
+            (b"/opt/ABCDEFGHIJKLMNOPQRSTUVWXYZ", false),
+            (b"/x/ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmn", false),
+            (b"/data/ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef.md", false),
+            (b"/data/ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef/", false),
+            (b"abc/DEF+ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef", false),
+            (b"some/dir/ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef", false),
+            (b"https://user:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef@host.example/path", false),
+            (b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef", false),
+        ];
+
+        for &(value, expected) in cases {
+            assert_eq!(is_path_shaped(value), expected, "{value:?}");
+        }
     }
 }
