@@ -77,33 +77,19 @@ fn has_wordy_path_leaf(value: &[u8]) -> bool {
 
     while let Some(segment) = segments.next() {
         let is_leaf = segments.peek().is_none();
-        let mut segment = segment;
-        if is_leaf && let Some(extension_start) = segment.iter().rposition(|&byte| byte == b'.') {
-            let extension = &segment[extension_start + 1..];
-            if (1..=5).contains(&extension.len()) && extension.iter().all(u8::is_ascii_alphanumeric)
-            {
-                segment = &segment[..extension_start];
-            }
-        }
-
-        let has_segment_separator = segment
-            .iter()
-            .any(|&byte| matches!(byte, b'-' | b'_' | b'.'));
-        if is_leaf && !has_segment_separator && segment.len() >= MIN_ENTROPY_LENGTH {
+        // this documented heuristic is not proof a value is non-secret: any separator-free
+        // run of min_entropy_length bytes rejects the exemption; only leaf words may exempt it.
+        if segment
+            .split(|&byte| matches!(byte, b'-' | b'_' | b'.'))
+            .any(|part| part.len() >= MIN_ENTROPY_LENGTH)
+        {
             return false;
         }
 
-        let mut has_wordy_part = false;
-        for part in segment.split(|&byte| matches!(byte, b'-' | b'_' | b'.')) {
-            let is_wordy_part = part.len() >= 3 && part.iter().all(u8::is_ascii_alphabetic);
-            if part.len() >= MIN_ENTROPY_LENGTH && !is_wordy_part {
-                return false;
-            }
-            has_wordy_part |= is_wordy_part;
-        }
-
         if is_leaf {
-            return has_wordy_part;
+            return segment
+                .split(|&byte| matches!(byte, b'-' | b'_' | b'.'))
+                .any(|part| part.len() >= 3 && part.iter().all(u8::is_ascii_alphabetic));
         }
     }
 
@@ -291,6 +277,11 @@ mod tests {
             (b"/data/ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef/", false),
             (b"/mnt/secrets/aB3dEf7hIj1kLmN0pQrStUvWxYz5A/token.txt", false),
             (b"/tmp/cache/sess_aB3dEf7hIj1kLmN0pQrStUvWxYz5A6bC", false),
+            (b"/mnt/secrets/ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef/token.txt", false),
+            (b"/tmp/cache/sess-ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef", false),
+            (b"/data/ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef.tar.gz", false),
+            // "internationalization" is exactly min_entropy_length bytes; this is an accepted heuristic cost.
+            (b"/srv/internationalization/notes.txt", false),
             (b"abc/DEF+ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef", false),
             (b"some/dir/ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef", false),
             (b"https://user:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef@host.example/path", false),
