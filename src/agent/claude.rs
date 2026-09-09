@@ -237,12 +237,7 @@ pub(crate) fn sekretbarilo_hook_executable(command: &str) -> Option<PathBuf> {
 }
 
 fn parse_sekretbarilo_hook_command(command: &str) -> Option<ParsedHookCommand> {
-    let command = command.trim();
-    let (executable, args) = parse_hook_executable(command)?;
-    let executable = PathBuf::from(executable);
-    if !is_sekretbarilo_executable(&executable) {
-        return None;
-    }
+    let (executable, args) = sekretbarilo_command_parts(command)?;
 
     let (mode, current_args) = match args.trim_end() {
         "check-file --stdin-json" => (ClaudeHookMode::Block, true),
@@ -262,7 +257,22 @@ fn parse_sekretbarilo_hook_command(command: &str) -> Option<ParsedHookCommand> {
     })
 }
 
-fn parse_hook_executable(command: &str) -> Option<(String, &str)> {
+pub(crate) fn sekretbarilo_command_parts(command: &str) -> Option<(PathBuf, &str)> {
+    let command = command.trim();
+    let (executable, args) = parse_hook_executable(command)?;
+    let executable = PathBuf::from(executable);
+    is_sekretbarilo_executable(&executable).then_some((executable, args))
+}
+
+pub(crate) fn sekretbarilo_subcommand_executable(
+    command: &str,
+    subcommand: &str,
+) -> Option<PathBuf> {
+    let (executable, args) = sekretbarilo_command_parts(command)?;
+    (args.split_whitespace().next() == Some(subcommand)).then_some(executable)
+}
+
+pub(crate) fn parse_hook_executable(command: &str) -> Option<(String, &str)> {
     if let Some(quoted) = command.strip_prefix('\'') {
         let end = quoted.find('\'')?;
         let args = quoted.get(end + 1..)?;
@@ -293,7 +303,7 @@ fn parse_hook_executable(command: &str) -> Option<(String, &str)> {
     Some((executable.to_string(), args.trim_start()))
 }
 
-fn is_sekretbarilo_executable(executable: &Path) -> bool {
+pub(crate) fn is_sekretbarilo_executable(executable: &Path) -> bool {
     if executable == Path::new("sekretbarilo") {
         return true;
     }
@@ -308,26 +318,35 @@ fn is_sekretbarilo_executable(executable: &Path) -> bool {
 }
 
 fn command_for_running_binary(mode: ClaudeHookMode) -> String {
+    command_for_running_binary_with_args(mode.args(), mode.command())
+}
+
+pub(crate) fn command_for_running_binary_with_args(args: &str, bare_command: &str) -> String {
     match std::env::current_exe() {
-        Ok(path) => match command_for_binary_path(&path, mode) {
+        Ok(path) => match command_for_binary_path_with_args(&path, args) {
             Some(command) => command,
             None => {
                 eprintln!(
                     "[WARN] running sekretbarilo binary path is not valid UTF-8; installing a bare hook command"
                 );
-                mode.command().to_string()
+                bare_command.to_string()
             }
         },
         Err(error) => {
             eprintln!(
                 "[WARN] could not determine the running sekretbarilo binary; installing a bare hook command: {error}"
             );
-            mode.command().to_string()
+            bare_command.to_string()
         }
     }
 }
 
+#[cfg(test)]
 fn command_for_binary_path(path: &Path, mode: ClaudeHookMode) -> Option<String> {
+    command_for_binary_path_with_args(path, mode.args())
+}
+
+pub(crate) fn command_for_binary_path_with_args(path: &Path, args: &str) -> Option<String> {
     let path = path.to_str()?;
     let executable = if path
         .as_bytes()
@@ -347,7 +366,7 @@ fn command_for_binary_path(path: &Path, mode: ClaudeHookMode) -> Option<String> 
         quoted.push('"');
         quoted
     };
-    Some(format!("{executable} {}", mode.args()))
+    Some(format!("{executable} {args}"))
 }
 
 /// discover every owned handler without changing event-local positions.

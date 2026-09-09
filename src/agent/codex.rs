@@ -7,6 +7,7 @@ use std::process::{Command, Stdio};
 use serde_json::{Value, json};
 
 use super::apply_patch;
+use super::claude::command_for_running_binary_with_args;
 use super::hooks_json::{HookInstallResult, find_hook, write_config};
 use crate::audit::history::sanitize_display;
 use crate::config;
@@ -92,7 +93,8 @@ fn install_codex_hook_to_path(path: &Path) -> Result<HookInstallResult, String> 
         Err(error) => return Err(format!("failed to read {}: {error}", path.display())),
     };
 
-    let hook_match = find_hook(&config, CODEX_HOOK_MATCHER, CODEX_HOOK_COMMAND);
+    let command = codex_hook_command();
+    let hook_match = find_hook(&config, CODEX_HOOK_MATCHER, &command);
     if hook_match.exact_hook.is_some() {
         return Ok(HookInstallResult::AlreadyInstalled);
     }
@@ -147,10 +149,14 @@ fn install_codex_hook_to_path(path: &Path) -> Result<HookInstallResult, String> 
     Ok(HookInstallResult::Created)
 }
 
+fn codex_hook_command() -> String {
+    command_for_running_binary_with_args("check-codex --stdin-json", CODEX_HOOK_COMMAND)
+}
+
 fn codex_hook_handler() -> Value {
     json!({
         "type": "command",
-        "command": CODEX_HOOK_COMMAND,
+        "command": codex_hook_command(),
         "timeout": 10,
         "statusMessage": "Scanning tool input for secrets..."
     })
@@ -789,13 +795,30 @@ mod tests {
                         "matcher": CODEX_HOOK_MATCHER,
                         "hooks": [{
                             "type": "command",
-                            "command": CODEX_HOOK_COMMAND,
+                            "command": codex_hook_command(),
                             "timeout": 10,
                             "statusMessage": "Scanning tool input for secrets..."
                         }]
                     }]
                 }
             })
+        );
+    }
+
+    #[test]
+    fn codex_command_builder_quotes_a_path_with_spaces() {
+        let dir = tempfile::tempdir().unwrap();
+        let binary = dir.path().join("path with spaces").join("sekretbarilo");
+
+        let command = crate::agent::claude::command_for_binary_path_with_args(
+            &binary,
+            "check-codex --stdin-json",
+        )
+        .unwrap();
+
+        assert_eq!(
+            command,
+            format!("\"{}\" check-codex --stdin-json", binary.display())
         );
     }
 
@@ -902,7 +925,7 @@ mod tests {
         let handlers = groups[1]["hooks"].as_array().unwrap();
         assert_eq!(handlers.len(), 3);
         assert_eq!(handlers[0]["command"], "foreign-first");
-        assert_eq!(handlers[1]["command"], CODEX_HOOK_COMMAND);
+        assert_eq!(handlers[1]["command"], codex_hook_command());
         assert_eq!(handlers[1]["extra"], "preserved");
         assert_eq!(handlers[2]["command"], "foreign-last");
     }
@@ -937,7 +960,7 @@ mod tests {
 
         let config = read_hook_config(&path);
         let handler = &config["hooks"]["PreToolUse"][0]["hooks"][0];
-        assert_eq!(handler["command"], CODEX_HOOK_COMMAND);
+        assert_eq!(handler["command"], codex_hook_command());
         assert_eq!(handler["timeout"], 10);
         assert_eq!(
             handler["statusMessage"],

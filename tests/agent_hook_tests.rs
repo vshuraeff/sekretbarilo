@@ -5,7 +5,7 @@
 
 mod common;
 
-use common::IsolatedEnv;
+use common::{IsolatedEnv, bin};
 
 // -- check-file E2E tests --
 
@@ -373,6 +373,211 @@ fn e2e_install_agent_hook_claude_idempotent() {
         stderr.contains("already installed"),
         "second install should report already installed"
     );
+}
+
+// -- install agent-hook codex E2E tests --
+
+fn codex_hook_command() -> String {
+    format!("{} check-codex --stdin-json", bin())
+}
+
+fn codex_hooks_path(repo: &std::path::Path) -> std::path::PathBuf {
+    repo.join(".codex/hooks.json")
+}
+
+fn write_codex_hooks(repo: &std::path::Path, value: &serde_json::Value) {
+    let path = codex_hooks_path(repo);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(path, serde_json::to_vec_pretty(value).unwrap()).unwrap();
+}
+
+fn read_codex_hooks(repo: &std::path::Path) -> serde_json::Value {
+    serde_json::from_slice(&std::fs::read(codex_hooks_path(repo)).unwrap()).unwrap()
+}
+
+#[test]
+fn e2e_install_agent_hook_codex_pins_running_binary_path() {
+    let env = IsolatedEnv::new();
+    let repo = env.git_repo();
+
+    let output = env
+        .command()
+        .args(["install", "agent-hook", "codex"])
+        .current_dir(&repo)
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(0));
+
+    let hooks = read_codex_hooks(&repo);
+    let command = hooks["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
+        .as_str()
+        .unwrap();
+    assert!(std::path::Path::new(&bin()).is_absolute());
+    assert_eq!(command, codex_hook_command());
+    assert_ne!(command, "sekretbarilo check-codex --stdin-json");
+}
+
+#[test]
+fn e2e_install_agent_hook_codex_updates_bare_command_in_place() {
+    let env = IsolatedEnv::new();
+    let repo = env.git_repo();
+    write_codex_hooks(
+        &repo,
+        &serde_json::json!({"hooks": {"PreToolUse": [{
+            "matcher": "^(apply_patch|Bash)$",
+            "hooks": [{"type": "command", "command": "sekretbarilo check-codex --stdin-json"}]
+        }]}}),
+    );
+
+    let output = env
+        .command()
+        .args(["install", "agent-hook", "codex"])
+        .current_dir(&repo)
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(0), "{stderr}");
+    assert!(
+        stderr.contains("updated codex cli hook configuration"),
+        "{stderr}"
+    );
+
+    let hooks = read_codex_hooks(&repo);
+    let groups = hooks["hooks"]["PreToolUse"].as_array().unwrap();
+    assert_eq!(groups.len(), 1);
+    let handlers = groups[0]["hooks"].as_array().unwrap();
+    assert_eq!(handlers.len(), 1);
+    assert_eq!(handlers[0]["command"], codex_hook_command());
+}
+
+#[test]
+fn e2e_install_agent_hook_codex_updates_stale_absolute_path_in_place() {
+    let env = IsolatedEnv::new();
+    let repo = env.git_repo();
+    let stale = repo.join("stale/sekretbarilo");
+    write_codex_hooks(
+        &repo,
+        &serde_json::json!({"hooks": {"PreToolUse": [{
+            "matcher": "^(apply_patch|Bash)$",
+            "hooks": [{"type": "command", "command": format!("{} check-codex --stdin-json", stale.display())}]
+        }]}}),
+    );
+
+    let output = env
+        .command()
+        .args(["install", "agent-hook", "codex"])
+        .current_dir(&repo)
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(0), "{stderr}");
+    assert!(
+        stderr.contains("updated codex cli hook configuration"),
+        "{stderr}"
+    );
+
+    let hooks = read_codex_hooks(&repo);
+    let groups = hooks["hooks"]["PreToolUse"].as_array().unwrap();
+    assert_eq!(groups.len(), 1);
+    assert_eq!(groups[0]["hooks"].as_array().unwrap().len(), 1);
+    assert_eq!(groups[0]["hooks"][0]["command"], codex_hook_command());
+}
+
+#[test]
+fn e2e_install_agent_hook_codex_is_idempotent_without_rewriting() {
+    let env = IsolatedEnv::new();
+    let repo = env.git_repo();
+
+    let first = env
+        .command()
+        .args(["install", "agent-hook", "codex"])
+        .current_dir(&repo)
+        .output()
+        .unwrap();
+    assert_eq!(first.status.code(), Some(0));
+    let hooks_path = codex_hooks_path(&repo);
+    let before = std::fs::read(&hooks_path).unwrap();
+
+    let second = env
+        .command()
+        .args(["install", "agent-hook", "codex"])
+        .current_dir(&repo)
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&second.stderr);
+    assert_eq!(second.status.code(), Some(0), "{stderr}");
+    assert!(stderr.contains("already installed"), "{stderr}");
+    assert_eq!(std::fs::read(&hooks_path).unwrap(), before);
+}
+
+#[test]
+fn e2e_install_agent_hook_codex_preserves_other_sekretbarilo_subcommands() {
+    let env = IsolatedEnv::new();
+    let repo = env.git_repo();
+    write_codex_hooks(
+        &repo,
+        &serde_json::json!({"hooks": {"PreToolUse": [{
+            "matcher": "^(apply_patch|Bash)$",
+            "hooks": [{"type": "command", "command": "sekretbarilo check-file --stdin-json"}]
+        }]}}),
+    );
+
+    let output = env
+        .command()
+        .args(["install", "agent-hook", "codex"])
+        .current_dir(&repo)
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(0));
+
+    let hooks = read_codex_hooks(&repo);
+    let handlers = hooks["hooks"]["PreToolUse"][0]["hooks"].as_array().unwrap();
+    assert_eq!(handlers.len(), 2);
+    assert_eq!(
+        handlers[0]["command"],
+        "sekretbarilo check-file --stdin-json"
+    );
+    assert_eq!(handlers[1]["command"], codex_hook_command());
+}
+
+#[test]
+fn e2e_install_agent_hook_codex_preserves_stop_hook_across_reinstall() {
+    let env = IsolatedEnv::new();
+    let repo = env.git_repo();
+    let stop = serde_json::json!([{
+        "matcher": "*",
+        "hooks": [{"type": "command", "command": "codex-claude-notify", "timeout": 3}]
+    }]);
+    write_codex_hooks(
+        &repo,
+        &serde_json::json!({"hooks": {
+            "Stop": stop,
+            "PreToolUse": [{
+                "matcher": "^(apply_patch|Bash)$",
+                "hooks": [{"type": "command", "command": "sekretbarilo check-codex --stdin-json"}]
+            }]
+        }}),
+    );
+
+    let first = env
+        .command()
+        .args(["install", "agent-hook", "codex"])
+        .current_dir(&repo)
+        .output()
+        .unwrap();
+    assert_eq!(first.status.code(), Some(0));
+    let after_first = std::fs::read(codex_hooks_path(&repo)).unwrap();
+    assert_eq!(read_codex_hooks(&repo)["hooks"]["Stop"], stop);
+
+    let second = env
+        .command()
+        .args(["install", "agent-hook", "codex"])
+        .current_dir(&repo)
+        .output()
+        .unwrap();
+    assert_eq!(second.status.code(), Some(0));
+    assert_eq!(std::fs::read(codex_hooks_path(&repo)).unwrap(), after_first);
+    assert_eq!(read_codex_hooks(&repo)["hooks"]["Stop"], stop);
 }
 
 // -- install pre-commit E2E tests --

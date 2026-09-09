@@ -113,6 +113,20 @@ fn write_claude_settings(path: &std::path::Path, settings: &[u8]) {
     std::fs::write(path, settings).unwrap();
 }
 
+fn write_codex_hook(repo: &std::path::Path, command: &str) {
+    let path = repo.join(".codex/hooks.json");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(
+        path,
+        serde_json::to_vec(&serde_json::json!({"hooks": {"PreToolUse": [{
+            "matcher": "^(apply_patch|Bash)$",
+            "hooks": [{"type": "command", "command": command}]
+        }]}}))
+        .unwrap(),
+    )
+    .unwrap();
+}
+
 #[cfg(unix)]
 fn claude_hook_settings(command: String, mode: &str) -> Vec<u8> {
     let (event, matcher) = match mode {
@@ -323,6 +337,62 @@ fn e2e_doctor_outputs_codex_section() {
         stderr.contains("codex cli agent hook:"),
         "should have codex cli agent hook section, got:\n{}",
         stderr
+    );
+}
+
+#[test]
+fn e2e_doctor_recognises_bare_codex_hook_as_unverified() {
+    let dir = setup_git_repo();
+    write_codex_hook(dir.path(), "sekretbarilo check-codex --stdin-json");
+
+    let output = isolated_doctor_command(&dir).output().unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("[OK] local codex cli hook installed")
+            && !stderr.contains("local codex cli hook has outdated")
+            && stderr.contains(
+                "local hook command uses a bare binary name; Codex resolves it under its own PATH"
+            )
+            && stderr.contains("reinstall with sekretbarilo install agent-hook codex"),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn e2e_doctor_verifies_codex_hook_for_running_binary() {
+    let dir = setup_git_repo();
+    let command = format!("{} check-codex --stdin-json", bin());
+    write_codex_hook(dir.path(), &command);
+
+    let output = isolated_doctor_command(&dir).output().unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("[OK] local codex cli hook installed")
+            && stderr.contains(&format!(
+                "[OK] local hook binary {} matches the running sekretbarilo",
+                bin()
+            )),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn e2e_doctor_reports_stale_codex_hook_binary_path() {
+    let dir = setup_git_repo();
+    let stale = dir.path().join("stale/sekretbarilo");
+    write_codex_hook(
+        dir.path(),
+        &format!("{} check-codex --stdin-json", stale.display()),
+    );
+
+    let output = isolated_doctor_command(&dir).output().unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains(&format!(
+            "[ERROR] local hook binary {} not found (reinstall with sekretbarilo install agent-hook codex)",
+            stale.display()
+        )) && !stderr.contains("local codex cli hook has outdated"),
+        "{stderr}"
     );
 }
 
@@ -1021,7 +1091,9 @@ fn e2e_doctor_reports_global_block_local_override_redact_conflict() {
         &claude_redact_settings(),
     );
 
-    let output = doctor_command_with_claude(&dir, &["doctor"]).output().unwrap();
+    let output = doctor_command_with_claude(&dir, &["doctor"])
+        .output()
+        .unwrap();
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         stderr.contains("Claude redact hook in local override settings")
@@ -1264,7 +1336,7 @@ fn e2e_doctor_exit_0_when_all_installed() {
         )
     });
     assert!(
-        hooks_json.contains("sekretbarilo check-codex --stdin-json"),
+        hooks_json.contains(&format!("{} check-codex --stdin-json", bin())),
         "installed codex hooks.json should carry the sekretbarilo handler, got:\n{hooks_json}"
     );
 

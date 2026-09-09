@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
 use common::{IsolatedEnv, bin, fake_gitconfig, setup_git_repo};
-use sekretbarilo::agent::{CODEX_HOOK_COMMAND, CODEX_HOOK_MATCHER};
+use sekretbarilo::agent::CODEX_HOOK_MATCHER;
 use serde_json::{Value, json};
 
 const ALL_FIXTURES: &[&str] = &[
@@ -25,6 +25,10 @@ const ALL_FIXTURES: &[&str] = &[
     "non_pretooluse.json",
     "malformed.json",
 ];
+
+fn current_codex_hook_command() -> String {
+    format!("{} check-codex --stdin-json", bin())
+}
 
 fn fixture_bytes(name: &str) -> Vec<u8> {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -671,7 +675,7 @@ fn install_codex_hook_exact_shape_on_fresh_codex_home() {
                     "matcher": CODEX_HOOK_MATCHER,
                     "hooks": [{
                         "type": "command",
-                        "command": CODEX_HOOK_COMMAND,
+                        "command": current_codex_hook_command(),
                         "timeout": 10,
                         "statusMessage": "Scanning tool input for secrets..."
                     }]
@@ -741,7 +745,7 @@ fn install_codex_hook_updates_outdated_command_in_place() {
         .as_array()
         .expect("updated group hooks was not an array");
     assert_eq!(handlers.len(), 1);
-    assert_eq!(handlers[0]["command"], CODEX_HOOK_COMMAND);
+    assert_eq!(handlers[0]["command"], current_codex_hook_command());
 }
 
 #[test]
@@ -788,7 +792,7 @@ fn install_codex_hook_append_only_preserves_foreign_groups() {
         .as_array()
         .expect("new group hooks was not an array");
     assert_eq!(handlers.len(), 1);
-    assert_eq!(handlers[0]["command"], CODEX_HOOK_COMMAND);
+    assert_eq!(handlers[0]["command"], current_codex_hook_command());
 
     // Codex approval keys include group and handler indices, so only appending preserves foreign approvals.
 }
@@ -852,5 +856,8 @@ fn install_codex_hook_local_default_path_in_git_repo() {
     assert!(path.exists(), "local Codex hooks file was not created");
     let config = read_json(&path);
     let groups = pre_tool_use(&config);
-    assert_eq!(groups[0]["hooks"][0]["command"], CODEX_HOOK_COMMAND);
+    assert_eq!(
+        groups[0]["hooks"][0]["command"],
+        current_codex_hook_command()
+    );
 }

@@ -1,6 +1,8 @@
 use std::io::Write as IoWrite;
 use std::path::Path;
 
+use crate::agent::claude::sekretbarilo_subcommand_executable;
+
 /// result of hook installation
 #[derive(Debug, PartialEq)]
 pub enum HookInstallResult {
@@ -34,7 +36,9 @@ pub(crate) struct HookSearch {
 
 /// find a hook group and sekretbarilo handler without mutating the config.
 pub(crate) fn find_hook(root: &serde_json::Value, matcher: &str, command: &str) -> HookSearch {
-    find_hook_for_event(root, "PreToolUse", matcher, command)
+    find_hook_for_event_matching(root, "PreToolUse", matcher, command, |found_command| {
+        sekretbarilo_subcommand_executable(found_command, "check-codex").is_some()
+    })
 }
 
 /// preserve event-local indices used by codex's hook trust keys.
@@ -43,6 +47,18 @@ pub(crate) fn find_hook_for_event(
     event: &str,
     matcher: &str,
     command: &str,
+) -> HookSearch {
+    find_hook_for_event_matching(root, event, matcher, command, |found_command| {
+        found_command.contains("sekretbarilo")
+    })
+}
+
+fn find_hook_for_event_matching(
+    root: &serde_json::Value,
+    event: &str,
+    matcher: &str,
+    command: &str,
+    is_owned: impl Fn(&str) -> bool,
 ) -> HookSearch {
     let mut result = HookSearch {
         matching_group_index: None,
@@ -73,9 +89,7 @@ pub(crate) fn find_hook_for_event(
                     if found_command == command && result.exact_hook.is_none() {
                         result.exact_hook = Some((group_index, hook_index));
                     }
-                    if found_command.contains("sekretbarilo")
-                        && result.first_sekretbarilo_hook.is_none()
-                    {
+                    if is_owned(found_command) && result.first_sekretbarilo_hook.is_none() {
                         result.first_sekretbarilo_hook = Some((group_index, hook_index));
                     }
                 }
@@ -160,5 +174,23 @@ mod tests {
         assert_eq!(redact.matching_group_index, Some(0));
         assert_eq!(redact.exact_hook, Some((0, 0)));
         assert_eq!(config, original);
+    }
+
+    #[test]
+    fn codex_search_ignores_foreign_sekretbarilo_mentions_and_subcommands() {
+        let config = serde_json::json!({"hooks": {
+            "PreToolUse": [{
+                "matcher": "Bash",
+                "hooks": [
+                    {"command": "echo sekretbarilo check-codex --stdin-json"},
+                    {"command": "sekretbarilo check-file --stdin-json"},
+                    {"command": "sekretbarilo check-codex --stdin-json"}
+                ]
+            }]
+        }});
+
+        let result = find_hook(&config, "Bash", "sekretbarilo check-codex --stdin-json");
+        assert_eq!(result.first_sekretbarilo_hook, Some((0, 2)));
+        assert_eq!(result.exact_hook, Some((0, 2)));
     }
 }

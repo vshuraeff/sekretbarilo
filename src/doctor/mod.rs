@@ -6,8 +6,9 @@ use std::path::{Path, PathBuf};
 use crate::agent::HOOK_COMMAND;
 use crate::agent::claude::{
     ClaudeHookMode, claude_hook_state, claude_scope_conflicts, claude_settings_paths,
-    claude_settings_paths_with_explicit, ensure_redact_version, same_resolved_path,
-    sekretbarilo_hook_executable,
+    claude_settings_paths_with_explicit, command_for_binary_path_with_args, ensure_redact_version,
+    same_resolved_path, sekretbarilo_command_parts, sekretbarilo_hook_executable,
+    sekretbarilo_subcommand_executable,
 };
 use crate::agent::{
     CODEX_HOOK_COMMAND, CODEX_HOOK_MATCHER, find_hook, is_sekretbarilo_hook_command,
@@ -413,11 +414,23 @@ fn check_claude_hook_binary(
         ))];
     }
     if let Err(error) = std::fs::symlink_metadata(&executable) {
-        return vec![hook_binary_metadata_error(scope, &executable, error)];
+        return vec![hook_binary_metadata_error(
+            scope,
+            &executable,
+            error,
+            "claude",
+        )];
     }
     let metadata = match std::fs::metadata(&executable) {
         Ok(metadata) => metadata,
-        Err(error) => return vec![hook_binary_metadata_error(scope, &executable, error)],
+        Err(error) => {
+            return vec![hook_binary_metadata_error(
+                scope,
+                &executable,
+                error,
+                "claude",
+            )];
+        }
     };
     if !metadata.file_type().is_file() {
         return vec![CheckResult::error(format!(
@@ -447,11 +460,12 @@ fn hook_binary_metadata_error(
     scope: &str,
     executable: &Path,
     error: std::io::Error,
+    agent: &str,
 ) -> CheckResult {
     if error.kind() == std::io::ErrorKind::NotFound {
         CheckResult::error(format!(
-            "{scope} hook binary {} not found (reinstall with sekretbarilo install agent-hook claude)",
-            executable.display()
+            "{scope} hook binary {} not found (reinstall with sekretbarilo install agent-hook {agent})",
+            executable.display(),
         ))
     } else {
         CheckResult::error(format!(
@@ -641,18 +655,30 @@ fn check_codex_hook_at(
         return results;
     }
 
+    let current_exe = std::env::current_exe().ok();
+    let absolute_command = current_exe
+        .as_deref()
+        .and_then(|path| command_for_binary_path_with_args(path, "check-codex --stdin-json"));
+    let absolute_hook_search = absolute_command
+        .as_deref()
+        .map(|command| find_hook(&parsed, CODEX_HOOK_MATCHER, command));
     let hook_search = find_hook(&parsed, CODEX_HOOK_MATCHER, CODEX_HOOK_COMMAND);
     if let Some((group_index, hook_index)) = hook_search.first_sekretbarilo_hook {
-        let command = parsed["hooks"]["PreToolUse"][group_index]["hooks"][hook_index]["command"]
-            .as_str()
-            .unwrap_or("<unreadable command>");
-        if let Some((exact_group_index, exact_hook_index)) = hook_search.exact_hook {
+        let current_hook = absolute_hook_search
+            .and_then(|search| search.exact_hook)
+            .or(hook_search.exact_hook)
+            .or_else(|| find_current_codex_hook(&parsed));
+        if let Some((current_group_index, current_hook_index)) = current_hook {
+            let command = parsed["hooks"]["PreToolUse"][current_group_index]["hooks"]
+                [current_hook_index]["command"]
+                .as_str()
+                .unwrap_or("<unreadable command>");
             results.push(CheckResult::ok(format!(
                 "{} codex cli hook installed ({})",
                 scope,
                 hooks_json_path.display()
             )));
-            if (exact_group_index, exact_hook_index) != (group_index, hook_index) {
+            if (current_group_index, current_hook_index) != (group_index, hook_index) {
                 results.push(CheckResult::warn(format!(
                     "{} codex cli hook: a stale sekretbarilo handler also exists at group {}, handler {}; remove it by hand from {}",
                     scope,
@@ -665,14 +691,28 @@ fn check_codex_hook_at(
                 hooks_json_path,
                 config_toml_path,
                 scope,
-                exact_group_index,
-                exact_hook_index,
+                current_group_index,
+                current_hook_index,
+            ));
+            results.extend(check_codex_hook_binary(
+                command,
+                scope,
+                current_exe.as_deref(),
             ));
         } else {
+            let command =
+                parsed["hooks"]["PreToolUse"][group_index]["hooks"][hook_index]["command"]
+                    .as_str()
+                    .unwrap_or("<unreadable command>");
             results.push(CheckResult::warn(format!(
                 "{} codex cli hook has outdated sekretbarilo command: {}; re-running the installer will update it",
                 scope, command
             )));
+            results.extend(check_codex_hook_binary(
+                command,
+                scope,
+                current_exe.as_deref(),
+            ));
         }
     } else {
         results.push(CheckResult::not_installed(format!(
@@ -683,6 +723,88 @@ fn check_codex_hook_at(
 
     append_codex_unrecognised_key_warning(&mut results, scope, has_unrecognised_top_level_key);
     results
+}
+
+fn find_current_codex_hook(root: &serde_json::Value) -> Option<(usize, usize)> {
+    let entries = root
+        .get("hooks")
+        .and_then(|hooks| hooks.get("PreToolUse"))
+        .and_then(serde_json::Value::as_array)?;
+    for (group_index, group) in entries.iter().enumerate() {
+        if group.get("matcher").and_then(serde_json::Value::as_str) != Some(CODEX_HOOK_MATCHER) {
+            continue;
+        }
+        let Some(handlers) = group.get("hooks").and_then(serde_json::Value::as_array) else {
+            continue;
+        };
+        for (hook_index, handler) in handlers.iter().enumerate() {
+            let Some(command) = handler.get("command").and_then(serde_json::Value::as_str) else {
+                continue;
+            };
+            if sekretbarilo_command_parts(command)
+                .is_some_and(|(_, args)| args.trim_end() == "check-codex --stdin-json")
+            {
+                return Some((group_index, hook_index));
+            }
+        }
+    }
+    None
+}
+
+fn check_codex_hook_binary(
+    command: &str,
+    scope: &str,
+    current_exe: Option<&Path>,
+) -> Vec<CheckResult> {
+    let Some(executable) = sekretbarilo_subcommand_executable(command, "check-codex") else {
+        return Vec::new();
+    };
+    if !executable.is_absolute() {
+        return vec![CheckResult::warn(format!(
+            "{scope} hook command uses a bare binary name; Codex resolves it under its own PATH, reinstall with sekretbarilo install agent-hook codex to pin the absolute path"
+        ))];
+    }
+    if let Err(error) = std::fs::symlink_metadata(&executable) {
+        return vec![hook_binary_metadata_error(
+            scope,
+            &executable,
+            error,
+            "codex",
+        )];
+    }
+    let metadata = match std::fs::metadata(&executable) {
+        Ok(metadata) => metadata,
+        Err(error) => {
+            return vec![hook_binary_metadata_error(
+                scope,
+                &executable,
+                error,
+                "codex",
+            )];
+        }
+    };
+    if !metadata.file_type().is_file() {
+        return vec![CheckResult::error(format!(
+            "{scope} hook binary {} is not a regular file",
+            executable.display()
+        ))];
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if metadata.permissions().mode() & 0o111 == 0 {
+            return vec![CheckResult::error(format!(
+                "{scope} hook binary {} is not executable",
+                executable.display()
+            ))];
+        }
+    }
+
+    vec![classify_hook_binary_identity(
+        scope,
+        &executable,
+        current_exe.map(Path::to_path_buf),
+    )]
 }
 
 fn append_codex_unrecognised_key_warning(
@@ -1287,6 +1409,7 @@ mod tests {
             "test",
             Path::new("sekretbarilo"),
             std::io::Error::from(std::io::ErrorKind::PermissionDenied),
+            "claude",
         );
         assert_eq!(denied.status, Status::Error);
         assert!(denied.message.contains("permission denied"));
@@ -1640,12 +1763,13 @@ mod tests {
 
         let results = check_codex_hook_at(&hooks_json_path, &config_toml_path, "test");
 
-        assert_eq!(results.len(), 2);
+        assert_eq!(results.len(), 3);
         assert_eq!(results[0].status, Status::Ok);
         assert_eq!(results[1].status, Status::Warn);
         assert!(results[1].message.contains("approval entry not found"));
         assert!(!results[1].message.contains("will run"));
         assert!(!results[1].message.contains("is trusted"));
+        assert!(results[2].message.contains("bare binary name"));
     }
 
     #[test]
@@ -1665,10 +1789,11 @@ mod tests {
 
         let results = check_codex_hook_at(&hooks_json_path, &config_toml_path, "test");
 
-        assert_eq!(results.len(), 2);
+        assert_eq!(results.len(), 3);
         assert_eq!(results[0].status, Status::Ok);
         assert_eq!(results[1].status, Status::Warn);
         assert!(results[1].message.contains("explicitly disabled"));
+        assert!(results[2].message.contains("bare binary name"));
     }
 
     #[test]
@@ -1688,13 +1813,14 @@ mod tests {
 
         let results = check_codex_hook_at(&hooks_json_path, &config_toml_path, "test");
 
-        assert_eq!(results.len(), 2);
+        assert_eq!(results.len(), 3);
         assert_eq!(results[0].status, Status::Ok);
         assert_eq!(results[1].status, Status::Ok);
         assert!(results[1].message.contains("approval entry found"));
         assert!(results[1].message.contains("(group 0, handler 0)"));
         assert!(results[1].message.contains("not proof the hook runs"));
         assert!(!results[1].message.contains("will run"));
+        assert!(results[2].message.contains("bare binary name"));
     }
 
     #[test]
@@ -1736,7 +1862,7 @@ mod tests {
 
         let results = check_codex_hook_at(&hooks_json_path, &config_toml_path, "test");
 
-        assert_eq!(results.len(), 2);
+        assert_eq!(results.len(), 3);
         assert_eq!(results[0].status, Status::Ok);
         assert_eq!(results[1].status, Status::Warn);
         assert!(
@@ -1750,6 +1876,7 @@ mod tests {
                 .contains("codex silently skips unapproved hooks")
         );
         assert!(results[1].message.contains("indices may have shifted"));
+        assert!(results[2].message.contains("bare binary name"));
     }
 
     #[test]
@@ -1771,11 +1898,12 @@ mod tests {
 
         let results = check_codex_hook_at(&hooks_json_path, &config_toml_path, "test");
 
-        assert_eq!(results.len(), 2);
+        assert_eq!(results.len(), 3);
         assert_eq!(results[0].status, Status::Ok);
         assert_eq!(results[1].status, Status::Warn);
         assert!(results[1].message.contains("approval entry not found"));
         assert!(!results[1].message.contains("not for this hook's position"));
+        assert!(results[2].message.contains("bare binary name"));
     }
 
     #[test]
@@ -1797,11 +1925,12 @@ mod tests {
 
         let results = check_codex_hook_at(&hooks_json_path, &config_toml_path, "test");
 
-        assert_eq!(results.len(), 2);
+        assert_eq!(results.len(), 3);
         assert_eq!(results[0].status, Status::Ok);
         assert_eq!(results[1].status, Status::Warn);
         assert!(results[1].message.contains("approval entry not found"));
         assert!(!results[1].message.contains("not for this hook's position"));
+        assert!(results[2].message.contains("bare binary name"));
     }
 
     #[test]
@@ -1843,10 +1972,11 @@ mod tests {
 
         let results = check_codex_hook_at(&hooks_json_path, &config_toml_path, "test");
 
-        assert_eq!(results.len(), 2);
+        assert_eq!(results.len(), 3);
         assert_eq!(results[0].status, Status::Ok);
         assert_eq!(results[1].status, Status::Ok);
         assert!(results[1].message.contains("(group 1, handler 0)"));
+        assert!(results[2].message.contains("bare binary name"));
     }
 
     #[test]
@@ -1866,10 +1996,11 @@ mod tests {
 
         let results = check_codex_hook_at(&hooks_json_path, &config_toml_path, "test");
 
-        assert_eq!(results.len(), 2);
+        assert_eq!(results.len(), 3);
         assert_eq!(results[0].status, Status::Ok);
         assert_eq!(results[1].status, Status::Ok);
         assert!(results[1].message.contains("approval entry found"));
+        assert!(results[2].message.contains("bare binary name"));
     }
 
     #[test]
@@ -1912,7 +2043,7 @@ mod tests {
 
         let results = check_codex_hook_at(&hooks_json_path, &config_toml_path, "test");
 
-        assert_eq!(results.len(), 3);
+        assert_eq!(results.len(), 4);
         assert_eq!(results[0].status, Status::Ok);
         assert_eq!(results[1].status, Status::Warn);
         assert!(
@@ -1922,6 +2053,7 @@ mod tests {
         );
         assert_eq!(results[2].status, Status::Ok);
         assert!(results[2].message.contains("(group 0, handler 1)"));
+        assert!(results[3].message.contains("bare binary name"));
         assert!(
             !results
                 .iter()
@@ -1942,7 +2074,7 @@ mod tests {
 
         let results = check_codex_hook_at(&hooks_json_path, &config_toml_path, "test");
 
-        assert_eq!(results.len(), 1);
+        assert_eq!(results.len(), 2);
         assert_eq!(results[0].status, Status::Warn);
         assert!(results[0].message.contains("outdated"));
         assert!(
@@ -1950,6 +2082,7 @@ mod tests {
                 .message
                 .contains("re-running the installer will update it")
         );
+        assert!(results[1].message.contains("bare binary name"));
     }
 
     #[test]
