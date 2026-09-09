@@ -303,6 +303,9 @@ fn check_claude_hook_at(
                 config_path.display()
             ))];
         }
+        if scope == "local override" {
+            return Vec::new();
+        }
         return vec![CheckResult::not_installed(format!(
             "{} claude code hook not found",
             scope
@@ -354,6 +357,9 @@ fn check_claude_hook_at(
             } else {
                 "sekretbarilo hook not found in PreToolUse or PostToolUse"
             };
+            if scope == "local override" {
+                return Vec::new();
+            }
             return vec![CheckResult::not_installed(format!(
                 "{scope} claude code settings exists but has {reason}"
             ))];

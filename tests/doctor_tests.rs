@@ -934,6 +934,102 @@ fn e2e_doctor_detects_settings_without_hook() {
     );
 }
 
+#[test]
+fn e2e_doctor_ignores_absent_local_override_without_hooks() {
+    let dir = setup_git_repo();
+    write_claude_settings(
+        &dir.path().join(".claude/settings.json"),
+        &claude_block_settings(),
+    );
+    write_claude_settings(
+        &dir.path().join("home/.claude/settings.json"),
+        &claude_block_settings(),
+    );
+
+    let output = isolated_doctor_command(&dir).output().unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("[NOT INSTALLED] local override"),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn e2e_doctor_ignores_local_override_with_unrelated_content() {
+    let dir = setup_git_repo();
+    write_claude_settings(
+        &dir.path().join(".claude/settings.local.json"),
+        br#"{"otherKey":"value"}"#,
+    );
+
+    let output = isolated_doctor_command(&dir).output().unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("[NOT INSTALLED] local override"),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn e2e_doctor_ignores_local_override_with_unrelated_hooks() {
+    let dir = setup_git_repo();
+    let settings = serde_json::to_vec(&serde_json::json!({
+        "hooks": {
+            "Stop": [{
+                "matcher": "*",
+                "hooks": [{"type": "command", "command": "echo unrelated"}]
+            }]
+        }
+    }))
+    .unwrap();
+    write_claude_settings(&dir.path().join(".claude/settings.local.json"), &settings);
+
+    let output = isolated_doctor_command(&dir).output().unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("[NOT INSTALLED] local override"),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn e2e_doctor_reports_malformed_local_override() {
+    let dir = setup_git_repo();
+    let local_override = dir.path().join(".claude/settings.local.json");
+    write_claude_settings(&local_override, b"not json{{{");
+
+    let output = isolated_doctor_command(&dir).output().unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("[ERROR]")
+            && stderr.contains("malformed JSON")
+            && stderr.contains(&local_override.display().to_string()),
+        "{stderr}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn e2e_doctor_reports_global_block_local_override_redact_conflict() {
+    let dir = setup_git_repo();
+    write_claude_settings(
+        &dir.path().join("home/.claude/settings.json"),
+        &claude_block_settings(),
+    );
+    write_claude_settings(
+        &dir.path().join(".claude/settings.local.json"),
+        &claude_redact_settings(),
+    );
+
+    let output = doctor_command_with_claude(&dir, &["doctor"]).output().unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("Claude redact hook in local override settings")
+            && stderr.contains("blocking Read hook in global settings"),
+        "{stderr}"
+    );
+}
+
 #[cfg(unix)]
 #[test]
 fn e2e_doctor_inspects_explicit_redact_settings_without_writing() {
