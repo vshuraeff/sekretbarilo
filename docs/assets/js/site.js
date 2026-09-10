@@ -66,6 +66,9 @@
   function closeDrawer(event) {
     if (event) event.preventDefault();
     if (!sidebar.classList.contains('is-open')) return;
+    if (sidebar.matches(':target')) {
+      history.replaceState(null, '', location.pathname + location.search);
+    }
     sidebar.classList.remove('is-open');
     if (scrim) scrim.hidden = true;
     document.removeEventListener('keydown', trapFocus);
@@ -82,11 +85,19 @@
     // leaves it open with a trap installed unless it is closed here.
     if (desktop.addEventListener) {
       desktop.addEventListener('change', function (e) {
-        if (e.matches) closeDrawer();
+        if (e.matches) {
+          closeDrawer();
+        } else {
+          syncTarget();
+        }
       });
     } else if (desktop.addListener) {
       desktop.addListener(function (e) {
-        if (e.matches) closeDrawer();
+        if (e.matches) {
+          closeDrawer();
+        } else {
+          syncTarget();
+        }
       });
     }
 
