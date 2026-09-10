@@ -14,6 +14,12 @@ url: "https://vshuraeff.github.io"
 # plugins
 plugins:
   - jekyll-seo-tag
+  - jekyll-sitemap
+
+# sass settings
+sass:
+  sass_dir: _sass
+  style: compressed
 
 # kramdown settings
 kramdown:
@@ -35,6 +41,10 @@ defaults:
       path: ""
     values:
       layout: default
+  - scope:
+      path: ""
+    values:
+      image: /assets/img/social-card.png
 
 # exclude from build
 exclude:

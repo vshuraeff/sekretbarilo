@@ -1,0 +1,54 @@
+{%- comment -%}
+grouped diataxis navigation plus a trailing "More" group for legacy site.navigation
+entries that no group claims. urls are normalised by dropping the trailing slash.
+{%- endcomment -%}
+{%- assign here = page.url | split: "/" | join: "/" -%}
+{%- assign claimed = "" -%}
+{%- for g in site.data.navigation.groups -%}
+  {%- for p in g.pages -%}
+    {%- assign pn = p.url | split: "/" | join: "/" -%}
+    {%- assign claimed = claimed | append: "|" | append: pn -%}
+  {%- endfor -%}
+{%- endfor -%}
+{%- assign claimed = claimed | append: "|" -%}
+
+<ul class="nav-groups">
+{%- for g in site.data.navigation.groups %}
+  <li class="nav-group">
+    <p class="nav-group-title">{{ g.title }}</p>
+    <p class="nav-group-gloss">{{ g.gloss }}</p>
+    <ul class="nav-list">
+    {%- for p in g.pages %}
+      {%- assign pn = p.url | split: "/" | join: "/" %}
+      <li class="nav-item">
+        <a class="nav-link{% if pn == here %} is-active{% endif %}" href="{{ p.url | relative_url }}"{% if pn == here %} aria-current="page"{% endif %}>{{ p.title }}</a>
+      </li>
+    {%- endfor %}
+    </ul>
+  </li>
+{%- endfor %}
+{%- assign orphans = "" -%}
+{%- for item in site.navigation -%}
+  {%- assign on = item.url | split: "/" | join: "/" -%}
+  {%- if on != "" -%}
+    {%- assign probe = "|" | append: on | append: "|" -%}
+    {%- unless claimed contains probe -%}
+      {%- assign orphans = orphans | append: on | append: "\t" | append: item.title | append: "\n" -%}
+    {%- endunless -%}
+  {%- endif -%}
+{%- endfor -%}
+{%- assign orphan_lines = orphans | strip | split: "\n" -%}
+{%- if orphan_lines.size > 0 and orphans != "" %}
+  <li class="nav-group">
+    <p class="nav-group-title">More</p>
+    <ul class="nav-list">
+    {%- for line in orphan_lines %}
+      {%- assign parts = line | split: "\t" %}
+      <li class="nav-item">
+        <a class="nav-link{% if parts[0] == here %} is-active{% endif %}" href="{{ parts[0] | append: '/' | relative_url }}"{% if parts[0] == here %} aria-current="page"{% endif %}>{{ parts[1] }}</a>
+      </li>
+    {%- endfor %}
+    </ul>
+  </li>
+{%- endif %}
+</ul>

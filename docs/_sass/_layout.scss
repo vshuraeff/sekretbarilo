@@ -1,0 +1,176 @@
+// mobile first: the sidebar is an off-canvas drawer, reachable without
+// javascript through :target, and enhanced by a class toggle when js runs.
+
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  gap: $s3;
+  height: 52px;
+  padding: 0 20px;
+  background: var(--bg);
+  border-bottom: 1px solid var(--hairline);
+}
+
+.topbar-title {
+  font-family: $mono;
+  font-size: 14px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  color: var(--text);
+  text-decoration: none;
+}
+
+.drawer-open {
+  display: inline-block;
+  padding: $s1 $s2;
+  border: 1px solid var(--hairline);
+  border-radius: 4px;
+  font-family: $mono;
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+  text-decoration: none;
+}
+
+.drawer-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 35;
+  background: rgba(14, 17, 22, 0.44);
+}
+
+.drawer-scrim[hidden] {
+  display: none;
+}
+
+.sidebar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  z-index: 40;
+  width: $sidebar-w;
+  max-width: 86vw;
+  overflow-y: auto;
+  background: var(--surface);
+  border-right: 1px solid var(--hairline);
+  transform: translateX(-102%);
+  visibility: hidden;
+  transition: transform 150ms ease, visibility 0s linear 150ms;
+}
+
+html:not(.drawer-ready) .sidebar:target,
+.sidebar.is-open {
+  transform: translateX(0);
+  visibility: visible;
+  transition: transform 150ms ease, visibility 0s;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.24);
+}
+
+.sidebar-inner {
+  display: flex;
+  flex-direction: column;
+  min-height: 100%;
+  padding: $s5 20px $s6;
+}
+
+.shell {
+  display: block;
+  padding: 0 20px;
+}
+
+.content {
+  max-width: $content-w;
+  padding: $s6 0 $s8;
+}
+
+.rail {
+  display: none;
+}
+
+@media (min-width: 900px) {
+  .topbar,
+  .drawer-open,
+  .drawer-close,
+  .drawer-scrim {
+    display: none;
+  }
+
+  .sidebar {
+    transform: none;
+    visibility: visible;
+    box-shadow: none;
+  }
+
+  html:not(.drawer-ready) .sidebar:target,
+  .sidebar.is-open {
+    box-shadow: none;
+  }
+
+  .sidebar-inner {
+    padding: $s6 $s5 $s6 $s6;
+  }
+
+  .shell {
+    display: flex;
+    gap: $s6;
+    margin-left: $sidebar-w;
+    padding: 0 $s6;
+  }
+
+  .content {
+    flex: 1 1 auto;
+    min-width: 0;
+    padding: $s7 0 $s9;
+  }
+}
+
+@media (min-width: 1280px) {
+  .rail {
+    display: block;
+    flex: 0 0 $rail-w;
+    width: $rail-w;
+    align-self: flex-start;
+    position: sticky;
+    top: $s7;
+    max-height: 80vh;
+    overflow-y: auto;
+    padding: $s7 0 $s5;
+  }
+}
+
+.page-header {
+  padding-bottom: $s5;
+  border-bottom: 1px solid var(--hairline);
+  margin-bottom: $s6;
+}
+
+.page-title {
+  margin: $s3 0 0;
+  font-size: 36px;
+  line-height: 1.15;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.page-description {
+  margin: $s3 0 0;
+  color: var(--muted);
+}
+
+.page-footer {
+  margin-top: $s8;
+  padding-top: $s5;
+  border-top: 1px solid var(--hairline);
+}
+
+.footer-meta {
+  margin: 0 0 $s2;
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--muted);
+}

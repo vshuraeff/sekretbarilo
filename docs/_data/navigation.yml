@@ -1,0 +1,51 @@
+groups:
+  - id: tutorials
+    title: Tutorials
+    gloss: Learn by doing
+    eyebrow: Tutorial
+    pages:
+      - title: Getting started
+        url: /getting-started/
+      - title: Redact secrets in Claude Code tool output
+        url: /protect-an-ai-agent/
+  - id: how-to
+    title: How-to guides
+    gloss: Complete a task
+    eyebrow: How-to guide
+    pages:
+      - title: Installation
+        url: /installation/
+      - title: Allowlist a confirmed false positive
+        url: /allowlist-a-false-positive/
+      - title: Audit Git history for secrets
+        url: /audit-git-history/
+      - title: Testing False Positives
+        url: /testing-false-positives/
+      - title: Examples
+        url: /examples/
+  - id: reference
+    title: Reference
+    gloss: Look up details
+    eyebrow: Reference
+    pages:
+      - title: CLI reference
+        url: /cli-reference/
+      - title: Configuration
+        url: /configuration/
+      - title: Rules reference
+        url: /rules-reference/
+      - title: Agent hooks
+        url: /agent-hooks/
+      - title: Troubleshooting reference
+        url: /troubleshooting/
+  - id: explanation
+    title: Explanation
+    gloss: Understand the design
+    eyebrow: Explanation
+    pages:
+      - title: How secret detection works
+        url: /how-detection-works/
+      - title: Architecture
+        url: /architecture/
+      - title: Performance
+        url: /performance/

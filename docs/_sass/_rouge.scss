@@ -1,0 +1,159 @@
+// rouge token colours. class list taken from `rougify style base16.dark`,
+// colours replaced with a palette tuned for --code-bg (#0E1116) in both themes.
+
+$r-fg: #E6E8EB;
+$r-comment: #7C8794;
+$r-keyword: #B48EAD;
+$r-string: #A3BE8C;
+$r-number: #D08770;
+$r-name: #EBCB8B;
+$r-func: #88C0D0;
+$r-punct: #C7CDD6;
+$r-regex: #8FBCBB;
+$r-add: #3DD68C;
+$r-del: #F26D6D;
+
+.highlight,
+.highlight .w {
+  color: $r-fg;
+  background-color: transparent;
+}
+
+.highlight .err {
+  color: $r-del;
+  background-color: rgba(242, 109, 109, 0.14);
+}
+
+.highlight .c,
+.highlight .ch,
+.highlight .cd,
+.highlight .cm,
+.highlight .cpf,
+.highlight .c1,
+.highlight .cs {
+  color: $r-comment;
+  font-style: italic;
+}
+
+.highlight .cp {
+  color: $r-name;
+}
+
+.highlight .o,
+.highlight .ow {
+  color: $r-punct;
+}
+
+.highlight .p,
+.highlight .pi {
+  color: $r-punct;
+}
+
+.highlight .gi {
+  color: $r-add;
+}
+
+.highlight .gd {
+  color: $r-del;
+}
+
+.highlight .gh {
+  color: $r-func;
+  font-weight: 600;
+}
+
+.highlight .gu {
+  color: $r-comment;
+}
+
+.highlight .ge {
+  font-style: italic;
+}
+
+.highlight .gs {
+  font-weight: 600;
+}
+
+.highlight .k,
+.highlight .kn,
+.highlight .kp,
+.highlight .kr,
+.highlight .kv {
+  color: $r-keyword;
+}
+
+.highlight .kc,
+.highlight .kt,
+.highlight .kd {
+  color: $r-number;
+}
+
+.highlight .s,
+.highlight .sb,
+.highlight .sc,
+.highlight .dl,
+.highlight .sd,
+.highlight .s2,
+.highlight .sh,
+.highlight .sx,
+.highlight .s1 {
+  color: $r-string;
+}
+
+.highlight .sa {
+  color: $r-keyword;
+}
+
+.highlight .sr,
+.highlight .ss {
+  color: $r-regex;
+}
+
+.highlight .si,
+.highlight .se {
+  color: $r-number;
+}
+
+.highlight .nn,
+.highlight .nc,
+.highlight .no,
+.highlight .nt {
+  color: $r-name;
+}
+
+.highlight .nf,
+.highlight .fm,
+.highlight .nb,
+.highlight .bp {
+  color: $r-func;
+}
+
+.highlight .na {
+  color: $r-func;
+}
+
+.highlight .nv,
+.highlight .vc,
+.highlight .vg,
+.highlight .vi {
+  color: $r-fg;
+}
+
+.highlight .nd,
+.highlight .ni,
+.highlight .ne,
+.highlight .nl,
+.highlight .py {
+  color: $r-name;
+}
+
+.highlight .m,
+.highlight .mb,
+.highlight .mf,
+.highlight .mh,
+.highlight .mi,
+.highlight .il,
+.highlight .mo,
+.highlight .mx {
+  color: $r-number;
+}

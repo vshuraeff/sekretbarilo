@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 186 32" width="186" height="32" role="img" aria-label="sekretbarilo">
+  <g fill="#E6E8EB">
+    <rect x="2" y="4" width="4" height="24"/>
+    <rect x="26" y="4" width="4" height="24"/>
+  </g>
+  <g fill="#3DD68C">
+    <rect x="8" y="8" width="6" height="16" rx="1.5"/>
+    <rect x="18" y="8" width="6" height="16" rx="1.5"/>
+  </g>
+  <text x="42" y="22.5" fill="#E6E8EB" font-family="'IBM Plex Sans', -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="20" font-weight="600" letter-spacing="-0.2">sekretbarilo</text>
+</svg>

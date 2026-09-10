@@ -1,0 +1,22 @@
+<nav class="sidebar" id="sidebar" aria-label="Documentation">
+  <div class="sidebar-inner">
+    <div class="sidebar-head">
+      <a class="wordmark" href="{{ '/' | relative_url }}">
+        <img class="wordmark-img wordmark-light" src="{{ '/assets/img/logo.svg' | relative_url }}" alt="{{ site.title }}" onerror="this.remove()">
+        <img class="wordmark-img wordmark-dark" src="{{ '/assets/img/logo-dark.svg' | relative_url }}" alt="{{ site.title }}" onerror="this.remove()">
+        <span class="wordmark-text">{{ site.title }}</span>
+      </a>
+      <a class="drawer-close" href="#" aria-label="Close menu">Close</a>
+    </div>
+
+    {% include nav.html %}
+
+    <div class="sidebar-foot">
+      <button class="theme-toggle" id="themeToggle" type="button" aria-label="Switch colour theme">
+        <span class="theme-toggle-label" data-theme-light>Dark theme</span>
+        <span class="theme-toggle-label" data-theme-dark>Light theme</span>
+      </button>
+      <a class="sidebar-repo" href="https://github.com/{{ site.repository }}" rel="noopener">View on GitHub</a>
+    </div>
+  </div>
+</nav>
