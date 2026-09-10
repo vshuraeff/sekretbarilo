@@ -63,7 +63,7 @@
   transition: transform 150ms ease, visibility 0s linear 150ms;
 }
 
-.sidebar:target,
+html:not(.drawer-ready) .sidebar:target,
 .sidebar.is-open {
   transform: translateX(0);
   visibility: visible;
@@ -106,7 +106,7 @@
     box-shadow: none;
   }
 
-  .sidebar:target,
+  html:not(.drawer-ready) .sidebar:target,
   .sidebar.is-open {
     box-shadow: none;
   }

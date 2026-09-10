@@ -62,7 +62,7 @@ Two parts of it move in the other direction. Quoted call-argument bodies are col
   file: Cargo.toml
   line: 37
   rule: exempt:syntax
-  match: 4a****************7f
+  match: [p******************b]
 ```
 
 A trace line marks a successful suppression only: it is emitted when a step's predicate matches and the value is dropped right there. Its absence proves nothing about whether a step was reached — it only means no step suppressed the value, and that includes a value dropped before the traced layer runs at all, such as by the unconditional path-shape check the **path** step's own note above describes. While the flag is on, those pseudo-findings count towards the exit code, so a before-and-after comparison is measured without it.
