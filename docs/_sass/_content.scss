@@ -71,9 +71,16 @@
 }
 
 // tables
+// kramdown never wraps tables in a scroll container, so each table has to
+// scroll on its own: display: block turns it into a block-level box that
+// max-width/overflow-x can clip and scroll, while width: auto (not 100%)
+// keeps a narrow table from stretching to fill the article.
 .prose table {
-  width: 100%;
+  display: block;
+  width: auto;
+  max-width: 100%;
   margin: 0 0 $s4;
+  overflow-x: auto;
   border-collapse: collapse;
   font-size: 14px;
   line-height: 1.5;
@@ -90,15 +97,6 @@
   padding: $s2 $s3;
   border-bottom: 1px solid var(--hairline);
   vertical-align: top;
-}
-
-.table-scroll {
-  overflow-x: auto;
-  margin: 0 0 $s4;
-
-  table {
-    margin: 0;
-  }
 }
 
 // callouts via kramdown IAL: {: .note } {: .tip } {: .warning }
