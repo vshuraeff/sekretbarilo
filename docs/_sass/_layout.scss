@@ -59,12 +59,15 @@
   background: var(--surface);
   border-right: 1px solid var(--hairline);
   transform: translateX(-102%);
-  transition: transform 150ms ease;
+  visibility: hidden;
+  transition: transform 150ms ease, visibility 0s linear 150ms;
 }
 
 .sidebar:target,
 .sidebar.is-open {
   transform: translateX(0);
+  visibility: visible;
+  transition: transform 150ms ease, visibility 0s;
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.24);
 }
 
@@ -99,6 +102,7 @@
 
   .sidebar {
     transform: none;
+    visibility: visible;
     box-shadow: none;
   }
 
