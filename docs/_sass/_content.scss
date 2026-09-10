@@ -99,6 +99,13 @@
   vertical-align: top;
 }
 
+// inline code (not fenced code blocks) wraps at any point so a long
+// unbroken path or token does not widen the article past the viewport.
+.prose :not(pre) > code {
+  overflow-wrap: anywhere;
+  word-break: normal;
+}
+
 // callouts via kramdown IAL: {: .note } {: .tip } {: .warning }
 .prose .note,
 .prose .tip,

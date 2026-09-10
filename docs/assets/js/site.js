@@ -27,13 +27,40 @@
   var scrim = document.getElementById('drawerScrim');
   var closer = document.querySelector('.drawer-close');
 
+  function getFocusable() {
+    var nodes = sidebar.querySelectorAll('a[href], button:not([disabled]), [tabindex]:not([tabindex="-1"])');
+    return Array.prototype.filter.call(nodes, function (node) {
+      return node.offsetWidth > 0 || node.offsetHeight > 0 || node.getClientRects().length > 0;
+    });
+  }
+
+  function trapFocus(e) {
+    if (e.key !== 'Tab') return;
+    var focusable = getFocusable();
+    if (!focusable.length) return;
+    var first = focusable[0];
+    var last = focusable[focusable.length - 1];
+    if (e.shiftKey) {
+      if (document.activeElement === first || !sidebar.contains(document.activeElement)) {
+        e.preventDefault();
+        last.focus();
+      }
+    } else {
+      if (document.activeElement === last || !sidebar.contains(document.activeElement)) {
+        e.preventDefault();
+        first.focus();
+      }
+    }
+  }
+
   function openDrawer(event) {
     if (event) event.preventDefault();
     sidebar.classList.add('is-open');
     if (scrim) scrim.hidden = false;
     if (opener) opener.setAttribute('aria-expanded', 'true');
-    var first = sidebar.querySelector('a, button');
-    if (first) first.focus();
+    var focusable = getFocusable();
+    if (focusable.length) focusable[0].focus();
+    document.addEventListener('keydown', trapFocus);
   }
 
   function closeDrawer(event) {
@@ -41,6 +68,7 @@
     if (!sidebar.classList.contains('is-open')) return;
     sidebar.classList.remove('is-open');
     if (scrim) scrim.hidden = true;
+    document.removeEventListener('keydown', trapFocus);
     if (opener) {
       opener.setAttribute('aria-expanded', 'false');
       opener.focus();
