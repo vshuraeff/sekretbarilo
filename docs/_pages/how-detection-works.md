@@ -50,7 +50,7 @@ The redaction hook narrows the set further. It applies the detection rules and v
 
 ## The exemption layer
 
-The keywordless rule runs a sequence of predicates over the bytes of the candidate value, switched by `[settings] exemption_layer` and on by default. Eight steps, evaluated in order, and the first that matches suppresses the finding: **file** (an ignore file or `CODEOWNERS` disables this rule alone there), **import**, **markdown** (a link is retargeted to its target and evaluation continues on that), **path**, **pin** (a digest pinned behind a reference), **url** (no credential in any component), **syntax** (a complete source expression covering the flagged range), **wordshape** (words, camel case or snake case rather than an opaque run). None of them consults the assignment key, so the argument of the previous section still holds: naming a variable well does not silence anything.
+The keywordless rule runs a sequence of predicates over the bytes of the candidate value, switched by `[settings] exemption_layer` and on by default. Eight steps, evaluated in order, and the first that matches suppresses the finding: **file** (an ignore file or `CODEOWNERS` disables this rule alone there), **import**, **markdown** (a link is retargeted to its target and evaluation continues on that), **path** (in practice rarely the step that fires: an earlier, unconditional path-shape check outside this layer already exempts most path-shaped values before the trace even starts), **pin** (a digest pinned behind a reference), **url** (no credential in any component), **syntax** (a complete source expression covering the flagged range), **wordshape** (words, camel case or snake case rather than an opaque run). Only the pin step consults the assignment key, and only to gate itself to the exact key `uses` — the other seven look at the value alone. So the argument of the previous section mostly still holds: naming a variable well does not silence any step except that one narrow, `uses`-specific case.
 
 The layer changes which values are considered, never the gates they are measured against. Twenty bytes and 4.0 bits per byte are the same in both modes, and tier 1 and tier 2 rules never enter it.
 
@@ -59,13 +59,13 @@ Two parts of it move in the other direction. Quoted call-argument bodies are col
 `--trace-exemptions`, accepted on `scan` and `audit` and on no hook surface, reports each decision as a pseudo-finding named `exempt:` plus the step that made it:
 
 ```
-  file: src/config/discovery.rs
-  line: 118
-  rule: exempt:path
-  match: cr*****ml
+  file: Cargo.toml
+  line: 37
+  rule: exempt:syntax
+  match: 4a****************7f
 ```
 
-An absent decision says the value never reached that gate. While the flag is on, those pseudo-findings count towards the exit code, so a before-and-after comparison is measured without it.
+A trace line marks a successful suppression only: it is emitted when a step's predicate matches and the value is dropped right there. Its absence proves nothing about whether a step was reached — it only means no step suppressed the value, and that includes a value dropped before the traced layer runs at all, such as by the unconditional path-shape check the **path** step's own note above describes. While the flag is on, those pseudo-findings count towards the exit code, so a before-and-after comparison is measured without it.
 
 Turning the layer off restores the 0.6.x behaviour of this one rule, and of nothing else. The reasoning, the measured effect and the shapes it still misses are in [ADR 0002](https://github.com/{{ site.repository }}/blob/master/docs/adr/0002-tier3-exemption-layer.md).
 

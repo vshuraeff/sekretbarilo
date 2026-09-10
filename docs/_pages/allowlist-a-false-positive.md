@@ -29,7 +29,7 @@ For `generic-high-entropy-value`, which is the rule behind most false positives,
 sekretbarilo audit --trace-exemptions
 ```
 
-Each suppressed value is reported as a pseudo-finding named `exempt:` plus the step that suppressed it — `exempt:path`, `exempt:url`, `exempt:syntax` and so on. If your value appears there, nothing needs allowlisting. If it does not, the trace tells you which gate it never reached, which is usually the difference between a value the layer should have handled and one only you can vouch for.
+Each suppressed value is reported as a pseudo-finding named `exempt:` plus the step that suppressed it — `exempt:url`, `exempt:syntax`, `exempt:wordshape` and so on. If your value appears there, nothing needs allowlisting. If it does not, that only tells you no step suppressed it — a trace line marks a successful suppression, never a step that was reached and did not match, so its absence is not a diagnosis of which gate fell short.
 
 {: .note }
 While `--trace-exemptions` is on, those pseudo-findings count towards the exit code, so use it to read the decisions and not in a pipeline that checks the status.
