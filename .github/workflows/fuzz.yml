@@ -1,0 +1,52 @@
+name: Weekly Fuzz
+
+on:
+  schedule:
+    - cron: "17 3 * * 0"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fuzz:
+    name: Fuzz
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Install Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
+        with:
+          toolchain: nightly
+          rustflags: ""
+
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --locked
+
+      - name: Build fuzz targets
+        run: cargo fuzz build
+
+      - name: Fuzz diff parser
+        run: cargo fuzz run diff_parser -- -max_total_time=60
+
+      - name: Fuzz text scanning
+        run: cargo fuzz run scan_text -- -max_total_time=60
+
+      - name: Fuzz line scanning
+        run: cargo fuzz run scan_line -- -max_total_time=60
+
+      - name: Fuzz config loading
+        run: cargo fuzz run config_load -- -max_total_time=60
+
+      - name: Fuzz predicates
+        run: cargo fuzz run predicates -- -max_total_time=60
+
+      - name: Upload fuzz artifacts
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: fuzz-artifacts
+          path: fuzz/artifacts
+          if-no-files-found: ignore

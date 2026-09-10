@@ -1,0 +1,7 @@
+# same-line-resumption: an exempt shape and a real assignment on one line.
+# the exemption must end where the safe expression ends, so the token after it is still reported.
+# format: <rule id> TAB <line>.
+generic-high-entropy-value	Regex::new(r"[a-z]+") ;TOKEN={S32}
+generic-high-entropy-value	container.querySelector<HTMLElement>(".wui-kanban__card") ;TOKEN={S32}
+generic-high-entropy-value	runtime.environment["ACME_WIDGET_SERVICE_ACCOUNT"], ;TOKEN={S32}
+generic-high-entropy-value	refreshGateway.noteLifecycleChangeHappened(); ;TOKEN={S32}

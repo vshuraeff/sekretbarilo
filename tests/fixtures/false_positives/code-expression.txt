@@ -1,0 +1,14 @@
+# code-expression: expressions, call chains, generics and index expressions.
+# these are the shapes the syntax exemption recognises: balanced brackets around the value span.
+Regex::new(r"[a-z]+")
+CompiledAllowlist::from_config(&config, &rules).unwrap()
+container.querySelector<HTMLElement>(".wui-kanban__card")
+String.fromCodePoint(0x2588)
+sum(rate(node_tcp_connections[5m]))
+pthread_mutex_unlock(&spawn_lock);
+[]Entry{Entry{Value: otherValue}}
+resolverObject?.acceptLeaderSnapshotNow(items)
+refreshGateway.noteLifecycleChangeHappened();
+runtime.environment["ACME_WIDGET_SERVICE_ACCOUNT"],
+value = CompiledAllowlist::from_config(&config, &rules).unwrap()
+assert!(is_hex_policy_candidate(Some(b"value"), &bytes))

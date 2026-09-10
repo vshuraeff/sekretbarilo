@@ -1,0 +1,12 @@
+# generated-constant-table: packed data tables, either emitted by a generator or maintained by hand.
+# a table of code points, widths or class letters is data. no line here may produce a finding.
+const CJK_RANGES: [(u32, u32); 3] = [(0x4E00, 0x9FFF), (0x3400, 0x4DBF), (0x20000, 0x2A6DF)];
+static COMBINING_MARKS: &[u16] = &[0x0300, 0x0301, 0x0302, 0x0303, 0x0304, 0x0305];
+    0x1F600, 0x1F601, 0x1F602, 0x1F603, 0x1F604, 0x1F605, 0x1F606, 0x1F607,
+"east_asian_width": [0, 1, 1, 2, 0, 1, 2, 1, 0, 1, 1, 2, 0, 1, 2, 1, 0, 1, 1, 2]
+grapheme_break_classes = "CCCCCCCCCCCCLVTLVTLVTLVTCCCCCCCC"
+    (0x0041..=0x005A, Category::UppercaseLetter),
+CATEGORY_INDEX[0x24B6] = Category::OtherSymbol;
+let widths: Vec<u8> = vec![1, 1, 1, 2, 2, 1, 1, 2, 2, 1, 1, 2, 2, 1, 1, 2, 2, 1];
+static SHIFT_JIS_LEAD_BYTES: [(u16, u16); 2] = [(0x8140, 0x817E), (0x8180, 0x81FC)];
+    "decomposition_class": "0 0 0 230 230 232 220 220 230 230 230 220 220 230"

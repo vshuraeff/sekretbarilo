@@ -1,0 +1,13 @@
+# env-var-name: environment variable names and dotted configuration keys, not their values.
+# a long screaming-snake-case name is a key. the credential would be on the other side of it.
+CONFIG_ENVIRONMENT_NAME=production-eu-central
+if runtime.environment["ACME_WIDGET_SERVICE_ACCOUNT"] is None:
+- name: ACME_WIDGET_TELEMETRY_ENDPOINT_OVERRIDE
+env_keys = ["ACME_WIDGET_DATABASE_HOST", "ACME_WIDGET_DATABASE_PORT"]
+DEFAULT_CONFIGURATION_DIRECTORY=/etc/acme/widget
+process.env.ACME_WIDGET_FEATURE_FLAGS_REFRESH_INTERVAL
+export ACME_WIDGET_LOG_FORMAT=json-lines
+    ${ACME_WIDGET_RETRY_BACKOFF_MILLISECONDS:-2500}
+widget.telemetry.exporter.otlp.endpoint.timeout=10000
+ACME_WIDGET_SCHEDULER_MAX_CONCURRENT_BATCHES=64
+ACME_WIDGET_TENANT_ID={UUID}

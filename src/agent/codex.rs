@@ -368,12 +368,38 @@ where
         }
     };
 
-    let files = parsed_files
-        .into_iter()
-        .map(|file| file.diff_file)
-        .filter(|file| !context.allowlist.is_path_skipped(&file.path))
-        .collect::<Vec<_>>();
-    let findings = scan(&files, &context.scanner, &context.allowlist);
+    let mut files = Vec::new();
+    let mut files_without_path_filters = Vec::new();
+    for parsed in parsed_files {
+        let mut file = parsed.diff_file;
+        let path = Path::new(&file.path);
+        // an empty or whitespace cwd is absent, as in resolve_base_dir; Path::starts_with("")
+        // is true for every path and would route outside-cwd files through the filtered branch
+        let absolute_under_cwd = path.is_absolute()
+            && cwd.is_some_and(|cwd| !cwd.trim().is_empty() && path.starts_with(cwd));
+        let never_allowlist = path
+            .components()
+            .any(|component| matches!(component, std::path::Component::ParentDir))
+            || (path.is_absolute() && !absolute_under_cwd);
+        if never_allowlist {
+            files_without_path_filters.push(file);
+            continue;
+        }
+        if absolute_under_cwd {
+            file.path = super::resolve_file_path(&file.path, cwd)
+                .expect("absolute paths under cwd must resolve")
+                .0;
+        }
+        if !context.allowlist.is_path_skipped(&file.path) {
+            files.push(file);
+        }
+    }
+    let mut findings = scan(&files, &context.scanner, &context.allowlist);
+    findings.extend(crate::scanner::engine::scan_without_path_filters(
+        &files_without_path_filters,
+        &context.scanner,
+        &context.allowlist,
+    ));
 
     findings_decision("apply_patch", &findings)
 }
@@ -1406,6 +1432,128 @@ mod tests {
         assert_eq!(decision, HookDecision::Allow);
     }
 
+    fn high_entropy_test_token() -> String {
+        let alphabet = (b'a'..=b'z')
+            .chain(b'A'..=b'Z')
+            .chain(b'0'..=b'9')
+            .collect::<Vec<_>>();
+        (0..48)
+            .map(|index| char::from(alphabet[(index * 17) % alphabet.len()]))
+            .collect()
+    }
+
+    #[test]
+    fn apply_patch_honors_absolute_path_allowlist_under_cwd() {
+        let cwd = tempfile::tempdir().unwrap();
+        let token = high_entropy_test_token();
+        let file_path = cwd.path().join("tests").join("fixture.rs");
+        let patch = format!(
+            "*** Begin Patch\n*** Add File: {}\n+const K: &str = \"{token}\";\n*** End Patch\n",
+            file_path.display()
+        );
+        let input = payload_with_cwd(
+            "PreToolUse",
+            "apply_patch",
+            json!({"command": patch}),
+            cwd.path().to_str().unwrap(),
+        );
+        let mut project_config = config::ProjectConfig::default();
+        project_config.allowlist.paths.push("tests/.*".to_string());
+
+        let decision = evaluate_payload_with_loader(&input, |_| {
+            Ok(test_scan_context_with_config(project_config))
+        });
+
+        assert_eq!(decision, HookDecision::Allow);
+    }
+
+    #[test]
+    fn apply_patch_reports_relative_path_for_absolute_path_under_cwd() {
+        let cwd = tempfile::tempdir().unwrap();
+        let file_path = cwd.path().join("src").join("fixture.rs");
+        let patch = format!(
+            "*** Begin Patch\n*** Add File: {}\n+const KEY: &str = \"AKIAIOSFODNN7ABCDEFG\";\n*** End Patch\n",
+            file_path.display()
+        );
+        let input = payload_with_cwd(
+            "PreToolUse",
+            "apply_patch",
+            json!({"command": patch}),
+            cwd.path().to_str().unwrap(),
+        );
+
+        let reason = assert_block_contains(
+            evaluate_payload_with_loader(&input, |_| Ok(test_scan_context())),
+            "file: src/fixture.rs",
+        );
+        assert!(!reason.contains(cwd.path().to_str().unwrap()));
+    }
+
+    #[test]
+    fn apply_patch_honors_per_rule_path_allowlist_for_absolute_path_under_cwd() {
+        let cwd = tempfile::tempdir().unwrap();
+        let file_path = cwd.path().join("fixtures").join("a.txt");
+        let patch = format!(
+            "*** Begin Patch\n*** Add File: {}\n+const KEY: &str = \"AKIAIOSFODNN7ABCDEFG\";\n*** End Patch\n",
+            file_path.display()
+        );
+        let input = payload_with_cwd(
+            "PreToolUse",
+            "apply_patch",
+            json!({"command": patch}),
+            cwd.path().to_str().unwrap(),
+        );
+        let mut project_config = config::ProjectConfig::default();
+        project_config
+            .allowlist
+            .rules
+            .push(config::AllowlistRuleOverride {
+                id: "aws-access-key-id".to_string(),
+                regexes: vec![],
+                paths: vec!["fixtures/.*".to_string()],
+                keys: vec![],
+            });
+
+        let decision = evaluate_payload_with_loader(&input, |_| {
+            Ok(test_scan_context_with_config(project_config))
+        });
+        assert_eq!(decision, HookDecision::Allow);
+    }
+
+    #[test]
+    fn apply_patch_keeps_absolute_path_outside_cwd_unchanged() {
+        let cwd = tempfile::tempdir().unwrap();
+        let patch = "*** Begin Patch\n*** Add File: /elsewhere/x.rs\n+const KEY: &str = \"AKIAIOSFODNN7ABCDEFG\";\n*** End Patch\n".to_string();
+        let input = payload_with_cwd(
+            "PreToolUse",
+            "apply_patch",
+            json!({"command": patch}),
+            cwd.path().to_str().unwrap(),
+        );
+
+        assert_block_contains(
+            evaluate_payload_with_loader(&input, |_| Ok(test_scan_context())),
+            "file: /elsewhere/x.rs",
+        );
+    }
+
+    #[test]
+    fn apply_patch_keeps_relative_path_unchanged() {
+        let cwd = tempfile::tempdir().unwrap();
+        let patch = "*** Begin Patch\n*** Add File: src/y.rs\n+const KEY: &str = \"AKIAIOSFODNN7ABCDEFG\";\n*** End Patch\n".to_string();
+        let input = payload_with_cwd(
+            "PreToolUse",
+            "apply_patch",
+            json!({"command": patch}),
+            cwd.path().to_str().unwrap(),
+        );
+
+        assert_block_contains(
+            evaluate_payload_with_loader(&input, |_| Ok(test_scan_context())),
+            "file: src/y.rs",
+        );
+    }
+
     #[test]
     fn agent_written_inworkspace_config_is_not_trusted() {
         let repo = init_git_repo();
@@ -1509,5 +1657,170 @@ mod tests {
         assert_eq!(diff_file.added_lines[0].line_number, 1);
         assert_eq!(diff_file.added_lines[0].content, b"first\r");
         assert_eq!(diff_file.added_lines[2].content, b"");
+    }
+
+    #[test]
+    fn apply_patch_does_not_allowlist_absolute_traversal_under_cwd() {
+        let cwd = tempfile::tempdir().unwrap();
+        let token = (0..32)
+            .map(|index| {
+                let byte = if index % 5 == 0 {
+                    b'0' + ((index + 211) % 10) as u8
+                } else {
+                    let base = if index % 2 == 0 { b'A' } else { b'a' };
+                    base + ((index * 7 + 211) % 26) as u8
+                };
+                char::from(byte)
+            })
+            .collect::<String>();
+        let file_path = cwd
+            .path()
+            .join("tests")
+            .join("..")
+            .join("src")
+            .join("config.rs");
+        let patch = format!(
+            "*** Begin Patch\n*** Add File: {}\n+token = \"{token}\"\n*** End Patch\n",
+            file_path.display()
+        );
+        let input = payload_with_cwd(
+            "PreToolUse",
+            "apply_patch",
+            json!({"command": patch}),
+            cwd.path().to_str().unwrap(),
+        );
+        let mut project_config = config::ProjectConfig::default();
+        project_config.allowlist.paths.push("tests/.*".to_string());
+
+        assert_block_contains(
+            evaluate_payload_with_loader(&input, |_| {
+                Ok(test_scan_context_with_config(project_config))
+            }),
+            &format!("file: {}\n", file_path.display()),
+        );
+    }
+
+    #[test]
+    fn apply_patch_does_not_allowlist_relative_traversal() {
+        let cwd = tempfile::tempdir().unwrap();
+        let token = (0..32)
+            .map(|index| {
+                let byte = if index % 5 == 0 {
+                    b'0' + ((index + 211) % 10) as u8
+                } else {
+                    let base = if index % 2 == 0 { b'A' } else { b'a' };
+                    base + ((index * 7 + 211) % 26) as u8
+                };
+                char::from(byte)
+            })
+            .collect::<String>();
+        let patch = format!(
+            "*** Begin Patch\n*** Add File: tests/../src/config.rs\n+token = \"{token}\"\n*** End Patch\n"
+        );
+        let input = payload_with_cwd(
+            "PreToolUse",
+            "apply_patch",
+            json!({"command": patch}),
+            cwd.path().to_str().unwrap(),
+        );
+        let mut project_config = config::ProjectConfig::default();
+        project_config.allowlist.paths.push("tests/.*".to_string());
+
+        assert_block_contains(
+            evaluate_payload_with_loader(&input, |_| {
+                Ok(test_scan_context_with_config(project_config))
+            }),
+            "file: tests/../src/config.rs\n",
+        );
+    }
+
+    fn assert_patch_path_not_allowlisted(path: &str, cwd: &str) {
+        let token = high_entropy_test_token();
+        let patch =
+            format!("*** Begin Patch\n*** Add File: {path}\n+token = \"{token}\"\n*** End Patch\n");
+        for pattern in ["tests/.*", ".*"] {
+            for per_rule in [false, true] {
+                let mut project_config = config::ProjectConfig::default();
+                if per_rule {
+                    project_config
+                        .allowlist
+                        .rules
+                        .push(config::AllowlistRuleOverride {
+                            id: "generic-high-entropy-value".to_string(),
+                            regexes: vec![],
+                            paths: vec![pattern.to_string()],
+                            keys: vec![],
+                        });
+                } else {
+                    project_config.allowlist.paths.push(pattern.to_string());
+                }
+                let decision = evaluate_apply_patch(&patch, Some(cwd), |_| {
+                    Ok(test_scan_context_with_config(project_config))
+                });
+                let reason = assert_block_contains(decision, "secret(s) detected");
+                assert!(reason.lines().any(|line| line == format!("  file: {path}")));
+                assert!(reason.contains("rule: generic-high-entropy-value"));
+            }
+        }
+    }
+
+    #[test]
+    fn apply_patch_does_not_allowlist_leading_parent() {
+        assert_patch_path_not_allowlisted("../tests/config.rs", "/repo");
+    }
+
+    #[test]
+    fn apply_patch_does_not_allowlist_excess_parents() {
+        assert_patch_path_not_allowlisted("tests/../../x.rs", "/repo");
+    }
+
+    #[test]
+    fn apply_patch_does_not_allowlist_in_repo_traversal() {
+        assert_patch_path_not_allowlisted("tests/../src/config.rs", "/repo");
+    }
+
+    #[test]
+    fn apply_patch_does_not_allowlist_absolute_embedded_parent() {
+        assert_patch_path_not_allowlisted("/repo/tests/../src/config.rs", "/repo");
+    }
+
+    #[test]
+    fn apply_patch_does_not_allowlist_absolute_outside_cwd() {
+        assert_patch_path_not_allowlisted("/elsewhere/tests/config.rs", "/repo");
+    }
+
+    #[test]
+    fn apply_patch_treats_empty_cwd_as_absent_for_absolute_paths() {
+        for cwd in ["", "   "] {
+            assert_patch_path_not_allowlisted("/elsewhere/tests/config.rs", cwd);
+            assert_patch_path_not_allowlisted("/elsewhere/config.png", cwd);
+        }
+    }
+
+    #[test]
+    fn apply_patch_does_not_allowlist_builtin_path_exclusions() {
+        for path in [
+            "../node_modules/config.js",
+            "../Cargo.lock",
+            "/elsewhere/config.png",
+        ] {
+            assert_patch_path_not_allowlisted(path, "/repo");
+        }
+    }
+
+    #[test]
+    fn apply_patch_honors_plain_relative_tests_path_allowlist() {
+        let token = high_entropy_test_token();
+        let patch = format!(
+            "*** Begin Patch\n*** Add File: tests/fixture.rs\n+token = \"{token}\"\n*** End Patch\n"
+        );
+        let mut project_config = config::ProjectConfig::default();
+        project_config.allowlist.paths.push("tests/.*".to_string());
+        assert_eq!(
+            evaluate_apply_patch(&patch, Some("/repo"), |_| {
+                Ok(test_scan_context_with_config(project_config))
+            }),
+            HookDecision::Allow
+        );
     }
 }

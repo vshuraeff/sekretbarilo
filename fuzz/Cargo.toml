@@ -1,0 +1,51 @@
+[package]
+name = "sekretbarilo-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+sekretbarilo = { path = ".." }
+
+[workspace]
+members = ["."]
+resolver = "3"
+
+[[bin]]
+name = "diff_parser"
+path = "fuzz_targets/diff_parser.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "scan_text"
+path = "fuzz_targets/scan_text.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "scan_line"
+path = "fuzz_targets/scan_line.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "config_load"
+path = "fuzz_targets/config_load.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "predicates"
+path = "fuzz_targets/predicates.rs"
+test = false
+doc = false
+bench = false

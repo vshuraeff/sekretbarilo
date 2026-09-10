@@ -1,0 +1,83 @@
+# repository allowlist for the scanner's own fixtures, doc examples and rule-definition strings
+# (repo lost its own layer in 362272c; re-created for S13 of the tier3-0.7.0 residual audit)
+
+# the same AKIA fixture literals the parent layer already allows under aws-access-key-id also
+# trip generic-secret-assignment on the same lines (src/agent/codex.rs:1107,1218,1231,1387;
+# src/agent/mod.rs:534); masking is per (rule, literal), so this rule needs its own entry
+[[allowlist.rules]]
+id = "generic-secret-assignment"
+regexes = [
+  "AKIAIOSFODNN7ABCDEFG",
+  "AKIAIOSFODNN7REALKEY",
+  "AKIAIOSFODNN7EXAMPLE",
+]
+
+# shared ghp_ fixture literal across src/output/masking.rs:72, src/output/mod.rs:85,
+# src/scanner/engine.rs:1111,1140,1146,1174. the literal itself is masked by the redact-claude
+# hook in every transcript read (the value is a genuine ghp_-shaped test fixture, not visible to
+# this agent under any read), so this is scoped by path rather than by exact literal.
+# removal condition: once the literal is confirmed unmasked (e.g. after this entry lands and a
+# follow-up read shows it plainly), tighten to an exact-literal entry and drop the path scope
+[[allowlist.rules]]
+id = "github-personal-access-token"
+paths = [
+  "src/output/masking\\.rs",
+  "src/output/mod\\.rs",
+  "src/scanner/engine\\.rs",
+]
+
+# anthropic-api-key fixture literal in src/output/masking.rs:73, masked in every transcript read
+# for the same reason as the ghp_ entry above; scoped by path pending literal confirmation.
+# removal condition: same as the github-personal-access-token entry above
+[[allowlist.rules]]
+id = "anthropic-api-key"
+paths = [
+  "src/output/masking\\.rs",
+]
+
+# pem/pgp header strings in the detector's own public-key module and rule/doc references
+[[allowlist.rules]]
+id = "pem-private-key"
+paths = ["src/scanner/pubkey\\.rs"]
+
+[[allowlist.rules]]
+id = "pgp-private-key-block"
+paths = [
+  "src/scanner/pubkey\\.rs",
+  "src/config/rules\\.toml",
+  "docs/_pages/rules-reference\\.md",
+]
+
+# stripe-secret-key-live cfg(test) fixtures (src/config/allowlist.rs:864,1151)
+[[allowlist.rules]]
+id = "stripe-secret-key-live"
+paths = ["src/config/allowlist\\.rs"]
+
+# password-in-url doc comments/fixtures (src/scanner/entropy.rs:339, src/scanner/password.rs:134)
+[[allowlist.rules]]
+id = "password-in-url"
+paths = [
+  "src/scanner/entropy\\.rs",
+  "src/scanner/password\\.rs",
+]
+
+# generic-password-assignment rationale example (docs/_pages/architecture.md:156)
+[[allowlist.rules]]
+id = "generic-password-assignment"
+paths = ["docs/_pages/architecture\\.md"]
+
+# src/config/rules.toml holds the rule definitions themselves (the regex patterns of the
+# built-in rules), never runtime values; whole-file exemption for generic-high-entropy-value
+[[allowlist.rules]]
+id = "generic-high-entropy-value"
+paths = ["src/config/rules\\.toml"]
+
+# docs/_pages/architecture.md:472 quotes the exact same rooted path literal visible unmasked at
+# line 471 of the same file ("$HOME/.cargo/bin/sekretbarilo" inside an `if [ -x ... ]` test just
+# above the masked assignment) -- a benign shell-path fixture in the doctor rationale section
+[[allowlist.rules]]
+id = "generic-high-entropy-value"
+regexes = [
+  "\\$HOME/\\.cargo/bin/sekretbarilo",
+]
+paths = ["docs/_pages/architecture\\.md"]

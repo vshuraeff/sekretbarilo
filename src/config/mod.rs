@@ -70,6 +70,8 @@ pub struct SettingsConfig {
     pub entropy_threshold: Option<f64>,
     /// detect public keys as findings (default: false)
     pub detect_public_keys: Option<bool>,
+    /// enable exemption-layer filtering (default: true)
+    pub exemption_layer: Option<bool>,
 }
 
 /// load a single config file. returns None if the file doesn't exist or is empty.
@@ -180,7 +182,7 @@ pub fn load_project_config_from_paths(paths: &[PathBuf]) -> Result<ProjectConfig
 
     let mut configs = Vec::with_capacity(paths.len());
     for path in paths {
-        if !path.is_file() {
+        if !path.exists() {
             return Err(format!("config file not found: {}", path.display()));
         }
         let content = std::fs::read_to_string(path)
@@ -230,6 +232,15 @@ pub fn build_allowlist(
     config: &ProjectConfig,
     rules: &[Rule],
 ) -> Result<CompiledAllowlist, String> {
+    build_allowlist_with_trace_exemptions(config, rules, false)
+}
+
+/// build a compiled allowlist with CLI-only exemption diagnostics.
+pub fn build_allowlist_with_trace_exemptions(
+    config: &ProjectConfig,
+    rules: &[Rule],
+    trace_exemptions: bool,
+) -> Result<CompiledAllowlist, String> {
     // collect per-rule allowlists from rule definitions + config overrides
     validate_allowlist_rule_overrides(&config.allowlist.rules)?;
 
@@ -266,13 +277,16 @@ pub fn build_allowlist(
         }
     }
 
-    CompiledAllowlist::new_with_keys(
+    let mut allowlist = CompiledAllowlist::new_with_keys(
         &config.allowlist.paths,
         &config.allowlist.stopwords,
         config.settings.entropy_threshold,
         &per_rule,
         config.settings.detect_public_keys.unwrap_or(false),
-    )
+    )?;
+    allowlist.exemption_layer = config.settings.exemption_layer.unwrap_or(true);
+    allowlist.trace_exemptions = trace_exemptions;
+    Ok(allowlist)
 }
 
 #[cfg(test)]
@@ -402,6 +416,7 @@ entropy_threshold = 3.5
             settings: SettingsConfig {
                 entropy_threshold: Some(4.0),
                 detect_public_keys: None,
+                exemption_layer: None,
             },
             rules: vec![],
             ..Default::default()

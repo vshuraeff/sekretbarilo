@@ -1,0 +1,12 @@
+# import-line: import, include, require and use statements across languages.
+# an import names a long path made of identifiers, which is the shape of a packed token.
+use sekretbarilo::scanner::engine::{redact_text, scan, scan_text};
+import { WidgetOrderBookAggregator } from "@acme/widget-core/dist/esm/aggregator";
+from acme_widget.pipeline.transform.batch_writer import BatchWriterConfiguration
+#include <sys/socket.h>
+#include "acme/widget/internal/transport/netty_channel_initializer.h"
+import "github.example.internal/acme/widget/internal/telemetry/exporter/otlpexporter"
+require("../../lib/widget/pipeline/transform/batch-writer.js");
+using Acme.Widget.Internal.Transport.Serialization.MessagePackFormatter;
+import org.apache.kafka.connect.storage.StringConverter;
+    pub use crate::config::allowlist::{CompiledAllowlist, PerRuleAllowlistWithKeys};

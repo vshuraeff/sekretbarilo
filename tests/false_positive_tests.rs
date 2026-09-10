@@ -505,8 +505,9 @@ fn fp_git_log_output_in_script() {
 }
 
 #[test]
-fn entropy_flags_github_compare_url_even_in_documentation() {
-    assert_only_entropy_finding(
+fn entropy_exempts_github_compare_url_in_documentation() {
+    // the 0.7.0 exemption layer skips credential-free urls; the switch-off case lives in tier3_exemption_tests.
+    assert_no_findings(
         "CHANGELOG.md",
         b"Full diff: https://github.com/user/repo/compare/abc1234...def5678",
     );
@@ -579,6 +580,9 @@ fn fp_full_pipeline_documentation_with_examples() {
 
 #[test]
 fn fp_full_pipeline_test_file_with_assertions() {
+    let token: String = (0..32)
+        .map(|index| char::from_digit(index % 16, 16).unwrap())
+        .collect();
     let diff = make_new_file_diff(
         "tests/auth_test.rs",
         &[
@@ -586,14 +590,17 @@ fn fp_full_pipeline_test_file_with_assertions() {
             "    assert!(validate_password(\"test_placeholder_value\"));",
             "    assert!(!validate_password(\"short\"));",
             "    let api_key_format = Regex::new(r\"[A-Za-z0-9]{32}\").unwrap();",
-            "    assert!(api_key_format.is_match(\"abcdef12345678901234567890abcdef\"));",
+            &format!("    assert!(api_key_format.is_match(\"{token}\"));"),
             "}",
         ],
     );
     let findings = scan_diff(&diff);
+    // reclassified per g1: opaque call-argument literals are tier-3 candidates (s19b).
     assert!(
-        findings.is_empty(),
-        "test files with validation logic should not trigger, got: {:?}",
+        findings.len() == 1
+            && findings[0].rule_id == "generic-high-entropy-value"
+            && findings[0].matched_value == token.as_bytes(),
+        "only the generated call argument should trigger, got: {:?}",
         findings
             .iter()
             .map(|f| format!(
@@ -851,10 +858,20 @@ fn entropy_flags_postgres_url_with_weak_password() {
 }
 
 #[test]
-fn entropy_flags_mysql_url_with_weak_password() {
-    assert_only_entropy_finding(
+fn password_in_url_flags_mysql_url_with_weak_password() {
+    // the whole-url generic finding is pre-existing.
+    // q15: literal extraction inside urls is deferred; broader entropy findings are allowed.
+    let findings = scan_line(
         "config.py",
         b"db_url = \"mysql://root:admin123@localhost:3306/app\"",
+    );
+    let password = format!("admin{}", 123);
+    assert!(
+        findings
+            .iter()
+            .any(|finding| finding.rule_id == "password-in-url"
+                && finding.matched_value == password.as_bytes()),
+        "expected the password-only finding, got: {findings:?}"
     );
 }
 
@@ -891,4 +908,63 @@ fn tp_tier1_on_template_line() {
         "tier 1 AWS key should still be detected on template lines"
     );
     assert_eq!(findings[0].rule_id, "aws-access-key-id");
+}
+
+// ============================================================================
+// category 11: password-in-url widening is independent of the exemption layer
+// ============================================================================
+
+// 0.7.0 widened `password-in-url` to report any non-placeholder literal URL
+// password, regardless of strength; that widening is not part of the
+// exemption layer, so it holds identically with the layer on (default) and
+// with `[settings] exemption_layer = false`. see ADR 0002.
+#[test]
+fn password_in_url_weak_password_is_reported_with_the_layer_on_and_off() {
+    let weak = "hunter123";
+    let strong = "Kx7qM2vL9pR4nW8j";
+    let weak_line = format!("db_url = \"postgres://admin:{weak}@db:5432/app\"");
+    let placeholder_line = "db_url = \"postgres://admin:changeme@db:5432/app\"".to_string();
+    let strong_line = format!("db_url = \"postgres://admin:{strong}@db:5432/app\"");
+
+    let rules = load_default_rules().unwrap();
+    let scanner = compile_rules(&rules).unwrap();
+
+    for exemption_layer in [None, Some(false)] {
+        let config = config::ProjectConfig {
+            settings: config::SettingsConfig {
+                exemption_layer,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let al = config::build_allowlist(&config, &rules).unwrap();
+
+        // weak, non-placeholder literal password: reported
+        let file = make_file("config.py", vec![(1, weak_line.as_bytes())]);
+        let findings = scan(&[file], &scanner, &al);
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.rule_id == "password-in-url" && f.matched_value == weak.as_bytes()),
+            "exemption_layer={exemption_layer:?}: expected password-in-url finding for weak password, got: {findings:?}"
+        );
+
+        // control: placeholder password from the placeholder list stays clean
+        let file = make_file("config.py", vec![(1, placeholder_line.as_bytes())]);
+        let findings = scan(&[file], &scanner, &al);
+        assert!(
+            !findings.iter().any(|f| f.rule_id == "password-in-url"),
+            "exemption_layer={exemption_layer:?}: expected no password-in-url finding for placeholder, got: {findings:?}"
+        );
+
+        // control: a strong generated password is still reported
+        let file = make_file("config.py", vec![(1, strong_line.as_bytes())]);
+        let findings = scan(&[file], &scanner, &al);
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.rule_id == "password-in-url" && f.matched_value == strong.as_bytes()),
+            "exemption_layer={exemption_layer:?}: expected password-in-url finding for strong password, got: {findings:?}"
+        );
+    }
 }

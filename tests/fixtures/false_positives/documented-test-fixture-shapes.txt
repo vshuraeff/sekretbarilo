@@ -1,0 +1,11 @@
+# documented-test-fixture-shapes: assertions and doc examples that show masked or example values.
+# a scanner's own documentation and tests talk about secrets without containing one.
+assert_eq!(mask_secret(b"AKIAIOSFODNN7EXAMPLE"), "AK****LE");
+assert_eq!(masked, "gh****ef", "the middle of the token is never printed");
+    // input:  api_key = "${API_KEY}"   output: rule generic-api-key
+expect(redact(line)).toBe("token = \"[REDACTED]\"");
+/// the reported span covers the value only, never the key or the quotes
+assert!(findings.is_empty(), "a documented example must not be a finding");
+    let masked = format!("{}{}{}", "AK", "*".repeat(16), "LE");
+check_scan("src/fixture.rs", line, &[], &allowlist);
+    "match": "AK****LE"

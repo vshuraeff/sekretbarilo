@@ -1,7 +1,11 @@
+mod calllit;
 pub mod engine;
 pub mod entropy;
 pub mod hash_detect;
 pub mod password;
 pub mod pubkey;
 pub mod rules;
+pub mod syntax;
 mod text;
+pub mod urlshape;
+pub mod wordshape;

@@ -1,0 +1,13 @@
+# lockfile-hash-line-shapes: lines as they appear inside dependency lock files.
+# whole lock files are skipped by name, so these shapes matter where they survive that skip:
+# quoted fragments in documentation, review comments and diff hunks pasted into other files.
+# the digest lines that are expected findings live in true_positives/lockfile-digests.txt.
+"widget-core@^1.4.2":
+  version "1.4.2"
+  resolved "https://registry.example.internal/widget-core/-/widget-core-1.4.2.tgz"
+  dependencies:
+    widget-runtime "^1.4.0"
+name = "widget-core"
+source = "registry+https://github.example.internal/acme/crates.io-index"
+requires_python = ">=3.9"
+    "widget-runtime": "^1.4.0"

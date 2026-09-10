@@ -87,9 +87,23 @@ fn has_wordy_path_leaf(value: &[u8]) -> bool {
         }
 
         if is_leaf {
-            return segment
-                .split(|&byte| matches!(byte, b'-' | b'_' | b'.'))
-                .any(|part| part.len() >= 3 && part.iter().all(u8::is_ascii_alphabetic));
+            let mut parts: Vec<_> = segment
+                .split(|&byte| byte == b'.')
+                .filter(|part| !part.is_empty())
+                .collect();
+
+            while parts.len() > 1
+                && parts.last().is_some_and(|part| {
+                    (1..=5).contains(&part.len()) && part.iter().all(u8::is_ascii_alphanumeric)
+                })
+            {
+                parts.pop();
+            }
+
+            return parts.iter().any(|part| {
+                part.split(|&byte| matches!(byte, b'-' | b'_'))
+                    .any(|part| part.len() >= 3 && part.iter().all(u8::is_ascii_alphabetic))
+            });
         }
     }
 
@@ -261,6 +275,44 @@ mod tests {
 
     #[test]
     fn path_shape_contract() {
+        fn opaque_stem(len: usize) -> Vec<u8> {
+            (0..len)
+                .map(|index| {
+                    if index % 3 == 0 {
+                        b'0' + ((index * 7 + 3) % 10) as u8
+                    } else {
+                        let letter = ((index * 11 + 5) % 26) as u8;
+                        if index % 2 == 0 {
+                            b'A' + letter
+                        } else {
+                            b'a' + letter
+                        }
+                    }
+                })
+                .collect()
+        }
+
+        fn hex_stem(len: usize) -> Vec<u8> {
+            let mut stem = Vec::with_capacity(len);
+            let mut counter = 0u8;
+
+            while stem.len() < len {
+                stem.extend(format!("{counter:x}").bytes());
+                counter = counter.wrapping_add(1);
+            }
+
+            stem.truncate(len);
+            stem
+        }
+
+        fn path_with_stem(prefix: &[u8], stem: &[u8], suffix: &[u8]) -> Vec<u8> {
+            let mut path = Vec::with_capacity(prefix.len() + stem.len() + suffix.len());
+            path.extend_from_slice(prefix);
+            path.extend_from_slice(stem);
+            path.extend_from_slice(suffix);
+            path
+        }
+
         let task_path = b"/Users/example/work/rust/sekretbarilo/.claude/backlog/tasks/2026-09-08-redact-claude-masks-plain-absolute-files-9zVZK8LgjmLKdXZG.md";
         let cases: &[(&[u8], bool)] = &[
             (task_path, true),
@@ -291,6 +343,44 @@ mod tests {
 
         for &(value, expected) in cases {
             assert_eq!(is_path_shaped(value), expected, "{value:?}");
+        }
+
+        let opaque_19 = opaque_stem(19);
+        let opaque_20 = opaque_stem(20);
+        let generated_cases = [
+            (path_with_stem(b"/var/lib/", &opaque_19, b".key"), false),
+            (path_with_stem(b"/var/lib/", &opaque_20, b".key"), false),
+            (
+                path_with_stem(b"/var/cache/nginx/", &hex_stem(18), b".tmp"),
+                false,
+            ),
+            (
+                path_with_stem(b"/opt/tools/", &opaque_19, b".tar.gz"),
+                false,
+            ),
+            (
+                path_with_stem(b"/opt/tools/", &opaque_19, b".spec.d.ts"),
+                false,
+            ),
+            (path_with_stem(b"/x/", &opaque_20, b"/"), false),
+            (path_with_stem(b"/a/b/", &opaque_19, b".txt"), false),
+            (path_with_stem(b"/a/b/", &opaque_20, b".txt"), false),
+            // the raw 20-byte stem is disqualified before extension stripping.
+            (b"/a/b/internationalization.txt".to_vec(), false),
+            (b"/home/user/notes.txt".to_vec(), true),
+            (b"/etc/app/.env.local".to_vec(), true),
+            (b"/var/log/nginx/my-app.log".to_vec(), true),
+            (b"/srv/data/archive-2026.tar.gz".to_vec(), true),
+            (b"/a/b/some.long.name.here.txt".to_vec(), true),
+            (b"/etc/nginx/conf.d/".to_vec(), true),
+            (b"/a/b/README".to_vec(), true),
+            (b"/a/b/name.".to_vec(), true),
+            // an opaque short ancestor remains exempt because only leaves use the wordy check.
+            (path_with_stem(b"/data/", &opaque_19, b"/token.txt"), true),
+        ];
+
+        for (value, expected) in generated_cases {
+            assert_eq!(is_path_shaped(&value), expected, "{value:?}");
         }
     }
 }

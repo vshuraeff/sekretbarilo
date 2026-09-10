@@ -1,0 +1,11 @@
+# css-selector: BEM class names, selectors, utility class lists and custom properties.
+# long hyphenated selectors are markup vocabulary, not tokens.
+.wui-kanban__card--dragging > .wui-kanban__card-handle { cursor: grabbing; }
+className="grid grid-cols-12 gap-4 rounded-2xl bg-slate-900/40 p-6 shadow-lg"
+#widget-settings-panel .widget-settings__row:nth-child(2n+1) { background: #0f172a; }
+@media (min-width: 1280px) { .wui-layout__sidebar { inline-size: 18rem; } }
+data-testid="widget-order-book__row--filled"
+:is(.wui-button, .wui-button--ghost):not([disabled]):focus-visible
+--wui-color-surface-elevated-inverse: hsl(222deg 47% 11%);
+    "className": "widget-order-book__row widget-order-book__row--partially-filled"
+.wui-toolbar__group + .wui-toolbar__group::before { content: ""; }

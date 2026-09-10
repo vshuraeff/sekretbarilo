@@ -240,7 +240,7 @@ id = "generic-password-assignment"
 description = "Quoted or unquoted password assignment in code and configuration"
 # alternative captures keep matching quote pairs and preserve surrounding syntax.
 regex = '''(?ix)
-(?:password|passwd|pwd)["'`]?\]?[\t\x20]*[=:][\t\x20]*
+(?P<password_key>[A-Za-z0-9_.-]*(?:password|passwd|pwd))["'`]?\]?[\t\x20]*[=:][\t\x20]*
 (?:
   "((?:\\[^\r\n]|[^"\\\r\n]){8,})"
   | '(?P<password_single>(?:\\[^\r\n]|''|[^'\\\r\n]){8,}\\?)'
@@ -248,8 +248,8 @@ regex = '''(?ix)
   | (?P<password_unquoted>(?:\\[^\r\n]|[^\s"'`,;\#()\[\]{}<>\\])(?:\\[^\r\n]|[^\s"'`,;()\[\]{}<>\\]){7,}\\?)
 )
 '''
-secret_group = 1
-secret_groups = [2, 3, 4]
+secret_group = 2
+secret_groups = [3, 4, 5]
 keywords = ["password", "passwd", "pwd"]
 # note: password rules use the password strength heuristic instead of entropy
 
@@ -264,7 +264,7 @@ entropy_threshold = 3.5
 [[rules]]
 id = "password-in-url"
 description = "Password embedded in URL"
-regex = "(?i)://[^:/?#\\s]+:([^@/?#\\s]{8,})@[^\\s'\"]+"
+regex = "(?i)://[^:/?#\\s]+:([^@/?#\\s]+)@[^\\s'\"]+"
 secret_group = 1
 keywords = ["://"]
 
@@ -338,6 +338,8 @@ description = "High-entropy ASCII token in an assignment or on a bare line"
 # a comma or semicolon also separates a following syntactic key assignment.
 # capture whole values before applying the byte-length and whitespace checks.
 # consume complete references so their contents are not scanned as assignments.
+# engine.rs applies an exemption layer (import, markdown, path, pin, url, syntax, word-structure) scoped to this rule id and switchable by [settings] exemption_layer.
+# exact 32/40/64-hex assignment values bypass the Shannon gate under the key-token exclusion in hash_detect.rs.
 regex = '''(?mx)
   (?:
     (?:\b[A-Za-z_][A-Za-z0-9_.-]*|"(?:\\[^\r\n]|[^"\\\r\n])+"|'(?:\\[^\r\n]|''|[^'\\\r\n])+')

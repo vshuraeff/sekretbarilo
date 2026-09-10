@@ -1,0 +1,12 @@
+# placeholder-example: documentation and template values that stand in for a real credential.
+# the point of a placeholder is that it is not the secret, so flagging one teaches nothing.
+export ACME_API_TOKEN=<YOUR_TOKEN_HERE>
+Authorization: Bearer ${ACME_API_TOKEN}
+api_key: "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+password = "********"
+token: "{{ secrets.ACME_API_TOKEN }}"
+client_secret = "$CLIENT_SECRET"
+AWS_SECRET_ACCESS_KEY=<replace-me-before-running>
+secret_key = "changeme-changeme-changeme"
+database_password: "{{ vault.acme.widget.database_password }}"
+    "authorization": "Bearer <token>"

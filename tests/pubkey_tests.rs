@@ -296,6 +296,7 @@ fn config_detect_public_keys_merge_overlay_wins() {
         settings: SettingsConfig {
             entropy_threshold: None,
             detect_public_keys: Some(false),
+            exemption_layer: None,
         },
         ..Default::default()
     };
@@ -303,6 +304,7 @@ fn config_detect_public_keys_merge_overlay_wins() {
         settings: SettingsConfig {
             entropy_threshold: None,
             detect_public_keys: Some(true),
+            exemption_layer: None,
         },
         ..Default::default()
     };
@@ -318,6 +320,7 @@ fn config_detect_public_keys_base_preserved_when_overlay_none() {
         settings: SettingsConfig {
             entropy_threshold: None,
             detect_public_keys: Some(true),
+            exemption_layer: None,
         },
         ..Default::default()
     };
@@ -341,6 +344,7 @@ fn build_allowlist_detect_public_keys_true_when_set() {
         settings: SettingsConfig {
             entropy_threshold: None,
             detect_public_keys: Some(true),
+            exemption_layer: None,
         },
         ..Default::default()
     };
