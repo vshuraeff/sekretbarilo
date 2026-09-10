@@ -1,0 +1,6 @@
+diff --git a/sample.txt b/sample.txt
+index 1111111..2222222 100644
+--- a/sample.txt
++++ b/sample.txt
+@@ -0,0 +1 @@
++mode = "sample"

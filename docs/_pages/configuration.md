@@ -164,6 +164,10 @@ entropy_threshold = 3.5
 # report public keys (PEM, PGP, OpenSSH) as findings (default: false)
 # when false, public key material is suppressed to reduce noise
 detect_public_keys = false
+
+# structural exemptions for the tier 3 rule generic-high-entropy-value (default: true)
+# false restores the 0.6.x behaviour of that rule and affects no other rule
+exemption_layer = true
 ```
 
 **Notes:**
@@ -171,7 +175,50 @@ detect_public_keys = false
 - Setting a global threshold here overrides all per-rule thresholds.
 - Tier 1 rules (prefix-based) don't use entropy checks, so this setting doesn't affect them.
 - Use this to tune sensitivity globally without modifying individual rules.
+- `exemption_layer` is scoped to `generic-high-entropy-value` and is on by default. See [The exemption layer](#the-exemption-layer) below.
 - `detect_public_keys` enables 3 gated rules (`pem-public-key`, `pgp-public-key-block`, `openssh-public-key`). When disabled (default), lines inside public key blocks are also suppressed to avoid false positives from base64 content. Can be overridden with `--detect-public-keys` CLI flag.
+
+### The exemption layer
+
+`generic-high-entropy-value` is the keywordless tier 3 catch-all, and it is the rule that produces
+almost every false positive. The exemption layer suppresses the shapes that are structurally not
+credentials — import lines, markdown links, paths and globs, pinned digests, credential-free URLs,
+source expressions and word-structured values — by testing the bytes of the value, never its
+assignment key. It also collects quoted call-argument bodies so that a token passed to a function is
+a candidate at all.
+
+```toml
+[settings]
+exemption_layer = false
+```
+
+Turning it off restores the 0.6.x behaviour of this one rule: the eight exemption steps, the
+call-argument collector and the exact-length hex bypass are disabled together. Two things stay on
+regardless, because they sit outside the switch: the path-shape check that runs before the layer,
+and the `keys` entries of `[[allowlist.rules]]`, which are applied after it. The 20-byte minimum
+length and the 4.0 entropy threshold are the same in both modes.
+
+Disabling `exemption_layer` does not revert independent rule changes in 0.7.0; `password-in-url`
+continues to report non-placeholder literal URL passwords regardless of strength. Restoring the
+complete 0.6.3 detector behaviour requires the 0.6.3 release, not this switch.
+
+`--trace-exemptions` reports every exemption decision as a pseudo-finding of its own, named
+`exempt:` plus the step that suppressed the value: `file`, `import`, `markdown`, `path`, `pin`,
+`url`, `syntax`, `wordshape`. It answers the question of which gate stopped a value, and an absent
+decision says the value never reached that gate.
+
+```
+  file: src/config/discovery.rs
+  line: 118
+  rule: exempt:path
+  match: cr*****ml
+```
+
+The flag exists on the CLI only, so the hook surfaces (`check-file`, `check-codex`, `redact-claude`)
+never see those pseudo-findings. While it is on they do count as findings for the `scan` and `audit`
+exit codes, so a comparison run of `scripts/corpus-audit.sh` is made without it and the flag is
+added to a separate run. See [Testing False Positives]({{ '/testing-false-positives/' | relative_url }})
+and [ADR 0002](../adr/0002-tier3-exemption-layer.md).
 
 ### `[allowlist]`
 
@@ -201,7 +248,11 @@ stopwords = [
 
 Word-based stopwords are consulted only by the 32 rules that carry an `entropy_threshold`. The other 80 rules still reject the built-in placeholder examples, but ignore stopwords otherwise: a string matching `AKIA` plus sixteen key characters is an AWS key whatever else it contains.
 
-The split follows the entropy threshold, not the tier, and the two do not coincide. `mailchimp-api-key`, `facebook-access-token`, `dropbox-api-token` and `launchdarkly-sdk-key` are prefix rules that do carry a threshold, so stopwords reach them. `airtable-api-key`, `twilio-api-key`, `azure-storage-account-key`, `password-in-url`, `webhook-url-with-token` and `generic-password-assignment` match case-insensitively but carry no threshold, so word-based stopwords do not apply to them. Password rules reject stopword values separately, through the strength heuristic.
+The split follows the entropy threshold, not the tier, and the two do not coincide. `mailchimp-api-key`, `facebook-access-token`, `dropbox-api-token` and `launchdarkly-sdk-key` are prefix rules that do carry a threshold, so stopwords reach them. `airtable-api-key`, `twilio-api-key`, `azure-storage-account-key`, `password-in-url`, `webhook-url-with-token` and `generic-password-assignment` match case-insensitively but carry no threshold, so word-based stopwords do not apply to them. Password rules reject stopword values separately, and not the same way: `generic-password-assignment`
+requires the value to also clear the password-strength heuristic, while `password-in-url` instead
+checks the value against a fixed placeholder list (`is_url_password_placeholder` in
+`src/scanner/password.rs`) plus the user's own stopwords, so a weak but non-placeholder URL
+password is still reported.
 
 To allowlist a value a stopword cannot reach, use a per-rule `regexes` entry (see [`[[allowlist.rules]]`](#allowlistrules)).
 

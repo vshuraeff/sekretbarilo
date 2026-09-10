@@ -1,0 +1,14 @@
+# path-glob: rooted paths, globs and multi-suffix file names.
+# a path is long, opaque-looking and made of segments. it is not a credential.
+# known gap: the same path written bare-relative is reported, so `./` matters:
+# `artifact: build/dist/widget-1.4.2/lib/widget.core.esm.production.min.js`.
+    let manifest = PathBuf::from("/opt/acme/widget/etc/widget.d/40-defaults.conf");
+artifact: ./build/dist/widget-1.4.2/lib/widget.core.esm.production.min.js
+include = ["src/**/*.spec.d.ts", "tests/**/__snapshots__/*.snap"]
+tarball: ./vendor/cache/widget-runtime-1.4.2-linux-aarch64.tar.gz
+exclude: **/node_modules/**/dist/**/*.min.js.map
+socket = "/var/run/acme/widget/widget-worker-0.sock"
+    ~/.config/acme/widget/profiles/default/credentials.template
+path: C:/ProgramData/acme/widget/cache/index.db
+report = "coverage/lcov-report/src_widget_pipeline_transform_ts.html"
+keystore: /etc/ssl/private/acme-widget-internal-mtls-client.pem

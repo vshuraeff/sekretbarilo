@@ -34,12 +34,20 @@ pub struct Finding {
 ///   2. aho-corasick keyword pre-filter (single pass)
 ///   3. regex matching (keywordless rules and rules whose keywords matched)
 ///   4. extract secret via capture group
+///      4b. entropy value shape gates, switchable exemptions and assignment hex bypass
+///      with a fixed 2.0-bit hex-symbol entropy floor
+///      4c. user entropy-key allowlist (independent of the exemption switch)
 ///   5. per-rule allowlist check (value regex + path match)
-///   6. variable reference detection (skip $VAR, ${VAR}, etc.)
-///      6b. template line detection (skip tier 2/3 on template lines)
-///   7. stopword filter (skip if secret contains stopword)
+///   6. variable references (URL passwords skip pure references only, not defaults)
+///      6.5. template lines skip context-dependent and password/credential rules
+///   7. stopwords (entropy values use user words; URL passwords use user words
+///      and URL placeholders only; other rules retain their tier-specific filters)
 ///   8. hash detection (skip if it's a hash)
-///   9. entropy evaluation (with doc file bonus if applicable)
+///      8.5. password strength veto for generic-password-assignment only
+///      8.6. credential strength with entropy fallback; 8.7. public key filtering
+///   9. entropy evaluation (with doc file bonus if applicable), except assignment
+///      passwords and layer-enabled hex bypass values; URL passwords use their
+///      configured threshold, if any, without a password-strength veto
 ///
 /// for diffs with many files, processing is parallelized with rayon.
 pub fn scan(
@@ -75,6 +83,21 @@ pub fn scan(
     }
 }
 
+/// scan traversal or outside-cwd patch paths without any path allowlist filtering.
+/// called by codex apply_patch traversal handling in src/agent/codex.rs because
+/// these paths must never be exempted by the normal path-filtering pipeline.
+pub(crate) fn scan_without_path_filters(
+    files: &[DiffFile],
+    scanner: &CompiledScanner,
+    allowlist: &CompiledAllowlist,
+) -> Vec<Finding> {
+    files
+        .iter()
+        .filter(|file| !file.is_deleted && !file.is_binary && !file.added_lines.is_empty())
+        .flat_map(|file| scan_file_with_path_filters(file, scanner, allowlist, false))
+        .collect()
+}
+
 /// scan a single file's added lines for secrets.
 /// returns findings for this file only.
 fn scan_file(
@@ -82,7 +105,20 @@ fn scan_file(
     scanner: &CompiledScanner,
     allowlist: &CompiledAllowlist,
 ) -> Vec<Finding> {
-    let is_doc = allowlist.is_documentation_file(&file.path);
+    scan_file_with_path_filters(file, scanner, allowlist, true)
+}
+
+fn scan_file_with_path_filters(
+    file: &DiffFile,
+    scanner: &CompiledScanner,
+    allowlist: &CompiledAllowlist,
+    apply_path_filters: bool,
+) -> Vec<Finding> {
+    // the documentation bonus is derived from the path, so a traversal path such as
+    // docs/../src/x.rs must not raise the threshold: it applies only with path filters
+    let is_doc = apply_path_filters && allowlist.is_documentation_file(&file.path);
+    let generic_rule_disabled =
+        apply_path_filters && allowlist.is_generic_rule_skipped_path(&file.path);
     let num_rules = scanner.rules.len();
 
     // reusable bitset for candidate rules (avoids per-line vec allocation)
@@ -102,13 +138,19 @@ fn scan_file(
 
         let ctx = ScanLineContext {
             file_path: &file.path,
+            apply_path_filters,
             line_number: added_line.line_number,
             line: &added_line.content,
             scanner,
             allowlist,
             is_doc_file: is_doc,
         };
-        scan_line(&ctx, &mut candidate_bits, &mut findings);
+        scan_line(
+            &ctx,
+            generic_rule_disabled,
+            &mut candidate_bits,
+            &mut findings,
+        );
     }
 
     findings
@@ -180,6 +222,7 @@ fn is_credential_rule(rule_id: &str) -> bool {
 /// context for scanning a single line
 struct ScanLineContext<'a> {
     file_path: &'a str,
+    apply_path_filters: bool,
     line_number: usize,
     line: &'a [u8],
     scanner: &'a CompiledScanner,
@@ -189,14 +232,20 @@ struct ScanLineContext<'a> {
 
 /// scan a single line against all rules using the aho-corasick pre-filter.
 /// uses a reusable bitset to avoid allocations per line.
-fn scan_line(ctx: &ScanLineContext<'_>, candidate_bits: &mut [bool], findings: &mut Vec<Finding>) {
+fn scan_line(
+    ctx: &ScanLineContext<'_>,
+    generic_rule_disabled: bool,
+    candidate_bits: &mut [bool],
+    findings: &mut Vec<Finding>,
+) {
     let matches = MatchContext {
-        file_path: Some(ctx.file_path),
+        file_path: ctx.apply_path_filters.then_some(ctx.file_path),
         input: ctx.line,
         line_starts: &[],
         scanner: ctx.scanner,
         allowlist: ctx.allowlist,
         is_doc_file: ctx.is_doc_file,
+        generic_rule_disabled,
     };
     scan_matches(&matches, candidate_bits, |rule_id, range| {
         findings.push(Finding {
@@ -216,6 +265,19 @@ pub(super) struct MatchContext<'a> {
     pub scanner: &'a CompiledScanner,
     pub allowlist: &'a CompiledAllowlist,
     pub is_doc_file: bool,
+    pub generic_rule_disabled: bool,
+}
+
+/// diagnostic only; pseudo-findings count as findings for scan/audit exit codes when the flag is on, and the flag exists only on the CLI so hook surfaces never see them.
+fn trace_exemption(
+    ctx: &MatchContext<'_>,
+    emit: &mut impl FnMut(&str, std::ops::Range<usize>),
+    name: &str,
+    range: std::ops::Range<usize>,
+) {
+    if ctx.allowlist.trace_exemptions {
+        emit(&format!("exempt:{name}"), range);
+    }
 }
 
 impl MatchContext<'_> {
@@ -243,6 +305,12 @@ pub(super) fn scan_matches(
     candidate_bits: &mut [bool],
     mut emit: impl FnMut(&str, Range<usize>),
 ) {
+    let mut seen = std::collections::HashSet::new();
+    let mut emit = |rule_id: &str, range: Range<usize>| {
+        if seen.insert((rule_id.to_owned(), range.start, range.end)) {
+            emit(rule_id, range);
+        }
+    };
     // keywordless rules are always eligible; reset all other candidate bits.
     let mut has_candidates = false;
     for (bit, rule) in candidate_bits.iter_mut().zip(&ctx.scanner.rules) {
@@ -307,182 +375,484 @@ pub(super) fn scan_matches(
             Some(captures)
         });
         for captures in captures_iter {
-            // step 4: extract secret value via capture group
-            let Some(secret_match) = captures
-                .get(rule.secret_group)
-                .or_else(|| {
-                    rule.secret_groups
-                        .iter()
-                        .find_map(|&group| captures.get(group))
-                })
-                .or_else(|| captures.get(0))
-            else {
-                continue;
-            };
-            let mut secret = secret_match.as_bytes();
-            let mut secret_range = secret_match.range();
-
-            // non-env-style unquoted matches use their first unescaped quote as the legacy boundary.
-            if is_entropy_value
-                && let (Some(unquoted), Some(key)) = (
-                    captures.name("entropy_unquoted"),
-                    captures.name("entropy_key"),
-                )
-                && unquoted.range() == secret_range
-                && !is_env_style_assignment(ctx.input, key.start(), secret)
-                && let Some(end) = first_unescaped_quote(secret)
-            {
-                secret = &secret[..end];
-                secret_range.end = secret_range.start + end;
-            }
-
-            if secret.is_empty() {
-                continue;
-            }
-            if is_entropy_value
-                && (secret.len() < entropy::MIN_ENTROPY_LENGTH
-                    || !secret.iter().all(u8::is_ascii_graphic))
-            {
-                continue;
-            }
-            if is_entropy_value && entropy::is_path_shaped(secret) {
-                continue;
-            }
-
-            if is_entropy_value && let Some(key_match) = captures.name("entropy_key") {
-                let key = key_match.as_bytes();
-                let key = if key.len() >= 2
-                    && matches!(key[0], b'\'' | b'"')
-                    && key[0] == key[key.len() - 1]
-                {
-                    &key[1..key.len() - 1]
-                } else {
-                    key
-                };
-                if !key.is_empty() && ctx.allowlist.is_entropy_key_allowlisted(key) {
-                    continue;
-                }
-            }
-
-            // step 5: per-rule allowlist check
-            let allowlisted = match ctx.file_path {
-                Some(path) => ctx.allowlist.is_rule_allowlisted(&rule.id, secret, path),
-                None => ctx.allowlist.is_rule_value_allowlisted(&rule.id, secret),
-            };
-            if allowlisted {
-                continue;
-            }
-
-            let line = ctx.surrounding_lines(
-                captures
-                    .get(0)
-                    .map(|m| m.range())
-                    .unwrap_or_else(|| secret_match.range()),
-            );
-
-            // step 6: variable reference detection
-            if ctx.allowlist.is_variable_reference(secret) {
-                continue;
-            }
-
-            // step 6.5: template line detection for context-dependent rules.
-            // if the line contains template syntax (jinja2, erb, php block tags),
-            // skip findings from context-dependent rules (tier 2/3). tier 1
-            // prefix rules are NOT affected — a real AKIA... key on a template
-            // line is still a finding, even if the rule uses entropy.
-            if !is_entropy_value
-                && (rule.context_dependent
-                    || is_password_rule(&rule.id)
-                    || is_credential_rule(&rule.id))
-                && ctx.allowlist.is_template_line(line)
-            {
-                continue;
-            }
-
-            // step 7: stopword filter.
-            // tier 1 rules (no entropy threshold) only check for placeholder
-            // patterns (e.g. XXXX...) to avoid false positives on format
-            // examples, but skip word-based stopwords since tokens like
-            // sk_test_ inherently contain "test".
-            // tier 2+ rules, password rules, and credential rules get the
-            // full stopword check.
-            if is_entropy_value {
-                if ctx.allowlist.contains_user_stopword(secret) {
-                    continue;
-                }
-            } else if rule.entropy_threshold.is_some()
-                || is_password_rule(&rule.id)
-                || is_credential_rule(&rule.id)
-            {
-                if ctx.allowlist.contains_stopword(secret) {
-                    continue;
-                }
-            } else if ctx.allowlist.is_placeholder_pattern(secret) {
-                continue;
-            }
-
-            // step 8: hash detection - skip hashes
-            if !is_entropy_value && hash_detect::is_hash_in_context(secret, line) {
-                continue;
-            }
-
-            // step 8.5: password strength heuristic for password rules.
-            // weak/placeholder passwords are allowed through; only strong
-            // passwords are flagged as real secrets.
-            if is_password_rule(&rule.id) && !password::is_strong_password(secret) {
-                continue;
-            }
-
-            // step 8.6: for credential rules, filter weak passwords but
-            // preserve high-entropy tokens as a safety net for generated
-            // passwords with limited character class diversity (e.g. hex).
-            // uses raw shannon entropy (no min-length gate) since connection
-            // string passwords are typically short.
-            if is_credential_rule(&rule.id) && !password::is_strong_password(secret) {
-                let threshold = rule.entropy_threshold.unwrap_or(3.5);
-                if entropy::shannon_entropy(secret) < threshold {
-                    continue;
-                }
-            }
-
-            // step 8.7: OpenSSH public key detection (single-line format).
-            // lines like "ssh-rsa AAAA... user@host" contain high-entropy
-            // base64 that triggers token rules. skip unless detect_public_keys is on.
-            if !ctx.allowlist.detect_public_keys && pubkey::is_openssh_public_key(line) {
-                continue;
-            }
-
-            // step 9: entropy evaluation (if rule requires it).
-            // password rules skip entropy check -- the password strength
-            // heuristic (step 8.5) already validates these. the entropy
-            // min-length threshold would otherwise reject strong passwords
-            // shorter than MIN_ENTROPY_LENGTH (e.g. 12-char passwords).
-            if !is_password_rule(&rule.id)
-                && let Some(mut threshold) = rule.entropy_threshold
-            {
-                // apply global override as a floor (never lower a rule's threshold)
-                if let Some(override_val) = ctx.allowlist.entropy_threshold_override {
-                    threshold = threshold.max(override_val);
-                }
-                // apply doc file bonus (raise threshold = less likely to flag)
-                if ctx.is_doc_file && !is_entropy_value {
-                    threshold += ctx.allowlist.doc_entropy_bonus();
-                }
-                if !entropy::passes_entropy_check(secret, threshold) {
-                    continue;
-                }
-            }
-
-            emit(&rule.id, secret_range);
+            evaluate_candidate(ctx, rule, Candidate::Regex(captures), &mut emit);
+        }
+        // single-line text uses its first pass with [0]; diff and per-line passes use [].
+        if is_entropy_value && ctx.allowlist.exemption_layer && ctx.line_starts.len() <= 1 {
+            crate::scanner::calllit::collect(ctx.input, |range| {
+                evaluate_candidate(ctx, rule, Candidate::Call(range), &mut emit);
+            });
         }
     }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CaptureKind {
+    Unquoted,
+    Bare,
+    Double,
+    Single,
+    Bracket,
+    Call,
+    Other,
+}
+
+enum Candidate<'a> {
+    Regex(regex::bytes::Captures<'a>),
+    Call(Range<usize>),
+}
+
+impl<'a> Candidate<'a> {
+    fn get(&self, index: usize) -> Option<regex::bytes::Match<'a>> {
+        match self {
+            Self::Regex(captures) => captures.get(index),
+            Self::Call(_) => None,
+        }
+    }
+
+    fn name(&self, name: &str) -> Option<regex::bytes::Match<'a>> {
+        match self {
+            Self::Regex(captures) => captures.name(name),
+            Self::Call(_) => None,
+        }
+    }
+
+    fn call_range(&self) -> Option<Range<usize>> {
+        match self {
+            Self::Regex(_) => None,
+            Self::Call(range) => Some(range.clone()),
+        }
+    }
+
+    fn kind(&self, original_range: &Range<usize>) -> CaptureKind {
+        if matches!(self, Self::Call(_)) {
+            return CaptureKind::Call;
+        }
+        [
+            ("entropy_unquoted", CaptureKind::Unquoted),
+            ("entropy_bare", CaptureKind::Bare),
+            ("entropy_double", CaptureKind::Double),
+            ("entropy_single", CaptureKind::Single),
+            ("entropy_bracket", CaptureKind::Bracket),
+        ]
+        .into_iter()
+        .find_map(|(name, kind)| {
+            self.name(name)
+                .filter(|matched| matched.range() == *original_range)
+                .map(|_| kind)
+        })
+        .unwrap_or(CaptureKind::Other)
+    }
+}
+
+/// call bodies have no key: key allowances and the assignment-only hex bypass cannot apply.
+/// a 40-byte hex body below 4.0 bits therefore remains a recall residual.
+fn evaluate_candidate(
+    ctx: &MatchContext<'_>,
+    rule: &crate::scanner::rules::CompiledRule,
+    captures: Candidate<'_>,
+    emit: &mut impl FnMut(&str, Range<usize>),
+) {
+    let is_entropy_value = rule.id == "generic-high-entropy-value";
+    // step 4: extract secret value via capture group
+    let secret_match = captures
+        .get(rule.secret_group)
+        .or_else(|| {
+            rule.secret_groups
+                .iter()
+                .find_map(|&group| captures.get(group))
+        })
+        .or_else(|| captures.get(0));
+    let Some(original_range) = captures
+        .call_range()
+        .or_else(|| secret_match.map(|m| m.range()))
+    else {
+        return;
+    };
+    let kind = captures.kind(&original_range);
+    let mut secret_range = original_range.clone();
+    let mut secret = &ctx.input[secret_range.clone()];
+
+    // non-env-style unquoted matches use their first unescaped quote as the legacy boundary.
+    if is_entropy_value
+        && let (Some(unquoted), Some(key)) = (
+            captures.name("entropy_unquoted"),
+            captures.name("entropy_key"),
+        )
+        && unquoted.range() == secret_range
+        && !is_env_style_assignment(ctx.input, key.start(), secret)
+        && let Some(end) = first_unescaped_quote(secret)
+    {
+        secret = &secret[..end];
+        secret_range.end = secret_range.start + end;
+    }
+
+    if secret.is_empty() {
+        return;
+    }
+    if rule.id == "facebook-access-token"
+        && secret.starts_with(b"EAA")
+        && secret
+            .get(3..)
+            .is_some_and(|tail| tail.iter().all(u8::is_ascii_hexdigit))
+    {
+        return;
+    }
+    if rule.id == "generic-password-assignment"
+        && let Some(key_match) = captures.name("password_key")
+    {
+        let key = key_match.as_bytes();
+        let key = if key.len() >= 2
+            && matches!(key[0], b'\'' | b'"' | b'`')
+            && key[0] == key[key.len() - 1]
+        {
+            &key[1..key.len() - 1]
+        } else {
+            key
+        };
+        if matches!(key, b"PWD" | b"OLDPWD") {
+            return;
+        }
+    }
+    if is_entropy_value
+        && (secret.len() < entropy::MIN_ENTROPY_LENGTH || !secret.iter().all(u8::is_ascii_graphic))
+    {
+        return;
+    }
+    if is_entropy_value && entropy::is_path_shaped(secret) {
+        return;
+    }
+
+    let line = ctx.surrounding_lines(
+        captures
+            .get(0)
+            .map(|m| m.range())
+            .unwrap_or_else(|| original_range.clone()),
+    );
+    let key_bytes = captures.name("entropy_key").map(|key_match| {
+        let key = key_match.as_bytes();
+        if key.len() >= 2 && matches!(key[0], b'\'' | b'"') && key[0] == key[key.len() - 1] {
+            &key[1..key.len() - 1]
+        } else {
+            key
+        }
+    });
+    let mut hex_bypass = false;
+    if is_entropy_value && ctx.allowlist.exemption_layer {
+        if ctx.generic_rule_disabled {
+            trace_exemption(ctx, emit, "file", secret_range.clone());
+            return;
+        }
+        if kind != CaptureKind::Call && ctx.allowlist.is_import_line(line) {
+            trace_exemption(ctx, emit, "import", secret_range.clone());
+            return;
+        }
+        if kind != CaptureKind::Call
+            && let Some(inner) = crate::scanner::urlshape::unwrap_markdown_target(secret)
+        {
+            secret = &secret[inner.clone()];
+            secret_range = secret_range.start + inner.start..secret_range.start + inner.end;
+            if secret.len() < entropy::MIN_ENTROPY_LENGTH {
+                trace_exemption(ctx, emit, "markdown", secret_range.clone());
+                return;
+            }
+        }
+        if entropy::is_path_shaped(secret) {
+            trace_exemption(ctx, emit, "path", secret_range.clone());
+            return;
+        }
+        if crate::scanner::urlshape::is_pinned_action_ref(key_bytes, secret) {
+            trace_exemption(ctx, emit, "pin", secret_range.clone());
+            return;
+        }
+        if crate::scanner::urlshape::is_credential_free_url(secret) {
+            trace_exemption(ctx, emit, "url", secret_range.clone());
+            return;
+        }
+        // a url is exempt only through the url predicate, never through word or expression shape.
+        let url_shaped = crate::scanner::urlshape::is_url_shaped(secret);
+        let core_end = secret_range.end
+            - secret
+                .iter()
+                .rev()
+                .take_while(|&&byte| matches!(byte, b';' | b','))
+                .count();
+        if matches!(kind, CaptureKind::Unquoted | CaptureKind::Bare)
+            && !url_shaped
+            && let Some(span) =
+                crate::scanner::syntax::expression_span(ctx.input, secret_range.start, 4096)
+            && span.start <= secret_range.start
+            && span.end >= core_end
+        {
+            trace_exemption(ctx, emit, "syntax", secret_range.clone());
+            return;
+        }
+        if crate::scanner::wordshape::is_word_structured(secret) && !url_shaped {
+            trace_exemption(ctx, emit, "wordshape", secret_range.clone());
+            return;
+        }
+        // a uniformly random 32-hex value has expected entropy about 3.6 bits (observed minimum
+        // 2.65 in 1e6 samples); the 2.0-bit floor excludes only repeated-pattern / low-diversity
+        // values while admitting real random hex secrets. 3.0 was rejected: 112 of 1e6 random
+        // 32-hex samples fell below it.
+        const HEX_BYPASS_MIN_ENTROPY: f64 = 2.0;
+
+        // called only after hex policy validation; prefix and case add no symbol diversity.
+        fn hex_symbol_entropy(value: &[u8]) -> f64 {
+            let payload = value
+                .strip_prefix(b"0x")
+                .or_else(|| value.strip_prefix(b"0X"))
+                .unwrap_or(value);
+            let mut counts = [0_u32; 16];
+            for byte in payload {
+                let symbol = match byte.to_ascii_lowercase() {
+                    b'0'..=b'9' => byte - b'0',
+                    b'a'..=b'f' => byte.to_ascii_lowercase() - b'a' + 10,
+                    _ => unreachable!("hex policy validated the payload"),
+                };
+                counts[usize::from(symbol)] += 1;
+            }
+            counts
+                .iter()
+                .filter(|&&count| count > 0)
+                .map(|&count| {
+                    let probability = f64::from(count) / payload.len() as f64;
+                    -probability * probability.log2()
+                })
+                .sum()
+        }
+
+        // hex_bypass values meeting the floor skip the shannon-entropy gate at the final step and
+        // are emitted if they clear every other gate; this is the one place the layer
+        // makes the rule stricter (it admits exact-length hex assignment values that
+        // would otherwise fail the shannon gate).
+        // the 0.6.x line-level hash context exemption keeps precedence over the hex policy:
+        // a hex value on a line carrying a hash context word is a hash, not a secret.
+        hex_bypass = matches!(
+            kind,
+            CaptureKind::Double
+                | CaptureKind::Single
+                | CaptureKind::Bracket
+                | CaptureKind::Unquoted
+        ) && hash_detect::is_hex_policy_candidate(key_bytes, secret)
+            && !hash_detect::is_hash_in_context(
+                secret
+                    .strip_prefix(b"0x")
+                    .or_else(|| secret.strip_prefix(b"0X"))
+                    .unwrap_or(secret),
+                line,
+            )
+            && hex_symbol_entropy(secret) >= HEX_BYPASS_MIN_ENTROPY;
+    }
+
+    if is_entropy_value
+        && let Some(key) = key_bytes
+        && !key.is_empty()
+        && ctx.allowlist.is_entropy_key_allowlisted(key)
+    {
+        return;
+    }
+
+    // step 5: per-rule allowlist check
+    let allowlisted = match ctx.file_path {
+        Some(path) => ctx.allowlist.is_rule_allowlisted(&rule.id, secret, path),
+        None => ctx.allowlist.is_rule_value_allowlisted(&rule.id, secret),
+    };
+    if allowlisted {
+        return;
+    }
+
+    // step 6: variable reference detection
+    let is_reference = if rule.id == "password-in-url" {
+        password::is_pure_reference(secret)
+    } else {
+        ctx.allowlist.is_variable_reference(secret)
+    };
+    if is_reference {
+        return;
+    }
+
+    // step 6.5: template line detection for context-dependent rules.
+    // if the line contains template syntax (jinja2, erb, php block tags),
+    // skip findings from context-dependent rules (tier 2/3). tier 1
+    // prefix rules are NOT affected — a real AKIA... key on a template
+    // line is still a finding, even if the rule uses entropy.
+    if !is_entropy_value
+        && (rule.context_dependent || is_password_rule(&rule.id) || is_credential_rule(&rule.id))
+        && ctx.allowlist.is_template_line(line)
+    {
+        return;
+    }
+
+    // step 7: stopword filter.
+    // tier 1 rules (no entropy threshold) only check for placeholder
+    // patterns (e.g. XXXX...) to avoid false positives on format
+    // examples, but skip word-based stopwords since tokens like
+    // sk_test_ inherently contain "test".
+    // tier 2+ rules, password rules, and credential rules get the
+    // full stopword check.
+    if rule.id == "password-in-url" {
+        if password::is_url_password_placeholder(secret)
+            || ctx.allowlist.contains_user_stopword(secret)
+        {
+            return;
+        }
+    } else if is_entropy_value {
+        if ctx.allowlist.contains_user_stopword(secret) {
+            return;
+        }
+    } else if rule.entropy_threshold.is_some()
+        || is_password_rule(&rule.id)
+        || is_credential_rule(&rule.id)
+    {
+        if ctx.allowlist.contains_stopword(secret) {
+            return;
+        }
+    } else if ctx.allowlist.is_placeholder_pattern(secret) {
+        return;
+    }
+
+    // step 8: hash detection - skip hashes
+    if !is_entropy_value && hash_detect::is_hash_in_context(secret, line) {
+        return;
+    }
+
+    // step 8.5: password strength heuristic for assignment passwords only.
+    // weak/placeholder passwords are allowed through; only strong
+    // passwords are flagged as real secrets.
+    if rule.id == "generic-password-assignment" && !password::is_strong_password(secret) {
+        return;
+    }
+
+    // step 8.6: for credential rules, filter weak passwords but
+    // preserve high-entropy tokens as a safety net for generated
+    // passwords with limited character class diversity (e.g. hex).
+    // uses raw shannon entropy (no min-length gate) since connection
+    // string passwords are typically short.
+    if is_credential_rule(&rule.id) && !password::is_strong_password(secret) {
+        let threshold = rule.entropy_threshold.unwrap_or(3.5);
+        if entropy::shannon_entropy(secret) < threshold {
+            return;
+        }
+    }
+
+    // step 8.7: OpenSSH public key detection (single-line format).
+    // lines like "ssh-rsa AAAA... user@host" contain high-entropy
+    // base64 that triggers token rules. skip unless detect_public_keys is on.
+    if !ctx.allowlist.detect_public_keys && pubkey::is_openssh_public_key(line) {
+        return;
+    }
+
+    // step 9: entropy evaluation (if rule requires it).
+    // assignment passwords skip entropy check -- the password strength
+    // heuristic (step 8.5) already validates these. the entropy
+    // min-length threshold would otherwise reject strong passwords
+    // shorter than MIN_ENTROPY_LENGTH (e.g. 12-char passwords).
+    if rule.id != "generic-password-assignment"
+        && !hex_bypass
+        && let Some(mut threshold) = rule.entropy_threshold
+    {
+        // apply global override as a floor (never lower a rule's threshold)
+        if let Some(override_val) = ctx.allowlist.entropy_threshold_override {
+            threshold = threshold.max(override_val);
+        }
+        // apply doc file bonus (raise threshold = less likely to flag)
+        if ctx.is_doc_file && !is_entropy_value {
+            threshold += ctx.allowlist.doc_entropy_bonus();
+        }
+        if !entropy::passes_entropy_check(secret, threshold) {
+            return;
+        }
+    }
+
+    emit(&rule.id, secret_range);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::diff::parser::{AddedLine, DiffFile};
-    use crate::scanner::rules::{Rule, RuleAllowlist, compile_rules};
+    use crate::scanner::rules::{Rule, RuleAllowlist, compile_rules, load_default_rules};
+
+    #[test]
+    fn exemption_trace_order_and_retargeted_ranges() {
+        let scanner = make_scanner(vec![make_rule(
+            "generic-high-entropy-value",
+            r"(?:(?P<entropy_key>uses): |use crate::)?(?P<entropy_unquoted>[^\s]+)",
+            2,
+            vec![],
+            Some(4.0),
+        )]);
+        let mut al = default_al();
+        al.trace_exemptions = true;
+        let token: String = (0..32)
+            .map(|index| char::from(if index % 2 == 0 { b'A' } else { b'a' } + index % 26))
+            .collect();
+        let digest: String = (0..40)
+            .map(|index| char::from_digit(index % 16, 16).unwrap())
+            .collect();
+        let import = format!("use crate::{token};");
+        let pin = format!("uses: actions/checkout@{digest}");
+        let cases = [
+            ("file", token.as_str(), token.as_str(), true),
+            ("import", import.as_str(), &import[11..], false),
+            ("markdown", "[documentation](tiny)", "tiny", false),
+            (
+                "path",
+                "[docs](./relative/folder/report.md)",
+                "./relative/folder/report.md",
+                false,
+            ),
+            ("pin", pin.as_str(), &pin[6..], false),
+            (
+                "url",
+                "https://github.com/owner/repo/compare/v1.0.0...v1.1.0",
+                "https://github.com/owner/repo/compare/v1.0.0...v1.1.0",
+                false,
+            ),
+            (
+                "syntax",
+                "sum(rate(node_tcp_connections[5m]))",
+                "sum(rate(node_tcp_connections[5m]))",
+                false,
+            ),
+            (
+                "wordshape",
+                "hummingbot.strategy.strategy_v2_base.ExecutorOrchestrator",
+                "hummingbot.strategy.strategy_v2_base.ExecutorOrchestrator",
+                false,
+            ),
+        ];
+        for (name, input, value, generic_rule_disabled) in cases {
+            let ctx = MatchContext {
+                file_path: None,
+                input: input.as_bytes(),
+                line_starts: &[],
+                scanner: &scanner,
+                allowlist: &al,
+                is_doc_file: false,
+                generic_rule_disabled,
+            };
+            let mut found = Vec::new();
+            scan_matches(&ctx, &mut [false], |id, range| {
+                found.push((id.to_owned(), range))
+            });
+            let start = input.find(value).unwrap();
+            assert_eq!(
+                found,
+                vec![(format!("exempt:{name}"), start..start + value.len())],
+                "{name}"
+            );
+        }
+
+        let input = format!("[docs]({token})");
+        let expected = "[docs]([REDACTED])";
+        assert_eq!(redact_text(&input, &scanner, &al), expected);
+        let matches = scan_text(&input, &scanner, &al);
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].rule_id, "generic-high-entropy-value");
+        assert_eq!(&input[matches[0].range.clone()], token);
+    }
 
     fn make_rule(
         id: &str,
@@ -526,6 +896,94 @@ mod tests {
 
     fn default_al() -> CompiledAllowlist {
         CompiledAllowlist::default_allowlist().unwrap()
+    }
+
+    fn generated_token() -> String {
+        (0..32)
+            .map(|index| {
+                let base = if index % 2 == 0 { b'A' } else { b'a' };
+                char::from(base + (index * 7 % 26))
+            })
+            .collect()
+    }
+
+    #[test]
+    fn scan_without_path_filters_reports_original_paths() {
+        let scanner = compile_rules(&load_default_rules().unwrap()).unwrap();
+        let token = generated_token();
+        let line = format!("token = \"{token}\"");
+        for path in [
+            "../tests/config.rs",
+            "/elsewhere/tests/config.rs",
+            "tests/../../node_modules/config.js",
+            "../Cargo.lock",
+            "../config.png",
+            "../config.min.js",
+            "../.gitignore",
+        ] {
+            for per_rule in [false, true] {
+                let paths = if per_rule { vec![] } else { vec![".*".into()] };
+                let rules = if per_rule {
+                    vec![(
+                        "generic-high-entropy-value".into(),
+                        vec![],
+                        vec![".*".into()],
+                    )]
+                } else {
+                    vec![]
+                };
+                let al = CompiledAllowlist::new(&paths, &[], None, &rules, false).unwrap();
+                let files = [make_file(path, vec![(7, line.as_bytes())])];
+                assert!(scan(&files, &scanner, &al).is_empty());
+                let findings = scan_without_path_filters(&files, &scanner, &al);
+                assert_eq!(findings.len(), 1, "{path}, per_rule={per_rule}");
+                assert_eq!(findings[0].file, path);
+                assert_eq!(findings[0].line, 7);
+                assert_eq!(findings[0].matched_value, token.as_bytes());
+            }
+        }
+    }
+
+    #[test]
+    fn scan_without_path_filters_preserves_value_checks_and_skips_doc_bonus() {
+        let token = generated_token();
+        let line = format!("token = \"{token}\"");
+        let scanner = make_scanner(vec![make_rule(
+            "fixture",
+            r#"token = "([^"]+)""#,
+            1,
+            vec!["token"],
+            Some(entropy::shannon_entropy(token.as_bytes()) - 0.5),
+        )]);
+        let value_rules = vec![("fixture".into(), vec![".*".into()], vec![])];
+        let value_al = CompiledAllowlist::new(&[], &[], None, &value_rules, false).unwrap();
+        let stopword_al = CompiledAllowlist::new(&[], &[token], None, &[], false).unwrap();
+        for (al, path, expected_scan, expected_unfiltered) in [
+            (default_al(), "../src/config.rs", 1, 1),
+            (default_al(), "../docs/guide.md", 0, 1),
+            (default_al(), "docs/../src/config.rs", 0, 1),
+            (value_al, "../src/config.rs", 0, 0),
+            (stopword_al, "../src/config.rs", 0, 0),
+        ] {
+            let files = [make_file(path, vec![(3, line.as_bytes())])];
+            assert_eq!(scan(&files, &scanner, &al).len(), expected_scan, "{path}");
+            assert_eq!(
+                scan_without_path_filters(&files, &scanner, &al).len(),
+                expected_unfiltered,
+                "{path}"
+            );
+        }
+        let files = [make_file(
+            "../src/config.rs",
+            vec![
+                (1, b"-----BEGIN PUBLIC KEY-----"),
+                (2, line.as_bytes()),
+                (3, b"-----END PUBLIC KEY-----"),
+            ],
+        )];
+        let al = default_al();
+        assert!(scan(&files, &scanner, &al).is_empty());
+        assert!(scan_without_path_filters(&files, &scanner, &al).is_empty());
     }
 
     #[test]

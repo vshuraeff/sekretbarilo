@@ -259,7 +259,7 @@ mod high_entropy_values {
 
     #[test]
     fn key_allowlist_does_not_affect_values_without_a_matching_assignment_key() {
-        let (scanner, al) = scanner_and_key_allowlist(&["TMPDIR"]);
+        let (scanner, mut al) = scanner_and_key_allowlist(&["TMPDIR"]);
         let token = distinct_token(24);
         let inside_value = format!("{}TMPDIR{}", &token[..12], &token[12..]);
         assert!(entropy::shannon_entropy(inside_value.as_bytes()) >= 4.0);
@@ -274,6 +274,10 @@ mod high_entropy_values {
         let url = format!("https://{}", distinct_token(13));
         assert!(entropy::shannon_entropy(url.as_bytes()) >= 4.0);
         assert_values("config.txt", &token, &[&token], &scanner, &al);
+        // q1: the 0.7.0 exemption layer exempts this credential-free url.
+        assert_values("config.txt", &url, &[], &scanner, &al);
+        assert_values("config.txt", &format!("TMPDIR={url}"), &[], &scanner, &al);
+        al.exemption_layer = false;
         assert_values("config.txt", &url, &[&url], &scanner, &al);
         assert_values("config.txt", &format!("TMPDIR={url}"), &[], &scanner, &al);
     }
@@ -377,11 +381,17 @@ mod high_entropy_values {
 
     #[test]
     fn bare_url_and_colon_boundary_preserve_complete_values() {
-        let (scanner, al) = default_scanner_and_allowlist();
+        let (scanner, mut al) = default_scanner_and_allowlist();
         let url = format!("https://{}", distinct_token(13));
         assert_eq!(url.len(), 21);
         assert!(entropy::shannon_entropy(url.as_bytes()) >= 4.0);
+        let opaque = distinct_token(url.len());
+        assert_values("config.txt", &opaque, &[&opaque], &scanner, &al);
+        // q1: the 0.7.0 exemption layer exempts this credential-free url.
+        assert_values("config.txt", &url, &[], &scanner, &al);
+        al.exemption_layer = false;
         assert_values("config.txt", &url, &[&url], &scanner, &al);
+        al.exemption_layer = true;
         let value = distinct_token(24);
         let assignment = format!("ALPHA:{value}");
         assert_values("config.txt", &assignment, &[&value], &scanner, &al);
@@ -424,6 +434,8 @@ mod high_entropy_values {
         #[test]
         fn whole_line_urls_preserve_complete_spans_and_assignment_keys() {
             let (scanner, al) = default_scanner_and_allowlist();
+            let (_, mut layer_off) = default_scanner_and_allowlist();
+            layer_off.exemption_layer = false;
             let url = format!("https://{}", distinct_token(13));
             assert_eq!(url.len(), 21);
             assert!(entropy::shannon_entropy(url.as_bytes()) >= 4.0);
@@ -432,6 +444,7 @@ mod high_entropy_values {
                 format!("git+ssh.2://{}", distinct_token(13)),
                 format!("https://{}?q=x", distinct_token(13)),
             ] {
+                let opaque = distinct_token(url.len());
                 for (input, expected) in [
                     (url.clone(), "[REDACTED]".to_string()),
                     (format!("\t {url} \r\n"), "\t [REDACTED] \r\n".into()),
@@ -443,8 +456,15 @@ mod high_entropy_values {
                         "LEFT=short,ALPHA=[REDACTED]".into(),
                     ),
                 ] {
-                    assert_values("config.txt", &input, &[&url], &scanner, &al);
-                    assert_eq!(redact_text(&input, &scanner, &al), expected);
+                    // q1: the 0.7.0 exemption layer exempts each credential-free url form.
+                    assert_values("config.txt", &input, &[], &scanner, &al);
+                    assert_eq!(redact_text(&input, &scanner, &al), input);
+                    assert_values("config.txt", &input, &[&url], &scanner, &layer_off);
+                    assert_eq!(redact_text(&input, &scanner, &layer_off), expected);
+
+                    let opaque_input = input.replace(&url, &opaque);
+                    assert_values("config.txt", &opaque_input, &[&opaque], &scanner, &al);
+                    assert_eq!(redact_text(&opaque_input, &scanner, &al), expected);
                 }
             }
         }
@@ -646,36 +666,51 @@ mod high_entropy_values {
         assert!((entropy::shannon_entropy(minimum.as_bytes()) - 20_f64.log2()).abs() < 1e-12);
         assert_eq!(entropy::shannon_entropy(boundary.as_bytes()), 4.0);
         assert!(entropy::shannon_entropy(below.as_bytes()) < 4.0);
+        assert!(entropy::shannon_entropy(below.as_bytes()) >= 2.0);
         for value in [&short, &minimum, &boundary, &below] {
-            let expected: Vec<_> = if value == &minimum || value == &boundary {
-                vec![value.as_str()]
-            } else {
-                vec![]
-            };
             for input in [
                 format!("ALPHA={value}"),
                 format!("ALPHA='{value}'"),
                 value.clone(),
             ] {
+                // q3: the 0.7.0 exemption layer admits eligible hex assignments below 4.0 bits.
+                let expected: Vec<_> = if value == &minimum
+                    || value == &boundary
+                    || (value == &below && input != *value)
+                {
+                    vec![value.as_str()]
+                } else {
+                    vec![]
+                };
                 assert_values("config.txt", &input, &expected, &scanner, &al);
             }
         }
         let diluted = format!("{minimum}{}", "a".repeat(300));
         assert!(entropy::shannon_entropy(diluted.as_bytes()) < 4.0);
-        for value in [diluted, "1234567890".repeat(4), "a".repeat(64)] {
+        let digits: String = (0..40)
+            .map(|index| char::from(b'0' + ((index + 1) % 10) as u8))
+            .collect();
+        for value in [diluted, digits.clone(), "a".repeat(64)] {
             for input in [
                 format!("ALPHA={value}"),
                 format!("ALPHA=\"{value}\""),
                 value.clone(),
             ] {
-                assert_values("config.txt", &input, &[], &scanner, &al);
+                // q3: the 0.7.0 exemption layer also admits this 40-digit hex assignment.
+                let expected = if value == digits && input != value {
+                    vec![value.as_str()]
+                } else {
+                    vec![]
+                };
+                assert_values("config.txt", &input, &expected, &scanner, &al);
             }
         }
         let lower_override = CompiledAllowlist::new(&[], &[], Some(3.0), &[], false).unwrap();
+        // q3: the 0.7.0 exemption layer bypass applies independently of the ordinary threshold.
         assert_values(
             "config.txt",
             &format!("ALPHA={below}"),
-            &[],
+            &[&below],
             &scanner,
             &lower_override,
         );
@@ -698,7 +733,7 @@ mod high_entropy_values {
     }
 
     #[test]
-    fn names_shapes_templates_and_documentation_do_not_exempt_literals() {
+    fn names_shapes_and_templates_do_not_exempt_opaque_literals() {
         let (scanner, al) = default_scanner_and_allowlist();
         let value = balanced_hex();
         for name in [
@@ -728,7 +763,19 @@ mod high_entropy_values {
         ] {
             assert_values("docs/guide.md", &input, &[&value], &scanner, &al);
         }
-        let token = distinct_token(32);
+        let alphabetic = distinct_token(32);
+        // q4: mixed letters and digits in every segment preserve the opaque-literal pin.
+        let token: String = alphabetic
+            .bytes()
+            .enumerate()
+            .map(|(index, byte)| {
+                char::from(if index % 4 == 1 {
+                    b'0' + (index % 10) as u8
+                } else {
+                    byte
+                })
+            })
+            .collect();
         for value in [
             format!("/{token}"),
             format!("~/{token}"),
@@ -754,6 +801,22 @@ mod high_entropy_values {
                 &al,
             );
         }
+        let word_structured = format!(
+            "{}-{}-{}-{}-{}",
+            &alphabetic[..8],
+            &alphabetic[8..12],
+            &alphabetic[12..16],
+            &alphabetic[16..20],
+            &alphabetic[20..]
+        );
+        // q4: the 0.7.0 exemption layer exempts the original alphabetic word-structured variant.
+        assert_values(
+            "config.txt",
+            &format!("PATH={word_structured}"),
+            &[],
+            &scanner,
+            &al,
+        );
     }
 
     #[test]
@@ -786,9 +849,6 @@ mod high_entropy_values {
         for input in [
             format!("{token}=short"),
             format!("ALPHA=${{LONG_NAME:-{token}}}"),
-            format!("ALPHA={{{{lookup('BRAVO={token}')}}}}"),
-            format!("ALPHA=<%=lookup('BRAVO={token}')%>"),
-            format!("{{{{lookup('BRAVO={token}')}}}}"),
             format!("ALPHA={token}é"),
             format!("ALPHA={token}\\ more"),
             format!("ALPHA=`{token}`"),
@@ -800,6 +860,15 @@ mod high_entropy_values {
             "PATHLIKE=/usr/local/bin/tooling".into(),
         ] {
             assert_values("config.txt", &input, &[], &scanner, &al);
+        }
+        // reclassified per g1: opaque call-argument literals are tier-3 candidates (s19b).
+        let call_body = format!("BRAVO={token}");
+        for input in [
+            format!("ALPHA={{{{lookup('{call_body}')}}}}"),
+            format!("ALPHA=<%=lookup('{call_body}')%>"),
+            format!("{{{{lookup('{call_body}')}}}}"),
+        ] {
+            assert_values("config.txt", &input, &[&call_body], &scanner, &al);
         }
     }
 
@@ -999,13 +1068,15 @@ mod high_entropy_values {
             captures.name("entropy_unquoted").unwrap().as_bytes(),
             format!("Regex::new(r\"{token}\").unwrap(").as_bytes()
         );
-        assert_values("src/validator.rs", &regex_source, &[], &scanner, &al);
+        // reclassified per g1: dense regex literals in calls are an accepted, allowlistable cost.
+        assert_values("src/validator.rs", &regex_source, &[&token], &scanner, &al);
 
         let assertion_source = format!("assert_eq!(x, \"{token}\");");
+        // reclassified per g1: opaque call-argument literals are tier-3 candidates (s19b).
         assert_values(
             "tests/scanner_test.rs",
             &assertion_source,
-            &[],
+            &[&token],
             &scanner,
             &al,
         );

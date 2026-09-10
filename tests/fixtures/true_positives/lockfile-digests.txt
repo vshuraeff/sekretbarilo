@@ -1,0 +1,8 @@
+# lockfile-digests: subresource-integrity digests as they appear in a JSON lock file.
+# these are not credentials. they are recorded here because a lock file is skipped by its name,
+# and once such a line appears anywhere else its shape is indistinguishable from a packed token.
+# if the exemption layer ever learns the sha256- prefix, this file loses these lines and
+# false_positives/lockfile-hash-line-shapes.txt gains them: that move is a deliberate decision.
+# format: <rule id> TAB <line>.
+generic-high-entropy-value	    "integrity": "sha256-{B64_44}"
+generic-high-entropy-value	integrity = "sha256-{B64_44}"

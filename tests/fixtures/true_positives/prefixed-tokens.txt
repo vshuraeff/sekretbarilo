@@ -1,0 +1,4 @@
+# prefixed-tokens: tier-1 shapes, recognised by their vendor prefix rather than by entropy.
+# format: <rule id> TAB <line>. the AWS line is the documented fake key the existing tests use.
+aws-access-key-id	AKIAIOSFODNN7ABCDEFG
+github-personal-access-token	ghp_{S36}

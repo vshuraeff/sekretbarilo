@@ -1,0 +1,2 @@
+foo(sample)
+https://host/?v=sample

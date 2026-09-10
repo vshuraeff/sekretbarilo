@@ -36,6 +36,7 @@ fn merge_settings(base: SettingsConfig, overlay: SettingsConfig) -> SettingsConf
     SettingsConfig {
         entropy_threshold: overlay.entropy_threshold.or(base.entropy_threshold),
         detect_public_keys: overlay.detect_public_keys.or(base.detect_public_keys),
+        exemption_layer: overlay.exemption_layer.or(base.exemption_layer),
     }
 }
 
@@ -117,6 +118,7 @@ mod tests {
             settings: SettingsConfig {
                 entropy_threshold: Some(3.0),
                 detect_public_keys: None,
+                exemption_layer: None,
             },
             ..Default::default()
         };
@@ -124,6 +126,7 @@ mod tests {
             settings: SettingsConfig {
                 entropy_threshold: Some(4.5),
                 detect_public_keys: None,
+                exemption_layer: None,
             },
             ..Default::default()
         };
@@ -137,6 +140,7 @@ mod tests {
             settings: SettingsConfig {
                 entropy_threshold: Some(3.0),
                 detect_public_keys: None,
+                exemption_layer: None,
             },
             ..Default::default()
         };
@@ -244,6 +248,7 @@ mod tests {
             settings: SettingsConfig {
                 entropy_threshold: Some(2.0),
                 detect_public_keys: None,
+                exemption_layer: None,
             },
             allowlist: AllowlistConfig {
                 paths: vec!["vendor/.*".to_string()],
@@ -257,6 +262,7 @@ mod tests {
             settings: SettingsConfig {
                 entropy_threshold: Some(3.0),
                 detect_public_keys: None,
+                exemption_layer: None,
             },
             allowlist: AllowlistConfig {
                 paths: vec!["generated/.*".to_string()],
@@ -270,6 +276,7 @@ mod tests {
             settings: SettingsConfig {
                 entropy_threshold: Some(4.5),
                 detect_public_keys: None,
+                exemption_layer: None,
             },
             allowlist: AllowlistConfig {
                 paths: vec!["tmp/.*".to_string()],

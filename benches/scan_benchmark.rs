@@ -1,4 +1,5 @@
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
+use std::hint::black_box;
 
 use aho_corasick::AhoCorasick;
 use sekretbarilo::config::allowlist::CompiledAllowlist;
@@ -44,6 +45,35 @@ fn generate_diff_bytes(num_files: usize, lines_per_file: usize) -> Vec<u8> {
             };
             diff.extend_from_slice(line.as_bytes());
         }
+    }
+    diff
+}
+
+fn generate_mixed_diff_bytes(lines: usize) -> Vec<u8> {
+    let filename = "src/mixed_source.rs";
+    let mut diff = Vec::new();
+    diff.extend_from_slice(format!("diff --git a/{f} b/{f}\n", f = filename).as_bytes());
+    diff.extend_from_slice(format!("--- a/{f}\n", f = filename).as_bytes());
+    diff.extend_from_slice(format!("+++ b/{f}\n", f = filename).as_bytes());
+    diff.extend_from_slice(format!("@@ -0,0 +1,{} @@\n", lines).as_bytes());
+    for j in 0..lines {
+        let line = match j % 5 {
+            0 => format!(
+                "+let allowlist = CompiledAllowlist::from_config(&config_{j}, &rules).unwrap();\n"
+            ),
+            1 => format!("+    label: runtime.environment[\"CONFIG_ENVIRONMENT_NAME_{j}\"],\n"),
+            2 => format!(
+                "+Full diff: https://github.com/example/project/compare/v1.2.{j}...v1.3.{j}\n"
+            ),
+            3 => format!(
+                "+target_{j} = \"hummingbot.strategy.strategy_v2_base.ExecutorOrchestrator\"\n"
+            ),
+            _ => format!(
+                "+ARTIFACT_DIGEST_{j}={:064x}\n",
+                (j as u64).wrapping_mul(0x9E3779B97F4A7C15)
+            ),
+        };
+        diff.extend_from_slice(line.as_bytes());
     }
     diff
 }
@@ -167,6 +197,29 @@ fn bench_very_large_diff(c: &mut Criterion) {
     });
 }
 
+// -- benchmark: mixed-source diff (exemption-layer predicate shapes) --
+
+fn bench_mixed_source_diff(c: &mut Criterion) {
+    let rules = load_default_rules().unwrap();
+    let scanner = compile_rules(&rules).unwrap();
+    let allowlist = CompiledAllowlist::default_allowlist().unwrap();
+    let diff_1k = generate_mixed_diff_bytes(1_000);
+    let diff_10k = generate_mixed_diff_bytes(10_000);
+
+    c.bench_function("scan_mixed_source_1k", |b| {
+        b.iter(|| {
+            let files = parse_diff(&diff_1k);
+            scan(&files, &scanner, &allowlist)
+        })
+    });
+    c.bench_function("scan_mixed_source_10k", |b| {
+        b.iter(|| {
+            let files = parse_diff(&diff_10k);
+            scan(&files, &scanner, &allowlist)
+        })
+    });
+}
+
 // -- benchmark: scan with actual secrets (measures detection path) --
 
 fn bench_scan_with_secrets(c: &mut Criterion) {
@@ -206,6 +259,46 @@ fn bench_entropy(c: &mut Criterion) {
     );
 
     group.finish();
+}
+
+// -- benchmark: exemption-layer predicates --
+
+fn bench_exemption_predicates(c: &mut Criterion) {
+    let inputs = [
+        b"crate::scanner::syntax::expression_span".as_slice(),
+        b"pipeline.builder().validate().finish()".as_slice(),
+        b"https://github.com/example/project/compare/v1.2.0...v1.3.0".as_slice(),
+    ];
+
+    c.bench_function("wordshape_is_word_structured", |b| {
+        b.iter(|| {
+            for input in inputs {
+                black_box(sekretbarilo::scanner::wordshape::is_word_structured(
+                    black_box(input),
+                ));
+            }
+        })
+    });
+    c.bench_function("syntax_expression_span", |b| {
+        b.iter(|| {
+            for input in inputs {
+                black_box(sekretbarilo::scanner::syntax::expression_span(
+                    black_box(input),
+                    0,
+                    input.len(),
+                ));
+            }
+        })
+    });
+    c.bench_function("urlshape_is_credential_free_url", |b| {
+        b.iter(|| {
+            for input in inputs {
+                black_box(sekretbarilo::scanner::urlshape::is_credential_free_url(
+                    black_box(input),
+                ));
+            }
+        })
+    });
 }
 
 // -- benchmark: aho-corasick pre-filter effectiveness --
@@ -354,8 +447,10 @@ criterion_group!(
     bench_medium_diff,
     bench_large_diff,
     bench_very_large_diff,
+    bench_mixed_source_diff,
     bench_scan_with_secrets,
     bench_entropy,
+    bench_exemption_predicates,
     bench_aho_corasick_prefilter,
     bench_aho_corasick_vs_naive,
     bench_diff_parsing,

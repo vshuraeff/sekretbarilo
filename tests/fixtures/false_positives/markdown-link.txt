@@ -1,0 +1,11 @@
+# markdown-link: links, anchors, badges, tables and reference definitions in prose.
+# markdown puts a long URL next to a long label, and neither half is a credential.
+See the [configuration reference](https://docs.example.internal/widget/reference/configuration/).
+[allowlist-rules]: https://docs.example.internal/widget/reference/configuration/#allowlist-rules
+- [x] migrate the aggregation pipeline to the streaming writer
+<a href="https://example.internal/widget/getting-started/">Getting started</a>
+| option | default | description |
+Read the output of `sekretbarilo audit --trace-exemptions` in [the testing guide](../testing-false-positives/).
+![architecture diagram](../assets/img/widget-architecture-overview.svg "widget architecture")
+Both [the rules reference][rules] and [the configuration guide][configuration] describe the layer.
+[configuration]: ../configuration/#per-rule-allowlists

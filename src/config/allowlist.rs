@@ -16,7 +16,8 @@ const BINARY_EXTENSIONS: &[&str] = &[
     "mov", "wav", "ogg", "webp", "webm",
 ];
 
-/// default generated/lock files to skip
+/// default generated/lock files to skip. credentials in a lockfile's resolved
+/// url are invisible to the scanner, as they already are in package-lock.json.
 const GENERATED_FILES: &[&str] = &[
     "package-lock.json",
     "yarn.lock",
@@ -27,6 +28,32 @@ const GENERATED_FILES: &[&str] = &[
     "Gemfile.lock",
     "poetry.lock",
     "Pipfile.lock",
+    "bun.lock",
+    "Gopkg.lock",
+    "uv.lock",
+    "flake.lock",
+    "deno.lock",
+    "pdm.lock",
+    "mix.lock",
+    "pubspec.lock",
+    "npm-shrinkwrap.json",
+    "Package.resolved",
+    ".terraform.lock.hcl",
+    "Podfile.lock",
+    "Cartfile.resolved",
+    "packages.lock.json",
+    "Brewfile.lock.json",
+];
+
+/// basenames that skip generic-rule matching only.
+const GENERIC_ONLY_FILES: &[&str] = &[
+    ".gitignore",
+    ".dockerignore",
+    ".npmignore",
+    ".prettierignore",
+    ".eslintignore",
+    ".gitattributes",
+    ".helmignore",
 ];
 
 /// default generated file extensions to skip
@@ -47,6 +74,9 @@ const CONFIG_FILE: &str = ".sekretbarilo.toml";
 
 /// default stopwords - if the captured secret contains any of these,
 /// the finding is skipped
+/// generic-high-entropy-value uses user stopwords only through
+/// `contains_user_stopword`, which uses substring matching, so these word
+/// boundaries do not affect tier 3 behavior.
 const DEFAULT_STOPWORDS: &[&str] = &[
     "example",
     "test",
@@ -65,6 +95,8 @@ const DEFAULT_STOPWORDS: &[&str] = &[
     "insert_here",
     "your_",
     "my_",
+    "your-",
+    "my-",
     "<your",
 ];
 
@@ -74,12 +106,16 @@ const DOC_PREFIXES: &[&str] = &["readme", "changelog", "contributing", "license"
 const DOC_DIRS: &[&str] = &["docs/", "doc/", "documentation/", "wiki/"];
 
 /// check if `haystack` contains `needle` at a word boundary.
-/// only ascii alphabetic chars are considered "word" characters, so digits,
-/// underscores, and other non-alpha chars act as boundaries. this prevents
-/// "test" from matching inside "attestation" but still matches "7example"
-/// or "test_key" (since digits and `_` are boundaries).
+/// ascii alphanumeric and non-ascii bytes are word characters; `_` and ascii
+/// punctuation or separators act as boundaries. a boundary at a needle edge
+/// self-delimits, while a word edge requires a non-word neighbor. this prevents
+/// "test" from matching inside "attestation" but still matches "test_key".
 /// special case: "xxx" matches any run of 3+ identical characters (placeholder pattern).
 fn contains_word(haystack: &str, needle: &str) -> bool {
+    fn is_word_byte(b: u8) -> bool {
+        b.is_ascii_alphanumeric() || b >= 0x80
+    }
+
     if needle.is_empty() {
         return false;
     }
@@ -99,18 +135,18 @@ fn contains_word(haystack: &str, needle: &str) -> bool {
         }
         return false;
     }
+    let needle_bytes = needle.as_bytes();
     let mut start = 0;
-    while let Some(pos) = memmem::find(&haystack.as_bytes()[start..], needle.as_bytes()) {
+    while let Some(pos) = memmem::find(&haystack.as_bytes()[start..], needle_bytes) {
         let abs_pos = start + pos;
-        let before_ok = abs_pos == 0 || {
-            let b = haystack.as_bytes()[abs_pos - 1];
-            !b.is_ascii_alphabetic()
-        };
+        let is_word_edge = |b: u8| is_word_byte(b);
+        let before_ok = !is_word_edge(needle_bytes[0])
+            || abs_pos == 0
+            || !is_word_byte(haystack.as_bytes()[abs_pos - 1]);
         let end_pos = abs_pos + needle.len();
-        let after_ok = end_pos >= haystack.len() || {
-            let b = haystack.as_bytes()[end_pos];
-            !b.is_ascii_alphabetic()
-        };
+        let after_ok = !is_word_edge(needle_bytes[needle_bytes.len() - 1])
+            || end_pos >= haystack.len()
+            || !is_word_byte(haystack.as_bytes()[end_pos]);
         if before_ok && after_ok {
             return true;
         }
@@ -243,6 +279,11 @@ pub struct CompiledAllowlist {
     pub entropy_threshold_override: Option<f64>,
     /// whether to detect public keys as findings (default: false)
     pub detect_public_keys: bool,
+    /// whether exemption-layer filtering is enabled (default: true)
+    /// controls the whole 0.7.0 generic-rule recall/exemption policy, including call literals.
+    pub exemption_layer: bool,
+    /// whether exemption decisions are emitted as diagnostic findings (default: false)
+    pub trace_exemptions: bool,
     /// per-rule allowlist compiled regexes: maps rule_id -> (value_regexes, path_regexes, key_patterns)
     per_rule_allowlists: Vec<CompiledPerRuleAllowlist>,
 }
@@ -353,8 +394,53 @@ impl CompiledAllowlist {
             user_stopwords: user_stopwords.iter().map(|s| s.to_lowercase()).collect(),
             entropy_threshold_override: entropy_override,
             detect_public_keys,
+            exemption_layer: true,
+            trace_exemptions: false,
             per_rule_allowlists,
         })
+    }
+
+    // wired in the exemption-layer glue
+    #[allow(dead_code)]
+    /// returns whether a line is an import declaration eligible for exemption.
+    pub fn is_import_line(&self, line: &[u8]) -> bool {
+        const IMPORT_KEYWORDS: &[&[u8]] = &[
+            b"import",
+            b"from",
+            b"use",
+            b"package",
+            b"require",
+            b"#include",
+            b"extern crate",
+            b"using",
+            b"@import",
+            b"@use",
+        ];
+
+        let line = line.trim_ascii_start();
+        let has_keyword = IMPORT_KEYWORDS.iter().any(|&keyword| {
+            line.strip_prefix(keyword).is_some_and(|rest| {
+                rest.first()
+                    .is_some_and(|byte| byte.is_ascii_whitespace() || *byte == b'(')
+            })
+        });
+        if !has_keyword || line.contains(&b'=') {
+            return false;
+        }
+
+        !line.iter().enumerate().any(|(index, &byte)| {
+            byte == b':'
+                && (index == 0 || line[index - 1] != b':')
+                && (index + 1 == line.len() || line[index + 1] != b':')
+        })
+    }
+
+    // wired in the exemption-layer glue
+    #[allow(dead_code)]
+    /// returns whether a path skips generic-rule matching for exemption purposes.
+    pub fn is_generic_rule_skipped_path(&self, path: &str) -> bool {
+        let filename = path.rsplit('/').next().unwrap_or(path);
+        GENERIC_ONLY_FILES.contains(&filename) || filename.eq_ignore_ascii_case("CODEOWNERS")
     }
 
     /// check if a file path should be skipped entirely (global path allowlist)
@@ -615,6 +701,34 @@ mod tests {
         assert!(al.is_path_skipped("Cargo.lock"));
         assert!(al.is_path_skipped("go.sum"));
         assert!(al.is_path_skipped("path/to/package-lock.json"));
+        assert!(al.is_path_skipped("bun.lock"));
+        assert!(al.is_path_skipped("uv.lock"));
+        assert!(al.is_path_skipped("flake.lock"));
+        assert!(al.is_path_skipped("Package.resolved"));
+        assert!(al.is_path_skipped(".terraform.lock.hcl"));
+        assert!(al.is_path_skipped("terraform/grafana/.terraform.lock.hcl"));
+        assert!(al.is_path_skipped("npm-shrinkwrap.json"));
+        assert!(al.is_path_skipped("packages.lock.json"));
+        assert!(!al.is_path_skipped("Gopkg.toml"));
+    }
+
+    #[test]
+    fn generic_rule_skipped_paths() {
+        let al = default_al();
+        assert!(al.is_generic_rule_skipped_path(".gitignore"));
+        assert!(al.is_generic_rule_skipped_path(".dockerignore"));
+        assert!(al.is_generic_rule_skipped_path(".npmignore"));
+        assert!(al.is_generic_rule_skipped_path(".prettierignore"));
+        assert!(al.is_generic_rule_skipped_path(".eslintignore"));
+        assert!(al.is_generic_rule_skipped_path(".gitattributes"));
+        assert!(al.is_generic_rule_skipped_path(".helmignore"));
+        assert!(al.is_generic_rule_skipped_path("docs/.gitignore"));
+        assert!(al.is_generic_rule_skipped_path(".github/CODEOWNERS"));
+        assert!(al.is_generic_rule_skipped_path("codeowners"));
+        assert!(al.is_generic_rule_skipped_path("CODEOWNERS"));
+        assert!(!al.is_generic_rule_skipped_path("gitignore"));
+        assert!(!al.is_generic_rule_skipped_path(".gitignore.bak"));
+        assert!(!al.is_generic_rule_skipped_path("x/.gitignored"));
     }
 
     #[test]
@@ -682,6 +796,64 @@ mod tests {
         assert!(al.contains_stopword(b"changeme"));
         assert!(al.contains_stopword(b"fake-token-1234"));
         assert!(al.contains_stopword(b"MOCK_SECRET_KEY"));
+        assert!(al.contains_stopword(b"your_secret_key_value_x1"));
+        assert!(al.contains_stopword(b"my_super_secret_key_xyz1"));
+        assert!(al.contains_stopword(b"your-secret-key-value-x1"));
+        assert!(al.contains_stopword(b"my-api-key-here-x1"));
+        assert!(!al.contains_stopword(b"myyour_x"));
+        assert!(!al.contains_stopword(b"AKIAIOSFODNN7REALKEY"));
+    }
+
+    #[test]
+    fn non_ascii_stopword_edges_require_boundaries() {
+        let al = CompiledAllowlist::new(&[], &["é".into()], None, &[], false).unwrap();
+        assert!(!al.contains_stopword("aébA1cD2fG3hJ4kL5".as_bytes()));
+        assert!(al.contains_stopword("aéb é".as_bytes()));
+    }
+
+    #[test]
+    fn digit_stopword_edges_require_boundaries() {
+        let al = CompiledAllowlist::new(&[], &["key1".into()], None, &[], false).unwrap();
+        assert!(!al.contains_stopword(b"key12"));
+    }
+
+    #[test]
+    fn delimiter_terminated_default_stopwords_remain_matches() {
+        let al = default_al();
+        assert!(al.contains_stopword(b"your_password"));
+        assert!(al.contains_stopword(b"my-secret"));
+    }
+
+    #[test]
+    fn ascii_stopwords_keep_expected_boundary_behavior() {
+        let al = default_al();
+        assert!(al.contains_stopword(b"test_key"));
+        assert!(al.contains_stopword(b"TEST-value"));
+        assert!(!al.contains_stopword(b"latest"));
+    }
+
+    #[test]
+    fn import_lines_are_eligible_for_exemption() {
+        let al = default_al();
+        assert!(al.is_import_line(b"use foo::bar;"));
+        assert!(al.is_import_line(b"import { a as b } from './c';"));
+        assert!(al.is_import_line(b"from x import y"));
+        assert!(al.is_import_line(b"package main"));
+        assert!(al.is_import_line(b"require(\"left-pad\")"));
+        assert!(al.is_import_line(b"#include <stdio.h>"));
+        assert!(al.is_import_line(b"extern crate serde;"));
+        assert!(al.is_import_line(b"using System.Text;"));
+        assert!(al.is_import_line(b"  import os"));
+        assert!(al.is_import_line(b"@import \"styles.css\";"));
+        assert!(al.is_import_line(b"@use \"theme\";"));
+        assert!(!al.is_import_line(b"import_key=abcXYZ123"));
+        assert!(!al.is_import_line(b"from: user@example.com"));
+        assert!(!al.is_import_line(b"use this key: value"));
+        assert!(!al.is_import_line(b"uses: actions/checkout@v4"));
+        assert!(!al.is_import_line(b"imports = [...]"));
+        assert!(!al.is_import_line(b"importantly, nothing"));
+        assert!(!al.is_import_line(b"import x; TOKEN=placeholder"));
+        assert!(!al.is_import_line(b"used = 1"));
     }
 
     #[test]

@@ -1,0 +1,14 @@
+# dotted-identifier: fully qualified module, class and symbol paths in code, configuration and logs.
+# a dotted path is a name. it is long and mixed-case, but it is not an opaque token.
+# known gap: a dotted name whose every segment is CamelCase, with no lower-case or snake_case
+# segment to anchor it, is reported: `resolver: System.Collections.Generic.Dictionary.TryGetValue`.
+strategy: hummingbot.strategy.strategy_v2_base.ExecutorOrchestrator
+logger = logging.getLogger("acme.widget.pipeline.transform.BatchWriter")
+handler: com.acme.widget.internal.transport.NettyChannelInitializer
+converter = "org.apache.kafka.connect.storage.StringConverter"
+    at com.acme.widget.service.OrderBookAggregator.onMessage(OrderBookAggregator.java:184)
+entry_point: acme_widget.cli.commands.migrate:main
+module = "example.internal.reporting.aggregates.daily_totals"
+export_symbol: github.example.internal/acme/widget/internal/telemetry.NewRecorder
+resolver: acme.widget.internal.serialization.MessagePackFormatter
+callback = acme_widget.pipeline.transform.batch_writer.BatchWriterConfiguration

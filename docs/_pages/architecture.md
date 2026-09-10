@@ -106,9 +106,29 @@ pre-filters files to skip scanning:
 **Example**: `(AKIA[A-Z0-9]{16})` matches `AKIAIOSFODNN7EXAMPLE`
 
 ### 8. Secret Extraction
+
 - if `secret_group > 0`, extracts capture group value
 - if `secret_group == 0`, uses full match
 - skips empty matches
+
+**Exemption layer** (rule `generic-high-entropy-value` only, `[settings] exemption_layer`, default on). The extracted value passes a sequence of structural predicates over its bytes; the first one that matches suppresses the finding. The assignment key is never consulted:
+
+1. **file** — ignore files (`.gitignore`, `.dockerignore`, `.npmignore`, `.prettierignore`, `.eslintignore`, `.gitattributes`, `.helmignore`) and `CODEOWNERS` disable this rule alone; every other rule still runs on them
+2. **import** — the surrounding line is an import or include statement
+3. **markdown** — a markdown link is retargeted to its target and evaluation continues on the inner value; only a target shorter than 20 bytes ends here
+4. **path** — the value is path-shaped
+5. **pin** — a digest pinned behind a reference, as a workflow `uses:` line writes it
+6. **url** — a URL with no credential in any component. A URL-shaped value can leave the layer only through this step, so steps 7 and 8 are skipped for one
+7. **syntax** — for unquoted and bare captures, a complete source expression covering the flagged range (`src/scanner/syntax.rs`). An inner token of 20 bytes or more vetoes the span when its entropy reaches 4.0 or its length is exactly 32, 40 or 64 hex digits, so an expression can never cover a credential
+8. **wordshape** — words, camel case or snake case rather than an opaque run
+
+With the layer enabled, a bounded lexical pass also collects quoted call-argument bodies once per logical line, independently of the regex capture cursor. Ordinary single/double quotes and Rust raw/byte delimiters feed exact body ranges into the shared generic entropy evaluator, with no key, import or syntax exemption, or markdown retargeting. Redaction preserves surrounding delimiters and other arguments. Body-level path, pin, URL and wordshape exemptions retain their recall costs; dense regex literals may become findings. The collector does not join multiline call fragments or support Python-specific literal forms or Go backticks; a complete literal in an unfinished same-line call is still collected. Keyless call bodies receive no assignment hex bypass, so hex bodies below the ordinary entropy threshold remain undetected. Disabling the layer disables collection as well as exemptions.
+
+The layer changes which values are considered, never the gates they are measured against: the 20-byte minimum and the 4.0 threshold are unchanged, and tier 1 and tier 2 rules never enter it. The path-shape check that runs before the layer, and the user entropy-key allowlist that runs after it, are both independent of the switch.
+
+**Hex bypass**: an exact-length hex value (32, 40 or 64 digits, optionally `0x`-prefixed) assigned under a key that is not `*_id`, `*_hash` or `address`-shaped skips the Shannon gate of step 14 and is emitted if it clears every other gate. This is the one place the layer makes the rule stricter. It applies to double-quoted, single-quoted, bracketed and unquoted captures, never to bare lines or call bodies, and requires both that the line carry no hash context (step 12) and that the value reach 2.0 bits of entropy over the 16-symbol hex alphabet.
+
+**Rationale and residuals**: [ADR 0002](../adr/0002-tier3-exemption-layer.md).
 
 ### 9. Per-Rule Allowlist Check
 each rule can define:
@@ -128,6 +148,11 @@ rules with `entropy_threshold` (tier 2+) check for common safe words:
 - built-in: `test`, `example`, `fake`, `placeholder`, `changeme`, `dummy`, `mock`
 - user-configurable via `[allowlist] stopwords = [...]`
 - **tier 1 rules** (no entropy threshold) only check placeholder patterns (`XXXX...`, `****...`) to allow tokens like `sk_test_` that inherently contain "test"
+- **`password-in-url`** is neither: it checks the value against a fixed placeholder list
+  (`is_url_password_placeholder` in `src/scanner/password.rs` — exact matches like `password`,
+  `changeme`, `example`, `test`, `<PASSWORD>`-shaped brackets, `xxx...`/`***...` runs, and
+  `your`/`my` plus a password word) plus the user's own `[allowlist] stopwords`, not the built-in
+  stopword list above
 
 ### 12. Hash Detection
 prevents false positives on git commit hashes and checksums:
@@ -138,8 +163,10 @@ prevents false positives on git commit hashes and checksums:
 
 **Example**: `sha256: e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855` → skipped
 
+This line-level hash context keeps precedence over the hex bypass of step 8: a hex value on a line carrying a hash context word is a hash, not a secret.
+
 ### 13. Password Strength Heuristics
-for `generic-password-assignment` and `password-in-url` rules only:
+for `generic-password-assignment` only:
 - **weak passwords allowed**: `password`, `admin`, `123456`, `changeme`
 - **strong passwords blocked**: complex passwords with high entropy + character classes
 - scoring:
@@ -152,6 +179,10 @@ for `generic-password-assignment` and `password-in-url` rules only:
 
 **Rationale**: `password=test` is a placeholder, `password=Kj8#mP2!xQ9vL4nR` is a real secret
 
+`password-in-url` does not use this heuristic. It captures any length of password (no minimum) and
+is filtered at step 11 instead, by `is_url_password_placeholder` (`src/scanner/password.rs`) plus
+the user's own stopwords, so a weak but non-placeholder URL password is still reported.
+
 ### 14. Shannon Entropy Evaluation
 for rules with `entropy_threshold` set:
 - calculates shannon entropy over all 256 byte values
@@ -162,6 +193,8 @@ for rules with `entropy_threshold` set:
 **Formula**: `H = -Σ(p_i * log2(p_i))` where `p_i` is frequency of byte `i`
 
 **Example**: `aaaaaaaaaaaaaaaaaaaaaaaa` → entropy ≈ 0.0 (blocked), `aB3dEf7hIj1kLmN0pQrStUvWxYz` → entropy ≈ 4.2 (allowed)
+
+**Hex bypass**: a value admitted by the hex bypass of step 8 skips this gate and nothing else; the allowlists, variable-reference detection and stopwords still apply to it.
 
 **Baseline**: the measured entropy of short random passwords, and why the 20-character and 4.0 gates are left unchanged, are recorded in [ADR 0001](../adr/0001-entropy-baseline-8-char-password.md).
 

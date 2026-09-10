@@ -10,6 +10,7 @@ mod hook;
 mod output;
 mod scanner;
 
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use getargs::Arg;
@@ -42,6 +43,7 @@ enum Command {
     CheckCodex,
     RedactClaude,
     Doctor,
+    Entropy,
     Help,
     Version,
 }
@@ -68,6 +70,7 @@ struct CliOverrides {
     no_defaults: bool,
     entropy_threshold: Option<f64>,
     detect_public_keys: bool,
+    trace_exemptions: bool,
     allowlist_paths: Vec<String>,
     stopwords: Vec<String>,
     exclude_patterns: Vec<String>,
@@ -119,6 +122,7 @@ fn parse_cli(
                     "scan" => Command::Scan,
                     "audit" => Command::Audit,
                     "doctor" => Command::Doctor,
+                    "entropy" => Command::Entropy,
                     "check-file" => Command::CheckFile,
                     "check-codex" => Command::CheckCodex,
                     "redact-claude" => Command::RedactClaude,
@@ -128,6 +132,9 @@ fn parse_cli(
             }
             // positional after command (check-file file path)
             Arg::Positional(pos) => {
+                if command == Some(Command::Entropy) {
+                    return Err("value must be provided on stdin".to_string());
+                }
                 if command == Some(Command::CheckFile) && check_file_flags.file_path.is_none() {
                     check_file_flags.file_path = Some(pos.to_string());
                 } else {
@@ -154,6 +161,11 @@ fn parse_cli(
                 overrides.entropy_threshold = Some(n);
             }
             Arg::Long("detect-public-keys") => overrides.detect_public_keys = true,
+            Arg::Long("trace-exemptions")
+                if matches!(command, Some(Command::Scan | Command::Audit)) =>
+            {
+                overrides.trace_exemptions = true;
+            }
             Arg::Long("allowlist-path") => {
                 let val = opts.value().map_err(|e| e.to_string())?;
                 overrides.allowlist_paths.push(val.to_string());
@@ -434,7 +446,73 @@ fn run() -> i32 {
         Command::CheckCodex => agent::run_check_codex(),
         Command::RedactClaude => agent::run_redact_claude(),
         Command::Doctor => doctor::run_doctor(install_flags.settings),
+        Command::Entropy => run_entropy(),
     }
+}
+
+fn run_entropy() -> i32 {
+    let mut bytes = Vec::new();
+    let mut stdin = std::io::stdin();
+    if stdin.read_to_end(&mut bytes).is_err() {
+        eprintln!("error: failed to read stdin");
+        return 2;
+    }
+
+    if bytes.ends_with(b"\r\n") {
+        bytes.truncate(bytes.len() - 2);
+    } else if bytes.ends_with(b"\n") {
+        bytes.pop();
+    }
+
+    if bytes.is_empty() {
+        eprintln!("error: empty input");
+        return 2;
+    }
+
+    let entropy = scanner::entropy::shannon_entropy(&bytes);
+    let ceiling = (bytes.len().min(256) as f64).log2();
+    let word_structure = scanner::wordshape::analyze(&bytes);
+    let length_gate = if bytes.len() >= scanner::entropy::MIN_ENTROPY_LENGTH {
+        "pass"
+    } else {
+        "fail"
+    };
+    let entropy_gate = if entropy >= 4.0 { "pass" } else { "fail" };
+    let hex_policy = if scanner::hash_detect::is_hex_policy_candidate(Some(b"value"), &bytes) {
+        "eligible"
+    } else {
+        "not eligible"
+    };
+    let word_structure_status = if scanner::wordshape::is_word_structured(&bytes) {
+        "exempt"
+    } else {
+        "not exempt"
+    };
+    let path_shaped = if scanner::entropy::is_path_shaped(&bytes) {
+        "yes"
+    } else {
+        "no"
+    };
+
+    eprintln!("bytes: {}", bytes.len());
+    eprintln!("masked: {}", output::masking::mask_secret(&bytes));
+    eprintln!("shannon_entropy: {entropy:.4} bits/byte");
+    eprintln!("ceiling: {ceiling:.4}");
+    eprintln!("length_gate: {length_gate} (min 20 bytes)");
+    eprintln!("entropy_gate: {entropy_gate} (threshold 4.0)");
+    eprintln!(
+        "hex_policy: {hex_policy} (exact 32/40/64 hex; applies to assignment values, key exclusions decided at scan time)"
+    );
+    eprintln!(
+        "word_structure: {word_structure_status} words={} short={} longest={} digits={}",
+        word_structure.words,
+        word_structure.short_words,
+        word_structure.longest_word,
+        word_structure.digit_bytes
+    );
+    eprintln!("path_shaped: {path_shaped}");
+
+    0
 }
 
 fn print_usage() {
@@ -452,6 +530,9 @@ fn print_usage() {
         "  sekretbarilo check-codex  consume a Codex agent hook payload (internal; do not run directly)"
     );
     eprintln!("  sekretbarilo doctor       diagnose hook installation and configuration");
+    eprintln!(
+        "  sekretbarilo entropy      read a value from stdin, print entropy/gate diagnostics (debugging)"
+    );
     eprintln!("  sekretbarilo --help       show this help");
     eprintln!("  sekretbarilo --version    show version");
     eprintln!();
@@ -460,6 +541,7 @@ fn print_usage() {
     eprintln!("  --no-defaults             skip embedded default rules");
     eprintln!("  --entropy-threshold <n>   override entropy threshold");
     eprintln!("  --detect-public-keys      report public keys as findings");
+    eprintln!("  --trace-exemptions        report exemption decisions as findings");
     eprintln!("  --allowlist-path <pat>    add path to allowlist (repeatable)");
     eprintln!("  --stopword <word>         add stopword (repeatable)");
     eprintln!();
@@ -560,6 +642,7 @@ fn apply_cli_overrides(base: ProjectConfig, overrides: &CliOverrides) -> Project
             } else {
                 None
             },
+            exemption_layer: None,
         },
         rules: vec![],
         audit: config::AuditConfig {
@@ -607,8 +690,12 @@ fn build_scan_context(
     let compiled = scanner::rules::compile_rules(&rules)
         .map_err(|e| format!("failed to compile rules: {}", e))?;
 
-    let allowlist = config::build_allowlist(&project_config, &rules)
-        .map_err(|e| format!("failed to build allowlist: {}", e))?;
+    let allowlist = config::build_allowlist_with_trace_exemptions(
+        &project_config,
+        &rules,
+        overrides.trace_exemptions,
+    )
+    .map_err(|e| format!("failed to build allowlist: {}", e))?;
 
     Ok((project_config, compiled, allowlist))
 }

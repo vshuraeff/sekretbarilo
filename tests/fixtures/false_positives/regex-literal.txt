@@ -1,0 +1,15 @@
+# regex-literal: regular expressions in source and in configuration.
+# character classes and escapes look like packed opaque bytes, and never are.
+# known cost: dense regex bodies can clear the entropy gate in configuration and call literals.
+# configuration example: `sed_expr = 's/[A-Za-z0-9_-]\{22,\}/<x>/g'`
+# and `validate = "^arn:aws:iam::[0-9]{12}:role/[A-Za-z0-9+=,.@_-]+$"`.
+# known cost: independent call bodies skip syntax exemptions: let re = Regex::new(r"^[A-Za-z0-9+/]{43}=$").unwrap();
+# known cost: independent call bodies skip syntax exemptions: PATTERN = re.compile(r"(?i)\b[0-9a-f]{7,40}\b")
+const SLUG_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/u;
+filter: "^(src|tests)/.*[.](rs|toml)$"
+    r"[\x21-\x7e&&[^=]]+={0,2}"
+matches = re.findall(r"[A-Z]{2,}_[A-Z0-9_]{4,}", text)
+router.get(/^\/api\/v[0-9]+\/orders$/, handler)
+assert!(Regex::new(r"^(?:[0-9a-f]{2}:){5}[0-9a-f]{2}$").is_match(mac));
+exclude_pattern: '(?x) ^ (?: vendor | third_party ) / .* $'
+    grep_pattern = "[[:xdigit:]]{32}[[:space:]]+[^[:space:]]+"
