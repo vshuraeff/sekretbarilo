@@ -1,0 +1,64 @@
+// design tokens. light is the default; dark arrives either from an explicit
+// data-theme attribute or, with no javascript at all, from prefers-color-scheme.
+
+$sans: "IBM Plex Sans", -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+$mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
+$sidebar-w: 272px;
+$content-w: 760px;
+$rail-w: 220px;
+
+$s1: 4px;
+$s2: 8px;
+$s3: 12px;
+$s4: 16px;
+$s5: 24px;
+$s6: 32px;
+$s7: 48px;
+$s8: 64px;
+$s9: 96px;
+
+@mixin light-tokens {
+  --bg: #FAFAF7;
+  --surface: #F2F2ED;
+  --text: #1A1F26;
+  --muted: #5C6470;
+  --hairline: #DDDDD5;
+  --link: #16733E;
+  --accent-soft: #1F9D55;
+  --warn: #8A5A0F;
+  --danger: #C53030;
+  --inline-code-bg: #EDEDE6;
+}
+
+@mixin dark-tokens {
+  --bg: #0E1116;
+  --surface: #161B22;
+  --text: #E6E8EB;
+  --muted: #9AA3AE;
+  --hairline: #2A313B;
+  --link: #3DD68C;
+  --accent-soft: #3DD68C;
+  --warn: #E3B341;
+  --danger: #F26D6D;
+  --inline-code-bg: #1C222B;
+}
+
+:root {
+  @include light-tokens;
+
+  // fenced code is dark in both themes
+  --code-bg: #0E1116;
+  --code-text: #E6E8EB;
+  --code-chrome: #9AA3AE;
+}
+
+:root[data-theme="dark"] {
+  @include dark-tokens;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme]) {
+    @include dark-tokens;
+  }
+}

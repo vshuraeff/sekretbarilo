@@ -1,0 +1,48 @@
+---
+layout: default
+---
+
+<section class="hero">
+  <h1 class="hero-headline">Catch secrets before you commit.</h1>
+  <p class="hero-sub">A fast secret scanner for Git hooks, repository audits, and AI coding agents. One binary. Works with built-in defaults.</p>
+  <div class="hero-panel">
+    {{ content }}
+  </div>
+</section>
+
+<section class="diataxis" aria-labelledby="docs-heading">
+  <h2 class="section-title" id="docs-heading">Documentation</h2>
+  <div class="diataxis-grid">
+    {%- for g in site.data.navigation.groups %}
+    <div class="diataxis-cell">
+      <p class="eyebrow">{{ g.eyebrow }}</p>
+      <h3 class="diataxis-title">{{ g.title }}</h3>
+      <p class="diataxis-gloss">{{ g.gloss }}</p>
+      <ul class="diataxis-links">
+        {%- for p in g.pages limit: 3 %}
+        <li><a href="{{ p.url | relative_url }}">{{ p.title }}</a></li>
+        {%- endfor %}
+      </ul>
+    </div>
+    {%- endfor %}
+  </div>
+</section>
+
+<section class="catches" aria-labelledby="catches-heading">
+  <h2 class="section-title" id="catches-heading">What it catches</h2>
+  <p class="section-note">112 built-in rules in three tiers: prefix-based, context-aware, and a catch-all entropy tier. The values below are illustrative, not real detections; findings are always masked as first two plus last two characters.</p>
+  <ul class="catch-list">
+    <li><span class="catch-name">Cloud provider keys</span> <code class="catch-sample">sk********7f</code></li>
+    <li><span class="catch-name">Version control and CI tokens</span> <code class="catch-sample">sk********7f</code></li>
+    <li><span class="catch-name">Private keys and certificates</span> <code class="catch-sample">sk********7f</code></li>
+    <li><span class="catch-name">Database URLs and passwords</span> <code class="catch-sample">sk********7f</code></li>
+    <li><span class="catch-name">Generic high-entropy values</span> <code class="catch-sample">sk********7f</code></li>
+  </ul>
+</section>
+
+<section class="agents" aria-labelledby="agents-heading">
+  <h2 class="section-title" id="agents-heading">For AI coding agents</h2>
+  <p>In Claude Code, <code>block</code> mode refuses a <code>Read</code> of a file that carries a secret, while <code>redact</code> mode leaves the file alone and masks secrets in <code>Bash</code>, <code>Read</code> and <code>Grep</code> results.</p>
+  <p>In Codex CLI, a patch or shell command carrying a secret is blocked before it takes effect, and the hook runs only once you approve it with <code>/hooks</code> in the TUI.</p>
+  <p>Every agent hook mode ignores a <code>.sekretbarilo.toml</code> inside the repository until it is committed, because an agent that can write files could otherwise write itself a permissive config. <a href="{{ '/agent-hooks/' | relative_url }}">Read the agent hooks reference</a>.</p>
+</section>

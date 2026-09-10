@@ -1,0 +1,61 @@
+@media print {
+  .sidebar,
+  .topbar,
+  .rail,
+  .drawer-scrim,
+  .theme-toggle,
+  .code-copy,
+  .skip-link {
+    display: none !important;
+  }
+
+  .shell {
+    display: block;
+    margin-left: 0;
+    padding: 0;
+  }
+
+  .content {
+    max-width: none;
+    padding: 0;
+  }
+
+  body {
+    background: #FFFFFF;
+    color: #1A1F26;
+  }
+
+  // code panels print light so they do not flood the page with ink
+  .highlighter-rouge,
+  figure.highlight,
+  .prose > pre {
+    background: #FAFAF7;
+    border: 1px solid #DDDDD5;
+  }
+
+  .highlighter-rouge pre,
+  figure.highlight pre,
+  .highlighter-rouge code,
+  figure.highlight code,
+  .prose > pre {
+    color: #1A1F26;
+  }
+
+  .highlight,
+  .highlight span {
+    color: #1A1F26 !important;
+    background: transparent !important;
+  }
+
+  .code-chrome {
+    border-bottom-color: #DDDDD5;
+  }
+
+  .code-lang {
+    color: #5C6470;
+  }
+
+  a {
+    color: #1A1F26;
+  }
+}
