@@ -72,6 +72,8 @@ Treat every confirmed finding as disclosed. A secret in history has been on ever
 | 1 | a secret or a `--search` match was found |
 | 2 | error: bad configuration, a Git failure, an invalid branch or date |
 
+`--trace-exemptions` works in both modes and shares that code too: while it is on, every exemption decision is reported as a finding of its own, so keep it out of a run whose status you act on.
+
 A search match and a secret share exit code 1, so in a pipeline that treats a non-zero status as failure, run the two passes separately if you need to tell them apart.
 
 Full flag descriptions are in the [CLI reference]({{ '/cli-reference/' | relative_url }}).

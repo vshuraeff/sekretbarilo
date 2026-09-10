@@ -76,6 +76,29 @@
   }
 
   if (opener && sidebar) {
+    var desktop = window.matchMedia('(min-width: 900px)');
+
+    // the drawer is a mobile affordance; crossing into the desktop layout
+    // leaves it open with a trap installed unless it is closed here.
+    if (desktop.addEventListener) {
+      desktop.addEventListener('change', function (e) {
+        if (e.matches) closeDrawer();
+      });
+    } else if (desktop.addListener) {
+      desktop.addListener(function (e) {
+        if (e.matches) closeDrawer();
+      });
+    }
+
+    // the css :target path can open the drawer without the class ever being
+    // set, so no focus trap is installed; adopt that state on load and on
+    // every fragment change.
+    function syncTarget() {
+      if (!desktop.matches && sidebar.matches(':target')) openDrawer();
+    }
+    window.addEventListener('hashchange', syncTarget);
+    syncTarget();
+
     opener.addEventListener('click', openDrawer);
     if (closer) closer.addEventListener('click', closeDrawer);
     if (scrim) scrim.addEventListener('click', closeDrawer);

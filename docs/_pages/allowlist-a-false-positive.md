@@ -21,7 +21,22 @@ Every finding names the rule that matched and shows the value masked:
 
 You need two things from it: the **rule id**, which the entry must name exactly, and enough of the value to write a pattern for it. Take the value from the file, not from the masked output — the asterisks are not recoverable.
 
-## 2. Choose the layer
+## 2. Check whether a structural exemption already covers it
+
+For `generic-high-entropy-value`, which is the rule behind most false positives, ask first whether the shape is one the scanner already knows how to dismiss:
+
+```sh
+sekretbarilo audit --trace-exemptions
+```
+
+Each suppressed value is reported as a pseudo-finding named `exempt:` plus the step that suppressed it — `exempt:path`, `exempt:url`, `exempt:syntax` and so on. If your value appears there, nothing needs allowlisting. If it does not, the trace tells you which gate it never reached, which is usually the difference between a value the layer should have handled and one only you can vouch for.
+
+{: .note }
+While `--trace-exemptions` is on, those pseudo-findings count towards the exit code, so use it to read the decisions and not in a pipeline that checks the status.
+
+A shape that recurs across repositories is a gap in the layer rather than a case for a local entry. Reproduce it as a synthetic line in the fixture corpus — see [Testing False Positives]({{ '/testing-false-positives/' | relative_url }}) — so that closing it helps everyone rather than one checkout.
+
+## 3. Choose the layer
 
 Configuration is discovered hierarchically and merged, so put the entry where its reach matches the fact:
 
@@ -33,7 +48,7 @@ Configuration is discovered hierarchically and merged, so put the entry where it
 
 Lists merge across layers rather than replacing each other, so a project entry adds to the user-level ones instead of overriding them.
 
-## 3. Write the narrowest entry that works
+## 4. Write the narrowest entry that works
 
 A `[[allowlist.rules]]` block names one rule and suppresses findings for it alone. Three keys select what is matched, and they can be combined.
 
@@ -66,7 +81,7 @@ A `keys` list on any other rule is a configuration error, and a wildcard-only pa
 
 Prefer a value regex to a path, and a path to anything broader. Global `[allowlist].stopwords` reach only the rules that carry an entropy threshold, so they are a blunt instrument for this job.
 
-## 4. Re-run the scan
+## 5. Re-run the scan
 
 ```sh
 sekretbarilo scan          # staged changes

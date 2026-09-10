@@ -25,7 +25,7 @@ mkdir /tmp/redact-demo && cd /tmp/redact-demo
 git init
 ```
 
-Git reports `Initialized empty Git repository in /tmp/redact-demo/.git/`.
+Git reports that it initialised an empty repository under `/tmp/redact-demo/.git/`. On macOS the path it prints is the resolved one, `/private/tmp/...`, which is the same directory.
 
 ## Step 2: install the hook in redact mode
 
@@ -49,15 +49,15 @@ jq '.hooks.PostToolUse[0]' .claude/settings.json
 
 ```json
 {
-  "matcher": "^(Bash|Read|Grep)$",
   "hooks": [
     {
-      "type": "command",
       "command": "/usr/local/bin/sekretbarilo redact-claude --stdin-json",
       "statusMessage": "Redacting tool output secrets...",
-      "timeout": 10
+      "timeout": 10,
+      "type": "command"
     }
-  ]
+  ],
+  "matcher": "^(Bash|Read|Grep)$"
 }
 ```
 
@@ -94,6 +94,8 @@ file contains 2 secret(s). reading blocked to prevent secret exposure.
 ```
 
 Two rules matched the same value: the catch-all entropy rule, which ignores the name on the left of the `=`, and the generic API-key rule, which was drawn in by the name `api_key`.
+
+The catch-all rule also runs a layer of structural exemptions that dismiss values whose shape is not a credential — paths, URLs, import lines, source expressions. A quoted random value assigned to a name is none of those, so it survives the layer and is reported. [How secret detection works]({{ '/how-detection-works/' | relative_url }}) covers the eight steps.
 
 The `match` line is how sekretbarilo reports a finding: first two characters, last two characters, asterisks in between. Enough to recognise which value it was, not enough to reconstruct it. Your own characters will differ from the ones above.
 

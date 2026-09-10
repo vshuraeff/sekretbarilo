@@ -55,6 +55,8 @@ Find the symptom in the group for the surface it appears on. `sekretbarilo docto
 | A stopword has no effect | Stopwords reach only rules carrying an entropy threshold | Use a per-rule `regexes` entry | `sekretbarilo scan` |
 | Public keys reported as findings | `detect_public_keys` enabled | Remove the setting or the `--detect-public-keys` flag | `sekretbarilo audit` |
 | Every value under a key is still flagged | `keys` applies to `generic-high-entropy-value` only | Add a per-rule entry for the other rule | `sekretbarilo scan` |
+| A high-entropy value is no longer reported | A structural exemption step suppressed it | Set `exemption_layer = false` under `[settings]` if the shape is genuinely a secret | `sekretbarilo audit --trace-exemptions` |
+| Findings named `exempt:path`, `exempt:url` and the like | `--trace-exemptions` is on; the decisions are reported as findings and count towards the exit code | Drop the flag outside diagnosis | `sekretbarilo audit` |
 
 ## Binary and PATH
 

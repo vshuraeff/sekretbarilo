@@ -19,6 +19,8 @@ groups:
         url: /allowlist-a-false-positive/
       - title: Audit Git history for secrets
         url: /audit-git-history/
+      - title: Testing False Positives
+        url: /testing-false-positives/
       - title: Examples
         url: /examples/
   - id: reference
