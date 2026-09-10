@@ -66,15 +66,22 @@
   function closeDrawer(event) {
     if (event) event.preventDefault();
     if (!sidebar.classList.contains('is-open')) return;
-    if (sidebar.matches(':target')) {
-      history.replaceState(null, '', location.pathname + location.search);
-    }
     sidebar.classList.remove('is-open');
     if (scrim) scrim.hidden = true;
     document.removeEventListener('keydown', trapFocus);
     if (opener) {
       opener.setAttribute('aria-expanded', 'false');
       opener.focus();
+    }
+    // best-effort url tidying; the drawer state no longer depends on it.
+    if (location.hash === '#sidebar') {
+      try {
+        if (window.history && typeof window.history.replaceState === 'function') {
+          window.history.replaceState(
+            window.history.state, '', location.pathname + location.search
+          );
+        }
+      } catch (e) {}
     }
   }
 
@@ -85,30 +92,25 @@
     // leaves it open with a trap installed unless it is closed here.
     if (desktop.addEventListener) {
       desktop.addEventListener('change', function (e) {
-        if (e.matches) {
-          closeDrawer();
-        } else {
-          syncTarget();
-        }
+        if (e.matches) closeDrawer();
       });
     } else if (desktop.addListener) {
       desktop.addListener(function (e) {
-        if (e.matches) {
-          closeDrawer();
-        } else {
-          syncTarget();
-        }
+        if (e.matches) closeDrawer();
       });
     }
 
-    // the css :target path can open the drawer without the class ever being
-    // set, so no focus trap is installed; adopt that state on load and on
-    // every fragment change.
+    // the fragment is an input, not persistent state: once js is ready the
+    // class is the only source of truth, so a #sidebar url opens the drawer
+    // and anything else closes it.
     function syncTarget() {
-      if (!desktop.matches && sidebar.matches(':target')) openDrawer();
+      if (!desktop.matches && location.hash === '#sidebar') {
+        openDrawer();
+      } else {
+        closeDrawer();
+      }
     }
     window.addEventListener('hashchange', syncTarget);
-    syncTarget();
 
     opener.addEventListener('click', openDrawer);
     if (closer) closer.addEventListener('click', closeDrawer);
@@ -121,6 +123,10 @@
       if (sidebar.contains(e.target) || opener.contains(e.target)) return;
       closeDrawer();
     });
+
+    // css keeps the :target fallback only until js owns the state.
+    root.classList.add('drawer-ready');
+    syncTarget();
   }
 
   // code panel chrome ------------------------------------------------------
