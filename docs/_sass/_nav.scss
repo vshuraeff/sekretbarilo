@@ -1,0 +1,239 @@
+.sidebar-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: $s3;
+  padding-bottom: $s5;
+  border-bottom: 1px solid var(--hairline);
+}
+
+.wordmark {
+  display: inline-flex;
+  align-items: center;
+  gap: $s2;
+  text-decoration: none;
+  color: var(--text);
+}
+
+.wordmark-img {
+  height: 28px;
+  width: auto;
+}
+
+// the mark is theme-specific; the text is the fallback when neither file exists
+.wordmark-dark {
+  display: none;
+}
+
+:root[data-theme="dark"] {
+  .wordmark-light {
+    display: none;
+  }
+
+  .wordmark-dark {
+    display: inline;
+  }
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme]) {
+    .wordmark-light {
+      display: none;
+    }
+
+    .wordmark-dark {
+      display: inline;
+    }
+  }
+}
+
+.wordmark-text {
+  font-family: $mono;
+  font-size: 16px;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+}
+
+.wordmark-img + .wordmark-text,
+.wordmark-img ~ .wordmark-text {
+  display: none;
+}
+
+.drawer-close {
+  font-family: $mono;
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+  text-decoration: none;
+}
+
+.nav-groups {
+  flex: 1 1 auto;
+  list-style: none;
+  margin: $s5 0 0;
+  padding: 0;
+}
+
+.nav-group + .nav-group {
+  margin-top: $s5;
+  padding-top: $s5;
+  border-top: 1px solid var(--hairline);
+}
+
+.nav-group-title {
+  margin: 0;
+  font-family: $mono;
+  font-size: 12px;
+  line-height: 1;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text);
+}
+
+.nav-group-gloss {
+  margin: $s1 0 $s3;
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
+.nav-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.nav-item {
+  margin: 0;
+}
+
+.nav-link {
+  display: block;
+  padding: 5px 0 5px $s3;
+  border-left: 2px solid transparent;
+  font-size: 14px;
+  line-height: 1.4;
+  font-weight: 500;
+  color: var(--text);
+  text-decoration: none;
+  transition: color 150ms ease, border-color 150ms ease;
+
+  &:hover {
+    color: var(--link);
+  }
+
+  &.is-active {
+    border-left-color: var(--accent-soft);
+    color: var(--link);
+  }
+}
+
+.sidebar-foot {
+  margin-top: $s6;
+  padding-top: $s5;
+  border-top: 1px solid var(--hairline);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: $s3;
+}
+
+.theme-toggle {
+  padding: $s1 $s2;
+  background: transparent;
+  border: 1px solid var(--hairline);
+  border-radius: 4px;
+  font-family: $mono;
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  cursor: pointer;
+  transition: color 150ms ease, border-color 150ms ease;
+
+  &:hover {
+    color: var(--text);
+  }
+}
+
+// only one label is shown, matching the theme the button would switch to
+[data-theme-dark] {
+  display: none;
+}
+
+:root[data-theme="dark"] {
+  [data-theme-light] {
+    display: none;
+  }
+
+  [data-theme-dark] {
+    display: inline;
+  }
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme]) {
+    [data-theme-light] {
+      display: none;
+    }
+
+    [data-theme-dark] {
+      display: inline;
+    }
+  }
+}
+
+.sidebar-repo {
+  font-size: 14px;
+  color: var(--muted);
+  text-decoration: none;
+
+  &:hover {
+    color: var(--link);
+  }
+}
+
+// toc rail
+.rail-title {
+  margin: 0 0 $s3;
+  font-family: $mono;
+  font-size: 12px;
+  line-height: 1;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.rail-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border-left: 1px solid var(--hairline);
+}
+
+.rail-list a {
+  display: block;
+  padding: 4px 0 4px $s3;
+  margin-left: -1px;
+  border-left: 2px solid transparent;
+  font-size: 14px;
+  line-height: 1.4;
+  color: var(--muted);
+  text-decoration: none;
+  transition: color 150ms ease, border-color 150ms ease;
+
+  &:hover {
+    color: var(--text);
+  }
+}
+
+.rail-list .rail-h3 a {
+  padding-left: $s5;
+}
+
+.rail-list a.is-current {
+  border-left-color: var(--accent-soft);
+  color: var(--link);
+}

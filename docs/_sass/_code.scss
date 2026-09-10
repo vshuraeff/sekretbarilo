@@ -1,0 +1,95 @@
+// inline code follows the surrounding theme
+code {
+  font-family: $mono;
+  font-size: 0.9em;
+}
+
+.prose :not(pre) > code,
+.catch-sample {
+  padding: 1px 5px;
+  background: var(--inline-code-bg);
+  border-radius: 4px;
+  color: var(--text);
+}
+
+// fenced code panels are dark in both themes. kramdown emits
+// div.language-x.highlighter-rouge > div.highlight > pre.highlight > code,
+// the highlight tag emits figure.highlight > pre > code, and an untagged
+// fence emits div.highlighter-rouge with no language class at all.
+.highlighter-rouge,
+figure.highlight {
+  margin: 0 0 $s4;
+  background: var(--code-bg);
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.code-chrome {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: $s3;
+  padding: $s2 $s3 $s2 $s4;
+  border-bottom: 1px solid rgba(154, 163, 174, 0.24);
+}
+
+.code-lang {
+  font-family: $mono;
+  font-size: 12px;
+  line-height: 1;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--code-chrome);
+}
+
+.code-copy {
+  padding: $s1 $s2;
+  background: transparent;
+  border: 1px solid rgba(154, 163, 174, 0.32);
+  border-radius: 4px;
+  font-family: $mono;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--code-chrome);
+  cursor: pointer;
+  transition: color 150ms ease, border-color 150ms ease;
+
+  &:hover {
+    color: var(--code-text);
+    border-color: var(--code-chrome);
+  }
+}
+
+.highlighter-rouge pre,
+figure.highlight pre {
+  margin: 0;
+  padding: $s4;
+  overflow-x: auto;
+  background: transparent;
+  font-family: $mono;
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--code-text);
+}
+
+.highlighter-rouge code,
+figure.highlight code {
+  font-size: 14px;
+  color: var(--code-text);
+}
+
+// a pre block outside any rouge wrapper (raw html in a page)
+.prose > pre {
+  margin: 0 0 $s4;
+  padding: $s4;
+  overflow-x: auto;
+  background: var(--code-bg);
+  color: var(--code-text);
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+  font-family: $mono;
+  font-size: 14px;
+  line-height: 1.6;
+}
