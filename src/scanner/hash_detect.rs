@@ -27,6 +27,50 @@ fn is_hex_string(data: &[u8]) -> bool {
     !data.is_empty() && data.iter().all(|&b| b.is_ascii_hexdigit())
 }
 
+/// recognize a complete md5, sha-1, or sha-256 digest/checksum field value.
+pub fn is_digest_record(key: Option<&[u8]>, value: &[u8]) -> bool {
+    fn algorithm_length(name: &[u8]) -> Option<usize> {
+        [
+            (&b"md5"[..], 32),
+            (b"sha1", 40),
+            (b"sha-1", 40),
+            (b"sha256", 64),
+            (b"sha-256", 64),
+        ]
+        .into_iter()
+        .find_map(|(algorithm, length)| name.eq_ignore_ascii_case(algorithm).then_some(length))
+    }
+
+    let Some(key) = key else {
+        return false;
+    };
+    let field_length =
+        if key.eq_ignore_ascii_case(b"digest") || key.eq_ignore_ascii_case(b"checksum") {
+            None
+        } else if key.len() > 11 && key[..11].eq_ignore_ascii_case(b"x-checksum-") {
+            let Some(length) = algorithm_length(&key[11..]) else {
+                return false;
+            };
+            Some(length)
+        } else {
+            return false;
+        };
+
+    let (payload, length) =
+        if let Some(separator) = value.iter().position(|byte| matches!(byte, b':' | b'=')) {
+            let Some(length) = algorithm_length(&value[..separator]) else {
+                return false;
+            };
+            if field_length.is_some_and(|field_length| field_length != length) {
+                return false;
+            }
+            (&value[separator + 1..], length)
+        } else {
+            (value, field_length.unwrap_or(value.len()))
+        };
+    matches!(length, 32 | 40 | 64) && payload.len() == length && is_hex_string(payload)
+}
+
 /// check if the line contains git-related context keywords at word boundaries.
 /// word boundary = the byte before/after the keyword is not alphanumeric.
 /// this prevents "sha" from matching inside "shadow" or "hash" inside "HashMap".
@@ -225,6 +269,39 @@ mod tests {
         let mut value = b"0x".to_vec();
         value.extend(generated_hex(seed, length));
         value
+    }
+
+    #[test]
+    fn digest_record_requires_exact_algorithm_and_complete_payload() {
+        for (algorithm, length) in [("md5", 32), ("sha-1", 40), ("sha256", 64), ("SHA-256", 64)] {
+            let hex = generated_hex(3, length);
+            for separator in *b":=" {
+                let mut value = algorithm.as_bytes().to_vec();
+                value.push(separator);
+                value.extend(&hex);
+                assert!(is_digest_record(Some(b"Digest"), &value));
+                assert!(is_digest_record(Some(b"checksum"), &value));
+                assert!(!is_digest_record(Some(b"API_KEY"), &value));
+                assert!(!is_digest_record(None, &value));
+                value.push(b'f');
+                assert!(!is_digest_record(Some(b"Digest"), &value));
+                value.pop();
+                value.pop();
+                assert!(!is_digest_record(Some(b"Digest"), &value));
+                value.push(b'z');
+                assert!(!is_digest_record(Some(b"Digest"), &value));
+            }
+            assert!(is_digest_record(Some(b"Digest"), &hex));
+        }
+        let mut value = b"sha256:".to_vec();
+        value.extend(generated_hex(3, 64));
+        assert!(is_digest_record(Some(b"X-Checksum-Sha256"), &value));
+        assert!(!is_digest_record(Some(b"X-Checksum-Md5"), &value));
+        assert!(!is_digest_record(Some(b"X-Checksum-Unknown"), &value));
+        assert!(!is_digest_record(Some(b"password_digest"), &value));
+        let mut unknown = b"sha999:".to_vec();
+        unknown.extend(generated_hex(3, 64));
+        assert!(!is_digest_record(Some(b"Digest"), &unknown));
     }
 
     #[test]

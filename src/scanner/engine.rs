@@ -6,10 +6,12 @@ use std::ops::Range;
 #[allow(unused_imports)]
 pub use crate::scanner::text::{TextMatch, redact_text, scan_text};
 
+use crate::config::SourcePosture;
 use crate::config::allowlist::CompiledAllowlist;
 use crate::diff::parser::DiffFile;
 use crate::scanner::entropy;
 use crate::scanner::hash_detect;
+use crate::scanner::literals::{LineLiterals, LiteralTracker};
 use crate::scanner::password;
 use crate::scanner::pubkey;
 use crate::scanner::rules::CompiledScanner;
@@ -34,6 +36,15 @@ pub struct Finding {
 ///   2. aho-corasick keyword pre-filter (single pass)
 ///   3. regex matching (keywordless rules and rules whose keywords matched)
 ///   4. extract secret via capture group
+///      4a. source posture: classify paths only with path filters enabled; known
+///      literal context gates code independently of exemption_layer. file/testpath
+///      skips require exemption_layer; effective test-path skipping requires
+///      apply_path_filters && exemption_layer && tier3_skip_test_paths.
+///      regex candidates own exactly matching normalized literal bodies, including
+///      suppressed candidates; other bodies are evaluated without key context.
+///      scan uses staged context; audit/check-file use their full file context;
+///      history and other callers without context feed added lines only. unknown
+///      lexical state or missing context lines always retain full posture.
 ///      4b. entropy value shape gates, switchable exemptions and assignment hex bypass
 ///      with a fixed 2.0-bit hex-symbol entropy floor
 ///      4c. user entropy-key allowlist (independent of the exemption switch)
@@ -117,8 +128,60 @@ fn scan_file_with_path_filters(
     // the documentation bonus is derived from the path, so a traversal path such as
     // docs/../src/x.rs must not raise the threshold: it applies only with path filters
     let is_doc = apply_path_filters && allowlist.is_documentation_file(&file.path);
-    let generic_rule_disabled =
-        apply_path_filters && allowlist.is_generic_rule_skipped_path(&file.path);
+    let generic_rule_skip = apply_path_filters
+        .then(|| allowlist.generic_rule_skip(&file.path))
+        .flatten();
+    let language = apply_path_filters
+        .then(|| crate::scanner::literals::language_for_path(&file.path))
+        .flatten();
+    let mut added_lines: Vec<_> = file.added_lines.iter().collect();
+    added_lines.sort_by_key(|line| line.line_number);
+    let mut literals = std::collections::HashMap::new();
+    if let Some(language) = language
+        && allowlist.effective_source_posture() == SourcePosture::Literals
+    {
+        let mut tracker = LiteralTracker::new(language);
+        // tracker recovery cannot prove the state before a gap or lexical failure.
+        let mut known = true;
+        if let Some(full) = &file.context {
+            let mut added = added_lines.iter().peekable();
+            for (index, line) in full.split(|&byte| byte == b'\n').enumerate() {
+                let number = index + 1;
+                let line = line.strip_suffix(b"\r").unwrap_or(line);
+                let line_literals = tracker.feed(line, number);
+                known &= line_literals.known && tracker.is_known();
+                while added.peek().is_some_and(|line| line.line_number < number) {
+                    known = false;
+                    added.next();
+                }
+                if let Some(added_line) = added.next_if(|line| line.line_number == number) {
+                    known &= line
+                        == added_line
+                            .content
+                            .strip_suffix(b"\r")
+                            .unwrap_or(&added_line.content);
+                    known &= !added.peek().is_some_and(|line| line.line_number == number);
+                    if known {
+                        literals.insert(number, line_literals);
+                    }
+                }
+            }
+        } else {
+            for line in &added_lines {
+                let line_literals = tracker.feed(&line.content, line.line_number);
+                known &= line_literals.known && tracker.is_known();
+                if known {
+                    literals.insert(line.line_number, line_literals);
+                }
+            }
+        }
+    }
+    // duplicate line numbers do not provide unambiguous lexical context.
+    for pair in added_lines.windows(2) {
+        if pair[0].line_number == pair[1].line_number {
+            literals.remove(&pair[0].line_number);
+        }
+    }
     let num_rules = scanner.rules.len();
 
     // reusable bitset for candidate rules (avoids per-line vec allocation)
@@ -144,13 +207,10 @@ fn scan_file_with_path_filters(
             scanner,
             allowlist,
             is_doc_file: is_doc,
+            generic_rule_skip,
+            literals: literals.get(&added_line.line_number),
         };
-        scan_line(
-            &ctx,
-            generic_rule_disabled,
-            &mut candidate_bits,
-            &mut findings,
-        );
+        scan_line(&ctx, &mut candidate_bits, &mut findings);
     }
 
     findings
@@ -228,16 +288,13 @@ struct ScanLineContext<'a> {
     scanner: &'a CompiledScanner,
     allowlist: &'a CompiledAllowlist,
     is_doc_file: bool,
+    generic_rule_skip: Option<&'static str>,
+    literals: Option<&'a LineLiterals>,
 }
 
 /// scan a single line against all rules using the aho-corasick pre-filter.
 /// uses a reusable bitset to avoid allocations per line.
-fn scan_line(
-    ctx: &ScanLineContext<'_>,
-    generic_rule_disabled: bool,
-    candidate_bits: &mut [bool],
-    findings: &mut Vec<Finding>,
-) {
+fn scan_line(ctx: &ScanLineContext<'_>, candidate_bits: &mut [bool], findings: &mut Vec<Finding>) {
     let matches = MatchContext {
         file_path: ctx.apply_path_filters.then_some(ctx.file_path),
         input: ctx.line,
@@ -245,7 +302,8 @@ fn scan_line(
         scanner: ctx.scanner,
         allowlist: ctx.allowlist,
         is_doc_file: ctx.is_doc_file,
-        generic_rule_disabled,
+        generic_rule_skip: ctx.generic_rule_skip,
+        literals: ctx.literals,
     };
     scan_matches(&matches, candidate_bits, |rule_id, range| {
         findings.push(Finding {
@@ -265,7 +323,8 @@ pub(super) struct MatchContext<'a> {
     pub scanner: &'a CompiledScanner,
     pub allowlist: &'a CompiledAllowlist,
     pub is_doc_file: bool,
-    pub generic_rule_disabled: bool,
+    pub generic_rule_skip: Option<&'static str>,
+    pub literals: Option<&'a LineLiterals>,
 }
 
 /// diagnostic only; pseudo-findings count as findings for scan/audit exit codes when the flag is on, and the flag exists only on the CLI so hook surfaces never see them.
@@ -374,14 +433,39 @@ pub(super) fn scan_matches(
                 .max(matched.start().saturating_add(1));
             Some(captures)
         });
+        let mut owned_ranges = Vec::new();
         for captures in captures_iter {
-            evaluate_candidate(ctx, rule, Candidate::Regex(captures), &mut emit);
+            evaluate_candidate(
+                ctx,
+                rule,
+                Candidate::Regex(captures),
+                &mut emit,
+                &mut |range| {
+                    if is_entropy_value && ctx.literals.is_some() {
+                        owned_ranges.push(range);
+                    }
+                },
+            );
         }
         // single-line text uses its first pass with [0]; diff and per-line passes use [].
-        if is_entropy_value && ctx.allowlist.exemption_layer && ctx.line_starts.len() <= 1 {
-            crate::scanner::calllit::collect(ctx.input, |range| {
-                evaluate_candidate(ctx, rule, Candidate::Call(range), &mut emit);
-            });
+        if is_entropy_value && ctx.line_starts.len() <= 1 {
+            if let Some(literals) = ctx.literals {
+                for range in &literals.bodies {
+                    if !owned_ranges.contains(range) {
+                        evaluate_candidate(
+                            ctx,
+                            rule,
+                            Candidate::Call(range.clone()),
+                            &mut emit,
+                            &mut |_| {},
+                        );
+                    }
+                }
+            } else if ctx.allowlist.exemption_layer {
+                crate::scanner::calllit::collect(ctx.input, |range| {
+                    evaluate_candidate(ctx, rule, Candidate::Call(range), &mut emit, &mut |_| {});
+                });
+            }
         }
     }
 }
@@ -452,6 +536,7 @@ fn evaluate_candidate(
     rule: &crate::scanner::rules::CompiledRule,
     captures: Candidate<'_>,
     emit: &mut impl FnMut(&str, Range<usize>),
+    normalized: &mut impl FnMut(Range<usize>),
 ) {
     let is_entropy_value = rule.id == "generic-high-entropy-value";
     // step 4: extract secret value via capture group
@@ -485,6 +570,20 @@ fn evaluate_candidate(
     {
         secret = &secret[..end];
         secret_range.end = secret_range.start + end;
+    }
+
+    // ownership precedes all dispositions, including key allowlisting.
+    normalized(secret_range.clone());
+    if is_entropy_value
+        && kind != CaptureKind::Call
+        && let Some(literals) = ctx.literals
+        && !literals
+            .bodies
+            .iter()
+            .any(|body| body.start <= secret_range.start && secret_range.end <= body.end)
+    {
+        trace_exemption(ctx, emit, "code", secret_range.clone());
+        return;
     }
 
     if secret.is_empty() {
@@ -539,8 +638,17 @@ fn evaluate_candidate(
     });
     let mut hex_bypass = false;
     if is_entropy_value && ctx.allowlist.exemption_layer {
-        if ctx.generic_rule_disabled {
-            trace_exemption(ctx, emit, "file", secret_range.clone());
+        if let Some(label) = ctx.generic_rule_skip.or_else(|| {
+            (ctx.allowlist.tier3_skip_test_paths
+                && ctx.literals.is_some_and(|literals| {
+                    literals.known
+                        && literals.test_span.as_ref().is_some_and(|span| {
+                            span.start <= secret_range.start && secret_range.end <= span.end
+                        })
+                }))
+            .then_some("testpath")
+        }) {
+            trace_exemption(ctx, emit, label, secret_range.clone());
             return;
         }
         if kind != CaptureKind::Call && ctx.allowlist.is_import_line(line) {
@@ -561,6 +669,31 @@ fn evaluate_candidate(
             trace_exemption(ctx, emit, "path", secret_range.clone());
             return;
         }
+        if kind == CaptureKind::Bare
+            && key_bytes.is_none()
+            && ctx.surrounding_lines(secret_range.clone()).trim_ascii() == secret
+            && entropy::is_relative_id_path(secret)
+        {
+            trace_exemption(ctx, emit, "relpath", secret_range.clone());
+            return;
+        }
+        if kind == CaptureKind::Bare
+            && key_bytes.is_none()
+            && ctx.surrounding_lines(secret_range.clone()).trim_ascii() == secret
+            && entropy::is_mktemp_path(secret)
+        {
+            trace_exemption(ctx, emit, "mktemp", secret_range.clone());
+            return;
+        }
+        if key_bytes.is_none()
+            && captures
+                .name("entropy_bare_double")
+                .is_some_and(|value| value.range() == secret_range)
+            && entropy::is_shell_directory_path(secret)
+        {
+            trace_exemption(ctx, emit, "shell-path", secret_range.clone());
+            return;
+        }
         if crate::scanner::urlshape::is_pinned_action_ref(key_bytes, secret) {
             trace_exemption(ctx, emit, "pin", secret_range.clone());
             return;
@@ -569,8 +702,19 @@ fn evaluate_candidate(
             trace_exemption(ctx, emit, "url", secret_range.clone());
             return;
         }
-        // a url is exempt only through the url predicate, never through word or expression shape.
+        // a url is exempt only through the url predicate, never through regex, word, or
+        // expression shape.
         let url_shaped = crate::scanner::urlshape::is_url_shaped(secret);
+        if matches!(
+            kind,
+            CaptureKind::Double | CaptureKind::Single | CaptureKind::Bracket | CaptureKind::Call
+        ) && ctx.file_path.is_some()
+            && !url_shaped
+            && crate::scanner::regexshape::is_regex_shaped(secret)
+        {
+            trace_exemption(ctx, emit, "regex", secret_range.clone());
+            return;
+        }
         let core_end = secret_range.end
             - secret
                 .iter()
@@ -620,6 +764,15 @@ fn evaluate_candidate(
                     -probability * probability.log2()
                 })
                 .sum()
+        }
+
+        if captures
+            .name("entropy_key")
+            .is_some_and(|key| ctx.input[key.end()..secret_range.start].trim_ascii() == b":")
+            && hash_detect::is_digest_record(key_bytes, secret)
+        {
+            trace_exemption(ctx, emit, "digest", secret_range.clone());
+            return;
         }
 
         // hex_bypass values meeting the floor skip the shannon-entropy gate at the final step and
@@ -831,7 +984,8 @@ mod tests {
                 scanner: &scanner,
                 allowlist: &al,
                 is_doc_file: false,
-                generic_rule_disabled,
+                generic_rule_skip: generic_rule_disabled.then_some("file"),
+                literals: None,
             };
             let mut found = Vec::new();
             scan_matches(&ctx, &mut [false], |id, range| {
@@ -844,6 +998,84 @@ mod tests {
                 "{name}"
             );
         }
+
+        let regex_scanner = make_scanner(vec![make_rule(
+            "generic-high-entropy-value",
+            r#"pattern = "(?P<entropy_double>[^"]+)""#,
+            1,
+            vec![],
+            Some(4.0),
+        )]);
+        let regex = r"(?i)^(?:[A-Za-z0-9_-]{20,64}\.){2}[A-Za-z0-9_-]{20,64}$";
+        assert!(regex.len() >= entropy::MIN_ENTROPY_LENGTH);
+        assert!(entropy::shannon_entropy(regex.as_bytes()) >= 4.0);
+        let input = format!("pattern = \"{regex}\"");
+        let ctx = MatchContext {
+            file_path: Some("src/pattern.rs"),
+            input: input.as_bytes(),
+            line_starts: &[],
+            scanner: &regex_scanner,
+            allowlist: &al,
+            is_doc_file: false,
+            generic_rule_skip: None,
+            literals: None,
+        };
+        let mut found = Vec::new();
+        scan_matches(&ctx, &mut [false], |id, range| {
+            found.push((id.to_owned(), range))
+        });
+        let start = input.find(regex).unwrap();
+        assert_eq!(
+            found,
+            vec![("exempt:regex".to_owned(), start..start + regex.len())]
+        );
+
+        let mut layer_off = default_al();
+        layer_off.exemption_layer = false;
+        let ctx = MatchContext {
+            file_path: Some("src/pattern.rs"),
+            input: input.as_bytes(),
+            line_starts: &[],
+            scanner: &regex_scanner,
+            allowlist: &layer_off,
+            is_doc_file: false,
+            generic_rule_skip: None,
+            literals: None,
+        };
+        let mut found = Vec::new();
+        scan_matches(&ctx, &mut [false], |id, range| {
+            found.push((id.to_owned(), range))
+        });
+        assert_eq!(
+            found,
+            vec![(
+                ("generic-high-entropy-value").to_owned(),
+                start..start + regex.len()
+            )]
+        );
+
+        let unquoted_scanner = make_scanner(vec![make_rule(
+            "generic-high-entropy-value",
+            r"(?P<entropy_unquoted>[^\s]+)",
+            1,
+            vec![],
+            Some(4.0),
+        )]);
+        let ctx = MatchContext {
+            file_path: Some("src/pattern.rs"),
+            input: regex.as_bytes(),
+            line_starts: &[],
+            scanner: &unquoted_scanner,
+            allowlist: &al,
+            is_doc_file: false,
+            generic_rule_skip: None,
+            literals: None,
+        };
+        let mut found = Vec::new();
+        scan_matches(&ctx, &mut [false], |id, range| {
+            found.push((id.to_owned(), range))
+        });
+        assert!(!found.iter().any(|(id, _)| id == "exempt:regex"));
 
         let input = format!("[docs]({token})");
         let expected = "[docs]([REDACTED])";
@@ -884,6 +1116,7 @@ mod tests {
             is_deleted: false,
             is_renamed: false,
             is_binary: false,
+            context: None,
             added_lines: lines
                 .into_iter()
                 .map(|(num, content)| AddedLine {
@@ -1548,6 +1781,7 @@ mod tests {
             is_deleted: false,
             is_renamed: false,
             is_binary: false,
+            context: None,
             added_lines: vec![],
         };
         let findings = scan(&[file], &scanner, &al);

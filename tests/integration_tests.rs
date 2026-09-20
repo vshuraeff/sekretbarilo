@@ -581,6 +581,7 @@ fn integration_binary_extension_path_skipped() {
         is_deleted: false,
         is_renamed: false,
         is_binary: false, // not marked binary, but path has .png extension
+        context: None,
         added_lines: vec![AddedLine {
             line_number: 1,
             content: b"AKIAIOSFODNN7ABCDEFG".to_vec(),

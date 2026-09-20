@@ -34,6 +34,7 @@ fn make_file(path: &str, lines: Vec<(usize, &[u8])>) -> DiffFile {
         is_deleted: false,
         is_renamed: false,
         is_binary: false,
+        context: None,
         added_lines: lines
             .into_iter()
             .map(|(num, content)| AddedLine {
@@ -1072,14 +1073,49 @@ mod high_entropy_values {
         assert_values("src/validator.rs", &regex_source, &[&token], &scanner, &al);
 
         let assertion_source = format!("assert_eq!(x, \"{token}\");");
-        // reclassified per g1: opaque call-argument literals are tier-3 candidates (s19b).
-        assert_values(
-            "tests/scanner_test.rs",
-            &assertion_source,
-            &[&token],
-            &scanner,
-            &al,
+        let test_path = "tests/scanner_test.rs";
+        let test_file = || make_file(test_path, vec![(1, assertion_source.as_bytes())]);
+        // "tests/scanner_test.rs" matches both the `tests` directory segment and the
+        // `_test.` filename pattern, so tier3_skip_test_paths (decision C, default true)
+        // drops the keywordless entropy rule on the diff surface here; the path-blind
+        // agent surface (scan_text) carries no path and keeps finding the call literal.
+        let diff_findings = scan(&[test_file()], &scanner, &al);
+        assert!(
+            diff_findings.is_empty(),
+            "expected no diff findings under the default test-path skip: {diff_findings:?}"
         );
+        let (_, mut traced) = default_scanner_and_allowlist();
+        traced.trace_exemptions = true;
+        let traced_findings = scan(&[test_file()], &scanner, &traced);
+        assert!(
+            traced_findings
+                .iter()
+                .any(|f| f.rule_id == "exempt:testpath"),
+            "expected an exempt:testpath trace: {traced_findings:?}"
+        );
+        let text_matches = scan_text(&assertion_source, &scanner, &al);
+        let text_values: Vec<_> = text_matches
+            .iter()
+            .filter(|found| found.rule_id == RULE)
+            .map(|found| &assertion_source.as_bytes()[found.range.clone()])
+            .collect();
+        assert_eq!(
+            text_values,
+            vec![token.as_bytes()],
+            "the agent surface carries no path and is unaffected by the test-path skip"
+        );
+
+        // the original intent, still detected on the diff surface when the skip is off:
+        // opaque call-argument literals are tier-3 candidates (s19b).
+        let (_, mut al_no_skip) = default_scanner_and_allowlist();
+        al_no_skip.tier3_skip_test_paths = false;
+        let no_skip_findings = scan(&[test_file()], &scanner, &al_no_skip);
+        let no_skip_values: Vec<_> = no_skip_findings
+            .iter()
+            .filter(|finding| finding.rule_id == RULE)
+            .map(|finding| finding.matched_value.as_slice())
+            .collect();
+        assert_eq!(no_skip_values, vec![token.as_bytes()]);
     }
 
     #[test]

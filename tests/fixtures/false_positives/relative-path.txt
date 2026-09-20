@@ -1,0 +1,19 @@
+# relative-path: bare relative paths with one short id segment among otherwise wordy segments,
+# alone on their line with no key. the id segment is a real (non-secret) short identifier such as
+# a task or branch id, e.g. from git branch names; sekretbarilo's own git-branch-per-task naming
+# convention produces exactly this shape.
+task/9zjEfcywkWlJ5QOj/integrator/lead
+task/9zjEfcywkWlJ5QOj/main/unit/t3-engine
+branch/9zjEfcywkWlJ5QOj/integrator/lead
+ticket/9zjEfcywkWlJ5QOj/review/checklist
+workspace/9zjEfcywkWlJ5QOj/release/notes
+output/9zjEfcywkWlJ5QOj/deployment/summary
+project/9zjEfcywkWlJ5QOj/validation/report
+review/9zjEfcywkWlJ5QOj/platform/checklist
+# known gap: a bare file name alone (e.g. background-execution.md) is not covered; deferred, it is
+# lexically indistinguishable from a chunked-secret attack without more context and needs
+# measurement on real payloads before being added.
+# known gap: a relative path with two id segments is not covered (disqualified by design: more than
+# one id-shaped segment is treated as ambiguous rather than as two ids).
+# known gap: a relative path with an assignment key in front (e.g. `token = task/.../lead`) is not
+# covered; presence of a key is treated as reducing confidence that the value is a harmless path.

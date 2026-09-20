@@ -1,0 +1,10 @@
+# outcome tab source shape; first two rows are the settings controls
+fire	const char *k = "{S32}";
+# known gap: c/c++ posture relief is deferred per adr 0003, so bare code and comments remain full-posture findings.
+fire	const char *k = {S32};
+fire	// k = {S32}
+fire	/* k = {S32} */
+fire	const char *k = "{S32}"; const char *two = "{S36}";
+fire	char quote = '\''; const char *k = "{S32}";
+fire	const char *k = "\"{S32}";
+fire	auto k = R"tag(raw literal)tag"; const char *control = "{S32}";

@@ -6,7 +6,7 @@
 //! as a placeholder that this file expands, so the repository never stores one.
 
 use sekretbarilo::config::allowlist::CompiledAllowlist;
-use sekretbarilo::config::{ProjectConfig, build_allowlist};
+use sekretbarilo::config::{ProjectConfig, SourcePosture, build_allowlist};
 use sekretbarilo::diff::parser::{AddedLine, DiffFile};
 use sekretbarilo::scanner::engine::{redact_text, scan, scan_text};
 use sekretbarilo::scanner::rules::{CompiledScanner, compile_rules, load_default_rules};
@@ -14,8 +14,8 @@ use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 
-/// every fixture line is scanned under this path: an ordinary source file, exempt from nothing.
-const FIXTURE_PATH: &str = "src/fixture.rs";
+/// legacy shapes use an ordinary data path, exempt from nothing and scanned in full posture.
+const FIXTURE_PATH: &str = "corpus/shapes.txt";
 
 /// a false-positive file describes a class, so it carries at least this many distinct shapes.
 const MIN_SHAPES_PER_CLASS: usize = 8;
@@ -226,6 +226,7 @@ fn fixture_file(line: &str) -> DiffFile {
         is_deleted: false,
         is_renamed: false,
         is_binary: false,
+        context: None,
         added_lines: vec![AddedLine {
             line_number: 1,
             content: line.as_bytes().to_vec(),
@@ -240,15 +241,23 @@ fn scanned_rules(line: &str) -> Vec<String> {
         .collect()
 }
 
-/// rule and byte range of every text match, so a failure says which part of the line fired.
+/// rule and byte range of every file finding, on the same surface as the scan assertions.
 fn reported_spans(line: &str) -> Vec<String> {
-    scan_text(line, &SCANNER, &ALLOWLIST)
+    scan(&[fixture_file(line)], &SCANNER, &ALLOWLIST)
         .iter()
         .map(|matched| {
-            format!(
-                "{} at {}..{}",
-                matched.rule_id, matched.range.start, matched.range.end
-            )
+            let value = &matched.matched_value;
+            let start = (!value.is_empty())
+                .then(|| {
+                    line.as_bytes()
+                        .windows(value.len())
+                        .position(|window| window == value)
+                })
+                .flatten();
+            match start {
+                Some(start) => format!("{} at {}..{}", matched.rule_id, start, start + value.len()),
+                None => format!("{} with unmatched raw value {value:?}", matched.rule_id),
+            }
         })
         .collect()
 }
@@ -324,8 +333,9 @@ fn true_positive_corpus_is_detected() {
                 .collect();
             if !rules.contains(&rule_id) {
                 failures.push(format!(
-                    "{}:{number}: scan reported {rules:?}, expected {rule_id} :: {shape}",
-                    label(&path)
+                    "{}:{number}: scan reported {:?}, expected {rule_id} :: {shape}",
+                    label(&path),
+                    reported_spans(&expanded.text)
                 ));
                 continue;
             }
@@ -409,6 +419,110 @@ fn true_positive_corpus_is_detected() {
         failures.join("\n")
     );
     assert!(checked > 0, "the true-positive corpus is empty");
+}
+
+#[test]
+fn source_posture_fixture_matrix() {
+    const RULE: &str = "generic-high-entropy-value";
+    for (name, source_path, test_path) in [
+        ("rust", "src/sample.rs", "tests/sample.rs"),
+        ("go", "pkg/sample.go", "tests/sample.go"),
+        ("python", "pkg/sample.py", "tests/sample.py"),
+        ("javascript", "src/sample.js", "tests/sample.js"),
+        ("javascript", "src/sample.ts", "tests/sample.ts"),
+        ("c", "src/sample.c", "tests/sample.c"),
+        ("c", "src/sample.cpp", "tests/sample.cpp"),
+    ] {
+        let path = corpus_dir("source_posture").join(format!("{name}.txt"));
+        let rows = shapes(&path);
+        assert!(rows.len() >= 2, "{name}: missing literal/bare controls");
+        for (index, (number, row)) in rows.iter().enumerate() {
+            let (outcome, shape) = row
+                .split_once('\t')
+                .unwrap_or_else(|| panic!("{name}:{number}: expected outcome TAB shape: {row}"));
+            let fire = match outcome {
+                "fire" => true,
+                "clean" => false,
+                _ => panic!("{name}:{number}: unknown outcome {outcome}"),
+            };
+            if index < 2 {
+                let expected = if matches!(name, "python" | "javascript" | "c") {
+                    true
+                } else {
+                    index == 0
+                };
+                assert_eq!(fire, expected, "{name}: expected literal/bare controls");
+            }
+            let expanded = expand(shape);
+            assert!(!expanded.spans.is_empty(), "{name}:{number}: no value");
+            for scenario in [
+                "default",
+                "all",
+                "layer-off",
+                "testpath",
+                "testpath-skip-off",
+            ] {
+                // settings controls are the first literal and bare-code shapes in each file.
+                if index >= 2 && scenario != "default" {
+                    continue;
+                }
+                let mut al = CompiledAllowlist::default_allowlist().expect("default allowlist");
+                let (scan_path, expected) = match scenario {
+                    "all" => {
+                        al.source_posture = Some(SourcePosture::All);
+                        (source_path, true)
+                    }
+                    "layer-off" => {
+                        al.exemption_layer = false;
+                        (source_path, true)
+                    }
+                    "testpath" => (test_path, false),
+                    "testpath-skip-off" => {
+                        al.tier3_skip_test_paths = false;
+                        (test_path, fire)
+                    }
+                    _ => (source_path, fire),
+                };
+                let mut file = fixture_file(&expanded.text);
+                file.path = scan_path.to_owned();
+                let files = [file];
+                let found = scan(&files, &SCANNER, &al);
+                let context = format!("{name}:{number}, {scenario}, {scan_path} :: {shape}");
+                if expected {
+                    for span in &expanded.spans {
+                        let value = &expanded.text.as_bytes()[span.clone()];
+                        assert!(
+                            found.iter().any(|finding| finding.rule_id == RULE
+                                && finding
+                                    .matched_value
+                                    .windows(value.len())
+                                    .any(|part| part == value)),
+                            "{context}: no {RULE} finding carries {span:?}, got {found:?}"
+                        );
+                    }
+                } else {
+                    assert!(found.is_empty(), "{context}: unexpected findings {found:?}");
+                }
+                if index < 2 && !expected && (scenario != "testpath" || fire) {
+                    al.trace_exemptions = true;
+                    let traced = scan(&files, &SCANNER, &al);
+                    let label = if scenario == "testpath" {
+                        "exempt:testpath"
+                    } else {
+                        "exempt:code"
+                    };
+                    assert!(
+                        traced.iter().any(|finding| finding.rule_id == label),
+                        "{context}: missing {label} trace, got {traced:?}"
+                    );
+                    assert!(
+                        traced.iter().all(|finding| finding.rule_id != RULE),
+                        "{context}: tracing reintroduced a finding"
+                    );
+                }
+            }
+        }
+    }
 }
 
 #[test]

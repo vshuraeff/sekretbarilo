@@ -56,6 +56,9 @@ Find the symptom in the group for the surface it appears on. `sekretbarilo docto
 | Public keys reported as findings | `detect_public_keys` enabled | Remove the setting or the `--detect-public-keys` flag | `sekretbarilo audit` |
 | Every value under a key is still flagged | `keys` applies to `generic-high-entropy-value` only | Add a per-rule entry for the other rule | `sekretbarilo scan` |
 | A high-entropy value is no longer reported | A structural exemption step suppressed it | Set `exemption_layer = false` under `[settings]` if the shape is genuinely a secret | `sekretbarilo audit --trace-exemptions` |
+| A value in a `.rs` or `.go` file is no longer reported | It sits outside every string literal, so the source posture dropped it (`exempt:code`) | Set `source_posture = "all"` under `[settings]` if that shape is genuinely a secret | `sekretbarilo audit --trace-exemptions` |
+| Tier-3 findings in bare Python, JavaScript/TypeScript or C/C++ code, outside any string literal | Those families are deferred in 0.8.0: they select no tracker and are scanned in full posture, as in 0.7.0, so no `exempt:code` label appears for them and no `source_posture` value covers them | Silence the shape with a `[[allowlist.rules]]` entry, or rely on `tier3_skip_test_paths`, which is independent of the posture | `sekretbarilo audit --trace-exemptions` |
+| Nothing is reported under `tests/`, `fixtures/`, `testdata/` or `benches/`, or inside a Rust `#[cfg(test)]` module | `generic-high-entropy-value` stands down there (`exempt:testpath`); tier 1 and tier 2 still run | Set `tier3_skip_test_paths = false` under `[settings]` | `sekretbarilo audit --trace-exemptions` |
 | Findings named `exempt:syntax`, `exempt:url` and the like | `--trace-exemptions` is on; the decisions are reported as findings and count towards the exit code | Drop the flag outside diagnosis | `sekretbarilo audit` |
 
 ## Binary and PATH

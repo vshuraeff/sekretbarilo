@@ -41,6 +41,7 @@ fn quoted_and_plain_assignments_share_the_existing_rule_and_exact_capture() {
             is_deleted: false,
             is_renamed: false,
             is_binary: false,
+            context: None,
             added_lines: vec![AddedLine {
                 line_number: 7,
                 content: text.as_bytes().to_vec(),

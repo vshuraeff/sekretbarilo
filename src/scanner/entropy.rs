@@ -30,9 +30,12 @@ pub fn shannon_entropy(data: &[u8]) -> f64 {
 /// return whether a rooted value has the lexical shape of a wordy filesystem path.
 /// this is a documented lexical heuristic, not proof the value is non-secret.
 pub fn is_path_shaped(value: &[u8]) -> bool {
+    // json-pointer references permit their leading # marker.
+    let path_bytes = value.strip_prefix(b"#/").unwrap_or(value);
+
     if !is_rooted_path(value)
         || value.windows(3).any(|window| window == b"://")
-        || value.iter().any(|&byte| !is_path_byte(byte))
+        || path_bytes.iter().any(|&byte| !is_path_byte(byte))
         || value
             .iter()
             .filter(|&&byte| matches!(byte, b'/' | b'\\'))
@@ -45,8 +48,58 @@ pub fn is_path_shaped(value: &[u8]) -> bool {
     has_wordy_path_leaf(value)
 }
 
+/// recognize a relative path with one short opaque id among wordy segments.
+/// this is a byte-level lexical heuristic, not proof the value is non-secret.
+pub fn is_relative_id_path(value: &[u8]) -> bool {
+    if is_rooted_path(value)
+        || value.windows(3).any(|window| window == b"://")
+        || value.iter().any(|&byte| {
+            !byte.is_ascii_alphanumeric() && !matches!(byte, b'/' | b'.' | b'-' | b'_')
+        })
+    {
+        return false;
+    }
+
+    let segments: Vec<_> = value.split(|&byte| byte == b'/').collect();
+    if segments.len() < 3 || segments.iter().any(|segment| segment.is_empty()) {
+        return false;
+    }
+    if !has_wordy_path_leaf(value) {
+        return false;
+    }
+
+    let mut id_index = None;
+    for (index, segment) in segments[..segments.len() - 1].iter().enumerate() {
+        let has_digit = segment.iter().any(u8::is_ascii_digit);
+        let has_upper = segment.iter().any(u8::is_ascii_uppercase);
+        let has_lower = segment.iter().any(u8::is_ascii_lowercase);
+        let is_id = segment.len() < MIN_ENTROPY_LENGTH
+            && segment.iter().all(u8::is_ascii_alphanumeric)
+            && (has_digit || (has_upper && has_lower));
+        if is_id && id_index.replace(index).is_some() {
+            return false;
+        }
+    }
+    let Some(id_index) = id_index else {
+        return false;
+    };
+
+    let mut remainder = Vec::with_capacity(value.len() - segments[id_index].len());
+    for (index, segment) in segments.iter().enumerate() {
+        if index == id_index {
+            continue;
+        }
+        if !remainder.is_empty() {
+            remainder.push(b'/');
+        }
+        remainder.extend_from_slice(segment);
+    }
+    crate::scanner::wordshape::is_word_structured(&remainder)
+}
+
 fn is_rooted_path(value: &[u8]) -> bool {
     value.starts_with(b"/")
+        || value.starts_with(b"#/")
         || value.starts_with(b"~/")
         || value.starts_with(b"./")
         || value.starts_with(b"../")
@@ -54,6 +107,59 @@ fn is_rooted_path(value: &[u8]) -> bool {
             && value[0].is_ascii_alphabetic()
             && value[1] == b':'
             && matches!(value[2], b'/' | b'\\'))
+}
+
+/// recognize a single mktemp-style leaf with a wordy prefix and six-character suffix.
+pub fn is_mktemp_path(value: &[u8]) -> bool {
+    let Some(name) = value.strip_prefix(b"./") else {
+        return false;
+    };
+    let Some(dot) = name.iter().position(|&byte| byte == b'.') else {
+        return false;
+    };
+    let (stem, suffix) = (&name[..dot], &name[dot + 1..]);
+    // bound the combined stem and suffix, so separators cannot hide an eligible opaque payload.
+    suffix.len() == 6
+        && stem.len() + suffix.len() < MIN_ENTROPY_LENGTH
+        && suffix.iter().all(u8::is_ascii_alphanumeric)
+        && stem.contains(&b'-')
+        && stem.split(|&byte| byte == b'-').all(|word| {
+            (3..MIN_ENTROPY_LENGTH).contains(&word.len()) && word.iter().all(u8::is_ascii_lowercase)
+        })
+        && has_wordy_path_leaf(value)
+}
+
+/// recognize a directory variable followed by a wordy path, without shell defaults or operators.
+pub fn is_shell_directory_path(value: &[u8]) -> bool {
+    let Some(value) = value.strip_prefix(b"$") else {
+        return false;
+    };
+    let Some(slash) = value.iter().position(|&byte| byte == b'/') else {
+        return false;
+    };
+    let (variable, path) = value.split_at(slash);
+    // every directory and leaf piece split on '/', '-', '_' or '.' must be nonempty
+    // ascii letters or at most four digits; the whole path after its leading '/'
+    // must stay below min_entropy_length, regardless of separator placement.
+    let wordy_path = path.len() - 1 < MIN_ENTROPY_LENGTH
+        && path[1..]
+            .split(|byte| matches!(byte, b'/' | b'-' | b'_' | b'.'))
+            .all(|piece| {
+                !piece.is_empty()
+                    && (piece.iter().all(u8::is_ascii_alphabetic)
+                        || (piece.len() <= 4 && piece.iter().all(u8::is_ascii_digit)))
+            });
+    (5..MIN_ENTROPY_LENGTH).contains(&variable.len())
+        && variable.ends_with(b"_DIR")
+        && !variable[0].is_ascii_digit()
+        && variable
+            .iter()
+            .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit() || *byte == b'_')
+        && path
+            .iter()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'/' | b'.' | b'-' | b'_'))
+        && wordy_path
+        && has_wordy_path_leaf(path)
 }
 
 fn is_path_byte(byte: u8) -> bool {
@@ -347,6 +453,7 @@ mod tests {
 
         let opaque_19 = opaque_stem(19);
         let opaque_20 = opaque_stem(20);
+        let opaque_25 = opaque_stem(25);
         let generated_cases = [
             (path_with_stem(b"/var/lib/", &opaque_19, b".key"), false),
             (path_with_stem(b"/var/lib/", &opaque_20, b".key"), false),
@@ -367,6 +474,7 @@ mod tests {
             (path_with_stem(b"/a/b/", &opaque_20, b".txt"), false),
             // the raw 20-byte stem is disqualified before extension stripping.
             (b"/a/b/internationalization.txt".to_vec(), false),
+            (path_with_stem(b"#/definitions/", &opaque_25, b""), false),
             (b"/home/user/notes.txt".to_vec(), true),
             (b"/etc/app/.env.local".to_vec(), true),
             (b"/var/log/nginx/my-app.log".to_vec(), true),
@@ -375,6 +483,19 @@ mod tests {
             (b"/etc/nginx/conf.d/".to_vec(), true),
             (b"/a/b/README".to_vec(), true),
             (b"/a/b/name.".to_vec(), true),
+            (
+                b"#/definitions/PaymentMethod/properties/identifier".to_vec(),
+                true,
+            ),
+            (b"#/components/schemas/AddressValidation".to_vec(), true),
+            (b"#/x".to_vec(), false),
+            (b"abc#/definitions/foo/bar".to_vec(), false),
+            (b"##/definitions/foo/bar".to_vec(), false),
+            // segments of 20+ bytes keep the opaque-run veto (known gap)
+            (
+                b"#/definitions/PaymentMethodDescriptorConfig/properties/id".to_vec(),
+                false,
+            ),
             // an opaque short ancestor remains exempt because only leaves use the wordy check.
             (path_with_stem(b"/data/", &opaque_19, b"/token.txt"), true),
         ];

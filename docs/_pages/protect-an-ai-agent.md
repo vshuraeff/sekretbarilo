@@ -95,7 +95,7 @@ file contains 2 secret(s). reading blocked to prevent secret exposure.
 
 Two rules matched the same value: the catch-all entropy rule, which ignores the name on the left of the `=`, and the generic API-key rule, which was drawn in by the name `api_key`.
 
-The catch-all rule also runs a layer of structural exemptions that dismiss values whose shape is not a credential — paths, URLs, import lines, source expressions. A quoted random value assigned to a name is none of those, so it survives the layer and is reported. [How secret detection works]({{ '/how-detection-works/' | relative_url }}) covers the eight steps.
+The catch-all rule also runs a layer of structural exemptions that dismiss values whose shape is not a credential — paths, URLs, import lines, source expressions. A quoted random value assigned to a name is none of those, so it survives the layer and is reported. [How secret detection works]({{ '/how-detection-works/' | relative_url }}) covers the thirteen steps.
 
 The `match` line is how sekretbarilo reports a finding: first two characters, last two characters, asterisks in between. Enough to recognise which value it was, not enough to reconstruct it. Your own characters will differ from the ones above.
 

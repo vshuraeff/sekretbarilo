@@ -18,6 +18,7 @@ pub struct DiffFile {
     pub is_renamed: bool,
     pub is_binary: bool,
     pub added_lines: Vec<AddedLine>,
+    pub context: Option<Vec<u8>>,
 }
 
 /// parse a unified diff into file blocks
@@ -55,6 +56,7 @@ fn parse_file_block(lines: &[&[u8]], start: usize, total: usize) -> (DiffFile, u
         is_deleted: false,
         is_renamed: false,
         is_binary: false,
+        context: None,
         added_lines: Vec::new(),
     };
 

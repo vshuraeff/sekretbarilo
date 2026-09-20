@@ -6,6 +6,60 @@ use sekretbarilo::scanner::rules::{CompiledScanner, Rule, RuleAllowlist, compile
 const AWS_KEY: &str = "AKIAIOSFODNN7ABCDEFG";
 const PASSWORD: &str = "Kj8#mP2!xQ9vL4nR";
 
+#[test]
+fn labelled_hex_without_git_context_remains_assignment_policy() {
+    let (scanner, allowlist) = defaults(false);
+    assert!(allowlist.exemption_layer);
+    let mut state = 7_u64;
+    let hex: String = (0..40)
+        .map(|_| {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1);
+            char::from_digit((state >> 60) as u32, 16).unwrap()
+        })
+        .collect();
+    assert!(sekretbarilo::scanner::entropy::shannon_entropy(hex.as_bytes()) < 4.0);
+    for eol in ["\n", "\r\n"] {
+        for (prefix, key) in [
+            ("head now: ", "now"),
+            ("sek=", "sek"),
+            ("har=", "har"),
+            ("head=", "head"),
+        ] {
+            let text = format!("{prefix}{hex}{eol}");
+            let found = scan_text(&text, &scanner, &allowlist);
+            assert_eq!(found.len(), 1);
+            assert_eq!(found[0].rule_id, "generic-high-entropy-value");
+            assert_eq!(found[0].range, prefix.len()..prefix.len() + hex.len());
+            let rule = scanner
+                .rules
+                .iter()
+                .find(|rule| rule.id == found[0].rule_id)
+                .unwrap();
+            let captures = rule.regex.captures(text.as_bytes()).unwrap();
+            assert_eq!(
+                captures.name("entropy_key").unwrap().as_bytes(),
+                key.as_bytes()
+            );
+            assert_eq!(
+                redact_text(&text, &scanner, &allowlist),
+                format!("{prefix}[REDACTED]{eol}")
+            );
+            let mut off = defaults(false).1;
+            off.exemption_layer = false;
+            assert!(scan_text(&text, &scanner, &off).is_empty());
+        }
+        for text in [
+            format!("{hex}{eol}"),
+            format!("commit head now: {hex}{eol}"),
+        ] {
+            assert!(scan_text(&text, &scanner, &allowlist).is_empty());
+            assert_eq!(redact_text(&text, &scanner, &allowlist), text);
+        }
+    }
+}
+
 fn defaults(public: bool) -> (CompiledScanner, CompiledAllowlist) {
     let rules = sekretbarilo::scanner::rules::load_default_rules().unwrap();
     let scanner = compile_rules(&rules).unwrap();
@@ -223,6 +277,7 @@ fn text_mode_has_no_documentation_entropy_bonus() {
         is_deleted: false,
         is_renamed: false,
         is_binary: false,
+        context: None,
         added_lines: vec![AddedLine {
             line_number: 1,
             content: text.as_bytes().to_vec(),

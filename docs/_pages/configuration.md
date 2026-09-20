@@ -168,6 +168,13 @@ detect_public_keys = false
 # structural exemptions for the tier 3 rule generic-high-entropy-value (default: true)
 # false restores the 0.6.x behaviour of that rule and affects no other rule
 exemption_layer = true
+
+# where generic-high-entropy-value looks inside a source file: "literals" or "all"
+# unset means "literals" while exemption_layer is on, "all" while it is off
+source_posture = "literals"
+
+# skip generic-high-entropy-value on test paths (default: true, and only while the layer is on)
+tier3_skip_test_paths = true
 ```
 
 **Notes:**
@@ -176,6 +183,8 @@ exemption_layer = true
 - Tier 1 rules (prefix-based) don't use entropy checks, so this setting doesn't affect them.
 - Use this to tune sensitivity globally without modifying individual rules.
 - `exemption_layer` is scoped to `generic-high-entropy-value` and is on by default. See [The exemption layer](#the-exemption-layer) below.
+- `source_posture` is scoped to the same rule. In `literals` posture a candidate in a source file counts only inside a string-literal body, and each literal body is a candidate of its own. The covered languages are Rust and Go in 0.8.0. See [The source posture](#the-source-posture) below.
+- `tier3_skip_test_paths` turns off that one rule under `tests/`, `fixtures/`, `testdata/`, `benches/`, in `*_test.*` files, and inside a Rust `#[cfg(test)] mod name { }` region. Tier 1 and tier 2 rules keep running there.
 - `detect_public_keys` enables 3 gated rules (`pem-public-key`, `pgp-public-key-block`, `openssh-public-key`). When disabled (default), lines inside public key blocks are also suppressed to avoid false positives from base64 content. Can be overridden with `--detect-public-keys` CLI flag.
 
 ### The exemption layer
@@ -192,7 +201,7 @@ a candidate at all.
 exemption_layer = false
 ```
 
-Turning it off restores the 0.6.x behaviour of this one rule: the eight exemption steps, the
+Turning it off restores the 0.6.x behaviour of this one rule: the thirteen exemption steps, the
 call-argument collector and the exact-length hex bypass are disabled together. Two things stay on
 regardless, because they sit outside the switch: the path-shape check that runs before the layer,
 and the `keys` entries of `[[allowlist.rules]]`, which are applied after it. The 20-byte minimum
@@ -202,10 +211,55 @@ Disabling `exemption_layer` does not revert independent rule changes in 0.7.0; `
 continues to report non-placeholder literal URL passwords regardless of strength. Restoring the
 complete 0.6.3 detector behaviour requires the 0.6.3 release, not this switch.
 
+### The source posture
+
+A file whose extension names a supported language — `.rs` and `.go` in 0.8.0 — is scanned in
+`literals` posture for `generic-high-entropy-value` alone. A candidate is kept only
+when it lies inside a string-literal body, every literal body on the line is a candidate of its own,
+and bare code and comments produce nothing from this rule. Shell, configuration and data formats,
+markdown, extensionless files and unknown extensions are unaffected. The Python, JavaScript and
+TypeScript, and C and C++ families are deferred in 0.8.0: they select no tracker and are scanned in
+full posture, exactly as in 0.7.0, and setting `source_posture = "literals"` does not cover them —
+no setting does. The tracker reads each
+language's delimiters and escapes rather than parsing it, and an unknown lexical state — after a gap
+in a diff whose file could not be read, or in a history audit — is scanned in full posture rather
+than guessed at.
+
+```toml
+[settings]
+source_posture = "all"
+```
+
+Unset, the posture follows `exemption_layer`, so turning the layer off alone still yields exactly
+the candidate set of the previous release with the layer off. An explicit value wins in both
+directions. "Source files" in the table below means the covered languages, so Rust and Go in 0.8.0;
+a deferred family is in full posture in every row.
+
+| `source_posture` | `exemption_layer` | Effect on source files |
+| --- | --- | --- |
+| unset | `true` | literals posture, literal bodies as candidates |
+| unset | `false` | full posture; exemption steps and the call-argument collector off |
+| `"literals"` | `true` | literals posture |
+| `"literals"` | `false` | literal candidates and the posture stay on; the structural exemption steps and the hex bypass are off, while the length and ASCII gate, the path check, variable-reference detection, the allowlists and the stopwords keep running |
+| `"all"` | `true` | the 0.7.0 default, with the call-argument collector |
+| `"all"` | `false` | the layer off entirely |
+
+`tier3_skip_test_paths` is separate and on by default: a path with a `tests`, `fixtures`, `testdata`
+or `benches` directory segment, or a file name containing `_test.`, skips this one rule. A Rust
+`#[cfg(test)] mod name { }` region is treated the same way, recognised by the literal tracker on
+the exact attribute applied to a `mod` item — `cfg(all(test, ...))`, the attribute on a `fn`, a
+`use` or an `impl`, and other languages are gaps — and only in `literals` posture, so
+`source_posture = "all"` does not get it while the directory skip applies under any posture. The
+skip applies only while `exemption_layer` is on.
+
+The reasoning, what the posture forfeits and what it recovers, is in
+[ADR 0003](../adr/0003-tier3-source-posture.md).
+
 `--trace-exemptions` reports every exemption decision as a pseudo-finding of its own, named
-`exempt:` plus the step that suppressed the value: `file`, `import`, `markdown`, `path`, `pin`,
-`url`, `syntax`, `wordshape`. It answers the question of which gate stopped a value, and an absent
-decision says the value never reached that gate.
+`exempt:` plus the step that suppressed the value: `file`, `import`, `markdown`, `path`, `relpath`,
+`mktemp`, `shell-path`, `pin`, `url`, `regex`, `syntax`, `wordshape`, `digest`, plus `exempt:code` for a candidate outside every literal body in a
+source file and `exempt:testpath` for the test-path skip. It answers the question of which gate
+stopped a value, and an absent decision says the value never reached that gate.
 
 ```
   file: src/config/discovery.rs

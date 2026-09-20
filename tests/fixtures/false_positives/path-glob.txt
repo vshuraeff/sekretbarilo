@@ -12,3 +12,11 @@ socket = "/var/run/acme/widget/widget-worker-0.sock"
 path: C:/ProgramData/acme/widget/cache/index.db
 report = "coverage/lcov-report/src_widget_pipeline_transform_ts.html"
 keystore: /etc/ssl/private/acme-widget-internal-mtls-client.pem
+"$ref": "#/definitions/PaymentMethod"
+$ref: '#/components/schemas/AddressCheck'
+"$ref": "#/definitions/WindowSettings"
+"$ref": "#/components/responses/ErrorBody"
+$ref: "#/definitions/ScheduleEntry"
+"allOf": [{"$ref": "#/definitions/BaseDocument"}]
+"$ref": "#/components/parameters/OrgIdHeader"
+ref = "#/definitions/Preferences/properties/channel"

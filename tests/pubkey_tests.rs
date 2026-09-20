@@ -21,6 +21,7 @@ fn make_file(path: &str, lines: Vec<(usize, &[u8])>) -> DiffFile {
         is_deleted: false,
         is_renamed: false,
         is_binary: false,
+        context: None,
         added_lines: lines
             .into_iter()
             .map(|(num, content)| AddedLine {
@@ -297,6 +298,8 @@ fn config_detect_public_keys_merge_overlay_wins() {
             entropy_threshold: None,
             detect_public_keys: Some(false),
             exemption_layer: None,
+            source_posture: None,
+            tier3_skip_test_paths: None,
         },
         ..Default::default()
     };
@@ -305,6 +308,8 @@ fn config_detect_public_keys_merge_overlay_wins() {
             entropy_threshold: None,
             detect_public_keys: Some(true),
             exemption_layer: None,
+            source_posture: None,
+            tier3_skip_test_paths: None,
         },
         ..Default::default()
     };
@@ -321,6 +326,8 @@ fn config_detect_public_keys_base_preserved_when_overlay_none() {
             entropy_threshold: None,
             detect_public_keys: Some(true),
             exemption_layer: None,
+            source_posture: None,
+            tier3_skip_test_paths: None,
         },
         ..Default::default()
     };
@@ -345,6 +352,8 @@ fn build_allowlist_detect_public_keys_true_when_set() {
             entropy_threshold: None,
             detect_public_keys: Some(true),
             exemption_layer: None,
+            source_posture: None,
+            tier3_skip_test_paths: None,
         },
         ..Default::default()
     };

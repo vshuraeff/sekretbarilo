@@ -45,7 +45,8 @@ pub fn scan_text(
         scanner,
         allowlist,
         is_doc_file: false,
-        generic_rule_disabled: false,
+        generic_rule_skip: None,
+        literals: None,
     };
     let mut matches = Vec::new();
     let mut candidates = vec![false; scanner.rules.len()];
@@ -85,7 +86,8 @@ pub fn scan_text(
                 let line_ctx = MatchContext {
                     input: content.as_bytes(),
                     line_starts: &[],
-                    generic_rule_disabled: false,
+                    generic_rule_skip: None,
+                    literals: None,
                     ..ctx
                 };
                 scan_matches(&line_ctx, &mut candidates, |rule_id, range| {

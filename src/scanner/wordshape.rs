@@ -37,6 +37,26 @@ fn is_capitalized_word(bytes: &[u8]) -> bool {
     bytes[0].is_ascii_uppercase() && bytes[1..].iter().all(u8::is_ascii_lowercase)
 }
 
+fn has_wordlike_vowels(bytes: &[u8]) -> bool {
+    let mut has_vowel = false;
+    let mut consonants = 0;
+    for byte in bytes {
+        if matches!(
+            byte.to_ascii_lowercase(),
+            b'a' | b'e' | b'i' | b'o' | b'u' | b'y'
+        ) {
+            has_vowel = true;
+            consonants = 0;
+        } else {
+            consonants += 1;
+            if consonants > 4 {
+                return false;
+            }
+        }
+    }
+    has_vowel
+}
+
 fn words(value: &[u8]) -> Vec<Word<'_>> {
     let mut words = Vec::new();
     let mut start = 0;
@@ -138,6 +158,9 @@ pub fn is_word_structured(value: &[u8]) -> bool {
     let mut numeric_words = 0;
     let mut alphabetic_words = 0;
     let mut long_words = 0;
+    let mut implausible_words = 0;
+    let mut shortest_long_word = usize::MAX;
+    let mut longest_long_word = 0;
     let separator_count = value.iter().filter(|&&byte| is_separator(byte)).count();
     let has_separator = separator_count > 0;
     let mut i = 0;
@@ -170,6 +193,11 @@ pub fn is_word_structured(value: &[u8]) -> bool {
             alphabetic_words += 1;
             if bytes.len() >= 4 {
                 long_words += 1;
+                shortest_long_word = shortest_long_word.min(bytes.len());
+                longest_long_word = longest_long_word.max(bytes.len());
+                if !has_wordlike_vowels(bytes) {
+                    implausible_words += 1;
+                }
             } else if !SHORT_WORDS
                 .split_ascii_whitespace()
                 .any(|allowed| bytes.eq_ignore_ascii_case(allowed.as_bytes()))
@@ -187,6 +215,15 @@ pub fn is_word_structured(value: &[u8]) -> bool {
         return false;
     }
     if camel_only && long_words < 4 {
+        return false;
+    }
+    // require three quarters of long words to contain a vowel (including y) and
+    // at most four consecutive consonants, allowing occasional acronyms or compounds.
+    // near-uniform long-word lengths (spread <= 1) get no such allowance, since
+    // mechanically chunked tokens must not qualify merely by having short chunks.
+    if implausible_words * 4 > long_words
+        || (implausible_words > 0 && longest_long_word - shortest_long_word <= 1)
+    {
         return false;
     }
     // multiplication implements a ceiling for half of an odd alphabetic count.

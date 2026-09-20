@@ -32,10 +32,19 @@ space or a tab — `#include <sys/socket.h>` and `#widget-settings-panel` stay s
 whitespace is part of the shape, because an indented line matches different alternatives of the
 tier-3 rule than a bare one.
 
-Every line is scanned twice, once through the diff surface (`scan`, under the path
-`src/fixture.rs`, which no path allowlist covers) and once through the agent surface
-(`redact_text`), because a shape that is quiet in a commit and masked in a `Read` result is still a
-false positive.
+The path a fixture is scanned under is part of the fixture, because the tier-3 rule reads only
+string-literal bodies in a source file. A file named `<class>.<ext>.txt`, with `ext` one of `rs`,
+`go`, `py`, `js`, `ts` or `c`, is scanned under `src/fixture.<ext>` and so exercises that language's
+posture; every other fixture is scanned under `src/fixture.conf`, which no path allowlist covers and
+which carries no language posture. A bare-code shape therefore belongs in a language-infixed file,
+where the posture is what must drop it, and a configuration or data shape in a plain one, where the
+exemption layer is. A fixture is one line and carries no enclosing item, so the `#[cfg(test)]`
+module region of the test-path skip is never entered by the corpus.
+
+Each line is also scanned through the agent surface (`redact_text`), because a shape that is quiet
+in a commit and masked in a `Read` result is still a false positive. That pathless check runs for
+fixtures without a language infix only: redaction inspects a tool result and has no path to take a
+posture from.
 
 ## No opaque literal lives in the repository
 

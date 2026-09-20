@@ -6,6 +6,8 @@
 use memchr::memmem;
 use regex::bytes::{Regex, RegexBuilder};
 
+use super::SourcePosture;
+
 pub type PerRuleAllowlistWithKeys = (String, Vec<String>, Vec<String>, Vec<String>);
 type CompiledPerRuleAllowlist = (String, Vec<Regex>, Vec<Regex>, Vec<Regex>);
 
@@ -282,6 +284,10 @@ pub struct CompiledAllowlist {
     /// whether exemption-layer filtering is enabled (default: true)
     /// controls the whole 0.7.0 generic-rule recall/exemption policy, including call literals.
     pub exemption_layer: bool,
+    /// explicit source posture override for exemption-layer filtering
+    pub source_posture: Option<SourcePosture>,
+    /// whether generic rules skip test-shaped paths (default: true)
+    pub tier3_skip_test_paths: bool,
     /// whether exemption decisions are emitted as diagnostic findings (default: false)
     pub trace_exemptions: bool,
     /// per-rule allowlist compiled regexes: maps rule_id -> (value_regexes, path_regexes, key_patterns)
@@ -395,6 +401,8 @@ impl CompiledAllowlist {
             entropy_threshold_override: entropy_override,
             detect_public_keys,
             exemption_layer: true,
+            source_posture: None,
+            tier3_skip_test_paths: true,
             trace_exemptions: false,
             per_rule_allowlists,
         })
@@ -435,12 +443,43 @@ impl CompiledAllowlist {
         })
     }
 
-    // wired in the exemption-layer glue
+    /// resolves the effective source posture: an explicit setting always wins;
+    /// otherwise it follows exemption_layer (layer on -> literals, layer off -> all).
+    ///
+    /// | source_posture setting | exemption_layer | effective posture |
+    /// |---|---|---|
+    /// | unset | true | literals |
+    /// | unset | false | all |
+    /// | literals | true | literals |
+    /// | literals | false | literals |
+    /// | all | true | all |
+    /// | all | false | all |
     #[allow(dead_code)]
-    /// returns whether a path skips generic-rule matching for exemption purposes.
-    pub fn is_generic_rule_skipped_path(&self, path: &str) -> bool {
+    pub fn effective_source_posture(&self) -> SourcePosture {
+        match self.source_posture {
+            Some(posture) => posture,
+            None => {
+                if self.exemption_layer {
+                    SourcePosture::Literals
+                } else {
+                    SourcePosture::All
+                }
+            }
+        }
+    }
+
+    /// returns the reason a path skips generic-rule matching, or None if it doesn't.
+    /// "file" = a GENERIC_ONLY_FILES / CODEOWNERS basename; "testpath" = a test-shaped
+    /// path skipped because tier3_skip_test_paths is enabled.
+    pub fn generic_rule_skip(&self, path: &str) -> Option<&'static str> {
         let filename = path.rsplit('/').next().unwrap_or(path);
-        GENERIC_ONLY_FILES.contains(&filename) || filename.eq_ignore_ascii_case("CODEOWNERS")
+        if GENERIC_ONLY_FILES.contains(&filename) || filename.eq_ignore_ascii_case("CODEOWNERS") {
+            return Some("file");
+        }
+        if self.tier3_skip_test_paths && is_test_path(path) {
+            return Some("testpath");
+        }
+        None
     }
 
     /// check if a file path should be skipped entirely (global path allowlist)
@@ -673,12 +712,48 @@ impl CompiledAllowlist {
     }
 }
 
+/// returns true when `path` looks like a test/fixture/benchmark path: any path
+/// segment except the last one equal to exactly "tests", "fixtures", "testdata"
+/// or "benches" (case-sensitive), or the last segment containing the literal byte
+/// sequence "_test." anywhere in it. a leading "./" is stripped before matching.
+pub(crate) fn is_test_path(path: &str) -> bool {
+    let path = path.strip_prefix("./").unwrap_or(path);
+    let segments: Vec<&str> = path.split('/').collect();
+    if segments.is_empty() {
+        return false;
+    }
+    let last_index = segments.len() - 1;
+    for (i, segment) in segments.iter().enumerate() {
+        if i != last_index && matches!(*segment, "tests" | "fixtures" | "testdata" | "benches") {
+            return true;
+        }
+    }
+    segments[last_index].contains("_test.")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn default_al() -> CompiledAllowlist {
         CompiledAllowlist::default_allowlist().unwrap()
+    }
+
+    #[test]
+    fn long_variable_reference_patterns_are_regex_shaped() {
+        let checked = VAR_PATTERNS
+            .iter()
+            .filter(|pattern| pattern.len() >= 20)
+            .inspect(|pattern| {
+                assert!(crate::scanner::regexshape::is_regex_shaped(
+                    pattern.as_bytes()
+                ))
+            })
+            .count();
+        assert!(
+            checked >= 9,
+            "checked only {checked} long variable patterns"
+        );
     }
 
     // -- global path allowlist tests (5.1) --
@@ -715,20 +790,73 @@ mod tests {
     #[test]
     fn generic_rule_skipped_paths() {
         let al = default_al();
-        assert!(al.is_generic_rule_skipped_path(".gitignore"));
-        assert!(al.is_generic_rule_skipped_path(".dockerignore"));
-        assert!(al.is_generic_rule_skipped_path(".npmignore"));
-        assert!(al.is_generic_rule_skipped_path(".prettierignore"));
-        assert!(al.is_generic_rule_skipped_path(".eslintignore"));
-        assert!(al.is_generic_rule_skipped_path(".gitattributes"));
-        assert!(al.is_generic_rule_skipped_path(".helmignore"));
-        assert!(al.is_generic_rule_skipped_path("docs/.gitignore"));
-        assert!(al.is_generic_rule_skipped_path(".github/CODEOWNERS"));
-        assert!(al.is_generic_rule_skipped_path("codeowners"));
-        assert!(al.is_generic_rule_skipped_path("CODEOWNERS"));
-        assert!(!al.is_generic_rule_skipped_path("gitignore"));
-        assert!(!al.is_generic_rule_skipped_path(".gitignore.bak"));
-        assert!(!al.is_generic_rule_skipped_path("x/.gitignored"));
+        assert!(al.generic_rule_skip(".gitignore").is_some());
+        assert!(al.generic_rule_skip(".dockerignore").is_some());
+        assert!(al.generic_rule_skip(".npmignore").is_some());
+        assert!(al.generic_rule_skip(".prettierignore").is_some());
+        assert!(al.generic_rule_skip(".eslintignore").is_some());
+        assert!(al.generic_rule_skip(".gitattributes").is_some());
+        assert!(al.generic_rule_skip(".helmignore").is_some());
+        assert!(al.generic_rule_skip("docs/.gitignore").is_some());
+        assert!(al.generic_rule_skip(".github/CODEOWNERS").is_some());
+        assert!(al.generic_rule_skip("codeowners").is_some());
+        assert!(al.generic_rule_skip("CODEOWNERS").is_some());
+        assert!(al.generic_rule_skip("gitignore").is_none());
+        assert!(al.generic_rule_skip(".gitignore.bak").is_none());
+        assert!(al.generic_rule_skip("x/.gitignored").is_none());
+    }
+
+    #[test]
+    fn test_path_matching() {
+        for path in [
+            "foo_test.go",
+            "foo.bar_test.rs",
+            "foo_test.extra.rs",
+            "tests/x.rs",
+            "benches/b.rs",
+        ] {
+            assert!(is_test_path(path), "{path}");
+        }
+        for path in [
+            "foo_test",
+            "_testx.rs",
+            "src/tests.rs",
+            "mytests/x.rs",
+            "testsuite/x.rs",
+        ] {
+            assert!(!is_test_path(path), "{path}");
+        }
+    }
+
+    #[test]
+    fn generic_rule_skip_test_path_obeys_setting() {
+        let al = default_al();
+        assert_eq!(al.generic_rule_skip("tests/x.rs"), Some("testpath"));
+
+        let mut al = default_al();
+        al.tier3_skip_test_paths = false;
+        assert_eq!(al.generic_rule_skip("tests/x.rs"), None);
+    }
+
+    #[test]
+    fn effective_source_posture_respects_explicit_setting() {
+        for (source_posture, exemption_layer, expected) in [
+            (None, true, SourcePosture::Literals),
+            (None, false, SourcePosture::All),
+            (Some(SourcePosture::Literals), true, SourcePosture::Literals),
+            (
+                Some(SourcePosture::Literals),
+                false,
+                SourcePosture::Literals,
+            ),
+            (Some(SourcePosture::All), true, SourcePosture::All),
+            (Some(SourcePosture::All), false, SourcePosture::All),
+        ] {
+            let mut al = default_al();
+            al.source_posture = source_posture;
+            al.exemption_layer = exemption_layer;
+            assert_eq!(al.effective_source_posture(), expected);
+        }
     }
 
     #[test]

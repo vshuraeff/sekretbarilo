@@ -163,6 +163,7 @@ mod tests {
             is_deleted: false,
             is_renamed: false,
             is_binary: false,
+            context: None,
             added_lines: lines
                 .iter()
                 .map(|(n, s)| AddedLine {

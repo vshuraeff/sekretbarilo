@@ -1,0 +1,12 @@
+# outcome tab source shape; first two rows are the settings controls
+fire	k = "{S32}"
+# known gap: python posture relief is deferred per adr 0003, so bare code and comments remain full-posture findings.
+fire	k = {S32}
+fire	# k = {S32}
+fire	k = '''x"{S32}"x'''
+fire	k = """triple literal""" ; control = "{S32}"
+fire	k = r"{S32}"
+fire	k = b"{S32}"
+fire	k = u"{S32}"
+fire	k = f"{S32}"
+fire	k = "\"{S32}"

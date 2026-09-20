@@ -17,6 +17,7 @@ fn make_file(path: &str, lines: Vec<(usize, &[u8])>) -> DiffFile {
         is_deleted: false,
         is_renamed: false,
         is_binary: false,
+        context: None,
         added_lines: lines
             .into_iter()
             .map(|(num, content)| AddedLine {
@@ -101,6 +102,7 @@ fn generate_files_with_secrets(num_files: usize, lines_per_file: usize) -> Vec<D
                 is_deleted: false,
                 is_renamed: false,
                 is_binary: false,
+                context: None,
                 added_lines: lines
                     .into_iter()
                     .map(|(num, content)| AddedLine {

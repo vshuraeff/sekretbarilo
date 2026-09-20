@@ -13,6 +13,7 @@ use sekretbarilo::scanner::{
     entropy::is_path_shaped,
     hash_detect::{is_hash_in_context, is_hex_policy_candidate},
     password::{is_pure_reference, is_strong_password, is_url_password_placeholder},
+    regexshape::is_regex_shaped,
     rules::{CompiledScanner, compile_rules, load_default_rules},
     syntax::expression_span,
     urlshape::{is_credential_free_url, is_pinned_action_ref, unwrap_markdown_target},
@@ -129,6 +130,57 @@ fn has_opaque_run(value: &[u8]) -> bool {
     false
 }
 
+fn next_regex_seed(state: &mut u64) -> u64 {
+    *state ^= *state >> 12;
+    *state ^= *state << 25;
+    *state ^= *state >> 27;
+    *state = (*state).wrapping_mul(0x2545_F491_4F6C_DD1D);
+    *state
+}
+
+#[test]
+fn regex_shape_exempts_no_opaque_alphabet_samples() {
+    const SAMPLES: usize = 100_000;
+    const ALPHABETS: [&[u8]; 3] = [
+        b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz",
+        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/",
+        b"0123456789abcdef",
+    ];
+    let mut state = 0x4D59_5DF4_D0F3_3173;
+    let mut exemptions = 0;
+    for sample in 0..SAMPLES {
+        let alphabet = ALPHABETS[(sample / 45) % ALPHABETS.len()];
+        let length = 20 + sample % 45;
+        let mut value = Vec::with_capacity(length);
+        for _ in 0..length {
+            value.push(alphabet[(next_regex_seed(&mut state) as usize) % alphabet.len()]);
+        }
+        exemptions += usize::from(is_regex_shaped(&value));
+    }
+    eprintln!("regex opaque samples={SAMPLES} exemptions={exemptions} rate=0.0000%");
+    assert_eq!(exemptions, 0);
+}
+
+#[test]
+fn regex_shape_exemptions_stay_below_ascii_graphic_bound() {
+    const SAMPLES: usize = 100_000;
+    let mut state = 0xA24B_AED4_963E_E407;
+    let mut exemptions = 0;
+    for _ in 0..SAMPLES {
+        let mut value = [0_u8; 40];
+        for byte in &mut value {
+            *byte = b'!' + (next_regex_seed(&mut state) % 94) as u8;
+        }
+        exemptions += usize::from(is_regex_shaped(&value));
+    }
+    let rate = exemptions as f64 * 100.0 / SAMPLES as f64;
+    eprintln!("regex ascii-graphic samples={SAMPLES} exemptions={exemptions} rate={rate:.4}%");
+    assert!(
+        exemptions * 1_000 <= SAMPLES * 2,
+        "regex exemptions={exemptions}/{SAMPLES} ({rate:.4}%), maximum=0.2000%"
+    );
+}
+
 proptest! {
     #[test]
     fn structured_call_literals_preserve_ranges_and_surroundings(
@@ -235,6 +287,7 @@ proptest! {
             is_deleted: false,
             is_renamed: false,
             is_binary: false,
+            context: None,
             added_lines: vec![AddedLine {
                 line_number: 1,
                 content: data,

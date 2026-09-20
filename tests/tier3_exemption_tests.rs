@@ -1,5 +1,6 @@
 mod common;
 
+use sekretbarilo::config::SourcePosture;
 use sekretbarilo::config::allowlist::CompiledAllowlist;
 use sekretbarilo::diff::parser::{AddedLine, DiffFile};
 use sekretbarilo::scanner::engine::{redact_text, scan, scan_text};
@@ -12,11 +13,399 @@ const ASSIGNMENT_PASSWORD: &str = "generic-password-assignment";
 const HUMMINGBOT: &str = "hummingbot.strategy.strategy_v2_base.ExecutorOrchestrator";
 const COMPARE_URL: &str = "https://github.com/owner/repo/compare/v1.0.0...v1.1.0";
 
+#[test]
+fn digest_records_preserve_surrounding_bytes() {
+    let al = allowlist();
+    assert!(al.exemption_layer);
+    for eol in ["\n", "\r\n"] {
+        for (label, algorithm) in [
+            ("Digest:    ", "sha256:"),
+            ("Digest: ", "sha-256="),
+            ("digest: ", "sha256:"),
+            ("X-Checksum-Sha256: ", "sha-256="),
+        ] {
+            let value = format!("{algorithm}{}", hex(64, 3));
+            let line = format!("before {label}{value} after{eol}");
+            check(&line, &[], &al);
+            let mut off = allowlist();
+            off.exemption_layer = false;
+            check(&line, &[(ENTROPY, &value)], &off);
+        }
+    }
+}
+
+#[test]
+fn digest_records_do_not_exempt_adjacent_or_malformed_secrets() {
+    let al = allowlist();
+    let digest = format!("sha256:{}", hex(64, 3));
+    let opaque = token(3);
+    let provider = format!("AKIA{}", &uppercase_token(7)[..16]);
+    for eol in ["\n", "\r\n"] {
+        for value in [&digest, &distributed_hex(&[2; 16])] {
+            check(&format!("CHECKSUM={value}{eol}"), &[(ENTROPY, value)], &al);
+        }
+        for gap in [" ", eol] {
+            for (value, rule) in [(&opaque, ENTROPY), (&provider, "aws-access-key-id")] {
+                for line in [
+                    format!("Digest: {digest}{gap}OTHER={value} tail{eol}"),
+                    format!("OTHER={value}{gap}Digest: {digest} tail{eol}"),
+                ] {
+                    check_rule(&line, rule, Some(value), false, &al);
+                    assert_eq!(
+                        redact_text(&line, &SCANNER, &al),
+                        line.replace(value, "[REDACTED]")
+                    );
+                }
+            }
+        }
+        for value in [
+            format!("sha256:{}0", hex(64, 3)),
+            format!("sha256:{}Z", hex(63, 3)),
+            format!("sha999:{}", hex(64, 3)),
+            format!("sha-256={}suffix", hex(64, 3)),
+        ] {
+            check(
+                &format!("Digest: {value} tail{eol}"),
+                &[(ENTROPY, &value)],
+                &al,
+            );
+        }
+        for (key, value) in [
+            ("API_KEY", hex(40, 7)),
+            ("token", hex(64, 7)),
+            ("secret", opaque.clone()),
+            ("password", opaque.clone()),
+        ] {
+            check_rule(
+                &format!("{key}={value}{eol}"),
+                ENTROPY,
+                Some(&value),
+                false,
+                &al,
+            );
+        }
+        let url = format!("https://user:{opaque}@service.invalid/path");
+        check_rule(&url, URL_PASSWORD, Some(&opaque), false, &al);
+        for value in [
+            format!("/work/{opaque}/diagnostic.log"),
+            format!("./{opaque}.md"),
+            format!("{opaque}.invalid"),
+        ] {
+            check(&format!("{value}{eol}"), &[(ENTROPY, &value)], &al);
+        }
+    }
+}
+
 static SCANNER: LazyLock<CompiledScanner> =
     LazyLock::new(|| compile_rules(&load_default_rules().unwrap()).unwrap());
 
+#[test]
+fn mktemp_output_record_preserves_whitespace_and_nearby_secrets() {
+    let al = allowlist();
+    let value = "./hitlr-request.a7B2q9";
+    for eol in ["\n", "\r\n"] {
+        let line = format!(" \t{value}\t {eol}");
+        check(&line, &[], &al);
+        let mut off = allowlist();
+        off.exemption_layer = false;
+        check(&line, &[(ENTROPY, value)], &off);
+        let opaque = token(3);
+        let text = format!("before{eol}{line}SECRET={opaque}{eol}after{eol}");
+        let matches = scan_text(&text, &SCANNER, &al);
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].rule_id, ENTROPY);
+        let start = text.find(&opaque).unwrap();
+        assert_eq!(matches[0].range, start..start + opaque.len());
+        assert_eq!(
+            redact_text(&text, &SCANNER, &al),
+            text.replace(&opaque, "[REDACTED]")
+        );
+    }
+}
+
+#[test]
+fn unproven_path_shapes_keep_entropy_detection() {
+    let al = allowlist();
+    let opaque = token(3);
+    let two_id_path = format!("task/q8Vn3sY6Kp4Zr9Tw/{}/lead", &token(4)[..12]);
+    let long_id_path = format!("task/{}/integrator/lead", token(5));
+    for eol in ["\n", "\r\n"] {
+        for value in [
+            "./hitlr-request.a7B2q9Z".to_owned(),
+            format!("./hitlr-request.{opaque}"),
+            format!("./{opaque}.a7B2q9"),
+            two_id_path.clone(),
+            long_id_path.clone(),
+            "background-execution.md".to_owned(),
+        ] {
+            check(&format!("{value}{eol}"), &[(ENTROPY, &value)], &al);
+        }
+        for line in [
+            "secret=./hitlr-request.a7B2q9",
+            "note: ./hitlr-request.a7B2q9",
+        ] {
+            check_rule(
+                &format!("{line}{eol}"),
+                ENTROPY,
+                Some("./hitlr-request.a7B2q9"),
+                false,
+                &al,
+            );
+        }
+        for line in [
+            "Workspace: /Users/name/work/.worktrees/repo/unit-1",
+            "task/a7B2q9C4d8E1f6G3/integrator/lead",
+            "task/q8Vn3sY6Kp4Zr9Tw/integrator/lead",
+        ] {
+            check(&format!("{line}{eol}"), &[], &al);
+        }
+    }
+    let mut traced = allowlist();
+    traced.trace_exemptions = true;
+    let findings = scan_text("task/q8Vn3sY6Kp4Zr9Tw/integrator/lead", &SCANNER, &traced);
+    assert_eq!(findings.len(), 1);
+    assert_eq!(findings[0].rule_id, "exempt:relpath");
+}
+
 fn allowlist() -> CompiledAllowlist {
     CompiledAllowlist::default_allowlist().unwrap()
+}
+
+#[test]
+fn shell_directory_expression_preserves_quotes_and_neighbours() {
+    let al = allowlist();
+    let expression = "$STATE_DIR/diagnostic.log";
+    for eol in ["\n", "\r\n"] {
+        let line = format!(" \t\"{expression}\"\t {eol}");
+        check(&line, &[], &al);
+        let mut off = allowlist();
+        off.exemption_layer = false;
+        check(&line, &[(ENTROPY, expression)], &off);
+        let provider = format!("AKIA{}", &uppercase_token(7)[..16]);
+        let line = format!("\"{expression}\" OTHER={provider}{eol}");
+        check_rule(&line, "aws-access-key-id", Some(&provider), false, &al);
+        assert_eq!(
+            redact_text(&line, &SCANNER, &al),
+            line.replace(&provider, "[REDACTED]")
+        );
+    }
+}
+
+#[test]
+fn shell_directory_expression_keeps_opaque_components_and_assignments() {
+    let al = allowlist();
+    let opaque = token(3);
+    for eol in ["\n", "\r\n"] {
+        for value in [
+            format!("$STATE_DIR/{opaque}"),
+            format!("$STATE_DIR/{opaque}.log"),
+            format!("$STATE_DIR/{opaque}/diagnostic.log"),
+            format!("${opaque}/diagnostic.log"),
+            format!("${{STATE_DIR:-{opaque}}}/diagnostic.log"),
+        ] {
+            check(&format!("\"{value}\"{eol}"), &[(ENTROPY, &value)], &al);
+        }
+        let value = "$STATE_DIR/diagnostic.log";
+        for line in [
+            format!("'{value}'"),
+            format!("secret=\"{value}\""),
+            format!("password=\"{value}\""),
+        ] {
+            check_rule(&format!("{line}{eol}"), ENTROPY, Some(value), false, &al);
+        }
+        let partial = "hashlib.sha256(x.encode()";
+        check(&format!("{partial}{eol}"), &[(ENTROPY, partial)], &al);
+        check(&format!("{{{{ some_var | default('x') }}}}{eol}"), &[], &al);
+    }
+}
+
+#[test]
+fn shell_directory_separator_attacks_are_redacted() {
+    let al = allowlist();
+    let mut off = allowlist();
+    off.exemption_layer = false;
+    let left = "q8Vn3sY6Kp4Zr9Tw";
+    let right = "u2Jc5Hm7Rx1Bd6Q";
+    let lowercase: String = (0..32)
+        .map(|index| char::from(b'a' + ((index * 11 + 3) % 26) as u8))
+        .collect();
+    let mut failures = Vec::new();
+    for eol in ["\n", "\r\n"] {
+        for separator in ["_", "-", ".", "/"] {
+            for path in [
+                format!("{left}{separator}{right}/diagnostic.log"),
+                format!("{left}{separator}{right}.log"),
+                format!("diagnostic-{left}{separator}{right}.log"),
+                format!(
+                    "{}{separator}{}/diagnostic.log",
+                    &lowercase[..16],
+                    &lowercase[16..]
+                ),
+            ] {
+                let value = format!("$STATE_DIR/{path}");
+                let line = format!(" \t\"{value}\"\t {eol}");
+                check(&line, &[(ENTROPY, &value)], &off);
+                let expected = line.replace(&value, "[REDACTED]");
+                if redact_text(&line, &SCANNER, &al) != expected {
+                    failures.push(line.clone());
+                } else {
+                    check(&line, &[(ENTROPY, &value)], &al);
+                }
+            }
+        }
+        for path in [
+            "diagnostic.log",
+            "logs/diagnostic.log",
+            "2026/diagnostic.log",
+            "v-2/diagnostic.log",
+        ] {
+            check(&format!("\"$STATE_DIR/{path}\"{eol}"), &[], &al);
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "opaque paths escaped redaction: {failures:?}"
+    );
+}
+
+#[test]
+fn mktemp_separator_attacks_are_redacted() {
+    let al = allowlist();
+    let mut off = allowlist();
+    off.exemption_layer = false;
+    let mut traced = allowlist();
+    traced.trace_exemptions = true;
+    let opaque: String = (0..32)
+        .map(|index| char::from(b'a' + ((index * 11 + 3) % 26) as u8))
+        .collect();
+    let mut failures = Vec::new();
+    for eol in ["\n", "\r\n"] {
+        for value in [
+            format!("./{}-{}.a7B2q9", &opaque[..16], &opaque[16..]),
+            format!(
+                "./{}-{}-{}.a7B2q9",
+                &opaque[..11],
+                &opaque[11..22],
+                &opaque[22..]
+            ),
+            format!("./{}-{}.{}", &opaque[..7], &opaque[7..14], &opaque[14..20]),
+            "./hitlr-download.a7B2q9".to_owned(),
+        ] {
+            let line = format!(" \t{value}\t {eol}");
+            check(&line, &[(ENTROPY, &value)], &off);
+            if redact_text(&line, &SCANNER, &al) != line.replace(&value, "[REDACTED]") {
+                eprintln!(
+                    "remaining exemption for {value}: {:?}",
+                    scan_text(&line, &SCANNER, &traced)
+                );
+                failures.push(line.clone());
+            } else {
+                check(&line, &[(ENTROPY, &value)], &al);
+            }
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "opaque mktemp values escaped redaction: {failures:?}"
+    );
+}
+
+#[test]
+fn chunked_lowercase_secrets_are_detected() {
+    use sekretbarilo::scanner::entropy::shannon_entropy;
+    use sekretbarilo::scanner::wordshape::is_word_structured;
+
+    struct XorShift64Star(u64);
+
+    impl XorShift64Star {
+        fn next(&mut self) -> u32 {
+            self.0 ^= self.0 >> 12;
+            self.0 ^= self.0 << 25;
+            self.0 ^= self.0 >> 27;
+            (self.0.wrapping_mul(0x2545_f491_4f6c_dd1d) >> 32) as u32
+        }
+    }
+
+    fn split(token: &str, step: usize, separator: &str) -> String {
+        token
+            .as_bytes()
+            .chunks(step)
+            .map(|chunk| std::str::from_utf8(chunk).unwrap())
+            .collect::<Vec<_>>()
+            .join(separator)
+    }
+
+    let mut rng = XorShift64Star(0x9e37_79b9_7f4a_7c15);
+    let mut traced = allowlist();
+    traced.trace_exemptions = true;
+    let mut off = allowlist();
+    off.exemption_layer = false;
+    for length in [32, 40, 64] {
+        // repeated separators lower entropy; select only baseline-eligible samples,
+        // without conditioning the generator on the wordshape predicate.
+        let token = (0..1_000)
+            .map(|_| {
+                (0..length)
+                    .map(|_| char::from(b'a' + (rng.next() % 26) as u8))
+                    .collect::<String>()
+            })
+            .find(|token| {
+                [3, 4, 5]
+                    .into_iter()
+                    .all(|step| shannon_entropy(split(token, step, "-").as_bytes()) >= 4.0)
+            })
+            .expect("generated a baseline-eligible lowercase token");
+        for step in [3, 4, 5] {
+            for separator in ["-", "_", "."] {
+                let value = split(&token, step, separator);
+                assert!(
+                    !is_word_structured(value.as_bytes()),
+                    "length={length}, step={step}, separator={separator}"
+                );
+                let line = format!("KEY={value}\n");
+                check(&line, &[(ENTROPY, &value)], &off);
+                check(&line, &[(ENTROPY, &value)], &traced);
+            }
+        }
+    }
+}
+
+#[test]
+fn long_corpus_identifiers_remain_word_structured() {
+    use sekretbarilo::scanner::wordshape::is_word_structured;
+
+    for value in [
+        "hummingbot.strategy.strategy_v2_base.ExecutorOrchestrator",
+        "acme_widget.pipeline.transform.batch_writer.BatchWriterConfiguration",
+        "widget-order-book__row--partially-filled",
+        "--wui-color-surface-elevated-inverse",
+        "ACME_WIDGET_TELEMETRY_ENDPOINT_OVERRIDE",
+        "process.env.ACME_WIDGET_FEATURE_FLAGS_REFRESH_INTERVAL",
+        "widget.telemetry.exporter.otlp.endpoint.timeout",
+    ] {
+        assert!(is_word_structured(value.as_bytes()), "{value}");
+    }
+}
+
+#[test]
+fn digest_records_reject_separator_split_payloads() {
+    let al = allowlist();
+    for eol in ["\n", "\r\n"] {
+        for separator in ["-", "_"] {
+            let digest = hex(64, 3);
+            let inserted = format!("{}{separator}{}", &digest[..32], &digest[32..]);
+            let mut replaced = digest;
+            replaced.replace_range(31..32, separator);
+            for payload in [inserted, replaced] {
+                let value = format!("sha256:{payload}");
+                check(
+                    &format!("before Digest: {value} after{eol}"),
+                    &[(ENTROPY, &value)],
+                    &al,
+                );
+            }
+        }
+    }
 }
 
 fn token(seed: usize) -> String {
@@ -122,6 +511,7 @@ fn make_file(path: &str, line: &str) -> DiffFile {
         is_deleted: false,
         is_renamed: false,
         is_binary: false,
+        context: None,
         added_lines: vec![AddedLine {
             line_number: 1,
             content: line.as_bytes().to_vec(),
@@ -149,7 +539,7 @@ fn check_scan(path: &str, line: &str, expected: &[(&str, &str)], al: &CompiledAl
 }
 
 fn check(line: &str, expected: &[(&str, &str)], al: &CompiledAllowlist) {
-    check_scan("src/x.rs", line, expected, al);
+    check_scan("notes/shapes.txt", line, expected, al);
     let matches = scan_text(line, &SCANNER, al);
     let mut actual: Vec<_> = matches
         .iter()
@@ -526,6 +916,105 @@ fn word_structured_targets() {
 }
 
 #[test]
+fn regex_literals_are_path_scoped_and_traceable() {
+    let literal = r"(?i)^(?:[A-Za-z0-9_-]{20,64}\.){2}[A-Za-z0-9_-]{20,64}$";
+    let line = format!("let pattern = \"{literal}\";");
+    let al = allowlist();
+    check_scan("src/pattern.rs", &line, &[], &al);
+
+    let mut traced = allowlist();
+    traced.trace_exemptions = true;
+    let traced_findings = scan(&[make_file("src/pattern.rs", &line)], &SCANNER, &traced);
+    assert!(traced_findings.iter().any(|finding| {
+        finding.rule_id == "exempt:regex" && finding.matched_value == literal.as_bytes()
+    }));
+
+    let mut source_all = allowlist();
+    source_all.source_posture = Some(SourcePosture::All);
+    source_all.trace_exemptions = true;
+    check_scan(
+        "src/pattern.rs",
+        &line,
+        &[("exempt:regex", literal)],
+        &source_all,
+    );
+
+    let matches = scan_text(&line, &SCANNER, &traced);
+    assert_eq!(matches.len(), 1);
+    assert_eq!(matches[0].rule_id, ENTROPY);
+    assert_eq!(&line[matches[0].range.clone()], literal);
+}
+
+#[test]
+fn regex_exemption_preserves_opaque_controls() {
+    let al = allowlist();
+    let base62_32 = token(301);
+    let base62_36 = format!("{}{}", token(302), &token(303)[..4]);
+    let hex_40 = hex(40, 304);
+    let hex_64 = hex(64, 305);
+    let base64 = format!("{}{}+/=", token(306), &token(307)[..9]);
+    for value in [&base62_32, &base62_36, &hex_40, &hex_64, &base64] {
+        assert!(!sekretbarilo::scanner::regexshape::is_regex_shaped(
+            value.as_bytes()
+        ));
+        check(&format!("value = \"{value}\""), &[(ENTROPY, value)], &al);
+    }
+
+    let opaque = format!("{}{}", token(308), &token(309)[..8]);
+    let regex_adjacent = format!("prefix_{opaque}[a-z]+");
+    assert!(!sekretbarilo::scanner::regexshape::is_regex_shaped(
+        regex_adjacent.as_bytes()
+    ));
+    for line in [
+        format!("re.compile(\"{regex_adjacent}\")"),
+        format!("pattern = \"{regex_adjacent}\""),
+    ] {
+        check(&line, &[(ENTROPY, &regex_adjacent)], &al);
+    }
+}
+
+#[test]
+fn credential_bearing_regex_shaped_urls_skip_regex_exemption() {
+    let generated_password = token(310);
+    let password = &generated_password[..16];
+    let regex = r"[a-z0-9]+\.json";
+    let credential_bearing = format!("https://user:{password}@host/{regex}");
+    assert!(!sekretbarilo::scanner::urlshape::is_credential_free_url(
+        credential_bearing.as_bytes()
+    ));
+    assert!(sekretbarilo::scanner::regexshape::is_regex_shaped(
+        credential_bearing.as_bytes()
+    ));
+
+    let line = format!("pattern = \"{credential_bearing}\"");
+    let al = allowlist();
+    check_scan(
+        "notes/shapes.txt",
+        &line,
+        &[(ENTROPY, &credential_bearing), (URL_PASSWORD, password)],
+        &al,
+    );
+
+    let mut traced = allowlist();
+    traced.trace_exemptions = true;
+    check_scan(
+        "notes/shapes.txt",
+        &line,
+        &[(ENTROPY, &credential_bearing), (URL_PASSWORD, password)],
+        &traced,
+    );
+
+    let credential_free = format!("https://host/{regex}");
+    let line = format!("pattern = \"{credential_free}\"");
+    check_scan(
+        "notes/shapes.txt",
+        &line,
+        &[("exempt:url", &credential_free)],
+        &traced,
+    );
+}
+
+#[test]
 fn url_password_literals_and_references() {
     let al = allowlist();
     for (user, password) in [
@@ -684,11 +1173,13 @@ fn opaque_hex_call_matches_the_base_rule_with_or_without_the_exemption_layer() {
                 && matched.range.end >= hex_start + value.len()
         }));
 
-        let on_findings: Vec<_> = scan(&[make_file("src/x.rs", &line)], &SCANNER, &on)
+        // a neutral path keeps this comparison about the exemption-layer switch itself,
+        // not about the source posture a .rs path would additionally apply.
+        let on_findings: Vec<_> = scan(&[make_file("notes/shapes.txt", &line)], &SCANNER, &on)
             .into_iter()
             .map(|finding| (finding.rule_id, finding.matched_value))
             .collect();
-        let off_findings: Vec<_> = scan(&[make_file("src/x.rs", &line)], &SCANNER, &off)
+        let off_findings: Vec<_> = scan(&[make_file("notes/shapes.txt", &line)], &SCANNER, &off)
             .into_iter()
             .map(|finding| (finding.rule_id, finding.matched_value))
             .collect();
@@ -749,9 +1240,9 @@ fn call_literals_have_exact_independent_ranges() {
         r#"let x = build("{S}");"#,
         r#"outer(build("{S}"))"#,
         r#"handler.process("safe", "{S}", "{T}")"#,
-        r#"let x = build("{S}"); TOKEN={T}"#,
+        r#"let x = build("{S}"); emit("{T}");"#,
         r#"build("safe", "{S}"); build("{T}")"#,
-        r#"TOKEN={T}; build("{S}")"#,
+        r#"emit("{T}"); build("{S}")"#,
         r#"require("{S}")"#,
         r#"re.compile("{S}")"#,
         r##"Regex::new(r#"{S}"#)"##,
@@ -772,6 +1263,35 @@ fn call_literals_have_exact_independent_ranges() {
             .collect();
         check_call_bodies(&line, &bodies, &al);
     }
+}
+
+// the two surfaces diverge on a bare (unquoted) assignment next to a call literal: the
+// agent surface (scan_text/redact_text) carries no path and so never applies source
+// posture (ADR 0003), while the diff surface (scan, with a source-language path) treats
+// the bare assignment as code and drops it, keeping only the call-literal body.
+#[test]
+fn bare_code_adjacent_to_a_call_literal_is_surface_scoped() {
+    let s = token(3);
+    let t = token(8);
+    let al = allowlist();
+    let line = format!("let x = build(\"{s}\"); TOKEN={t}");
+
+    let text_matches = scan_text(&line, &SCANNER, &al);
+    let mut text_actual: Vec<_> = text_matches
+        .iter()
+        .map(|matched| &line[matched.range.clone()])
+        .collect();
+    text_actual.sort_unstable();
+    let mut text_expected = vec![s.as_str(), t.as_str()];
+    text_expected.sort_unstable();
+    assert_eq!(text_actual, text_expected, "agent surface: {line}");
+
+    let diff_findings = scan(&[make_file("src/x.rs", &line)], &SCANNER, &al);
+    let diff_actual: Vec<_> = diff_findings
+        .iter()
+        .map(|finding| finding.matched_value.as_slice())
+        .collect();
+    assert_eq!(diff_actual, vec![s.as_bytes()], "diff surface: {line}");
 }
 
 #[test]
@@ -862,9 +1382,24 @@ fn call_literal_policy_is_body_scoped_and_switchable() {
     ] {
         check(&format!("build(\"{body}\")"), &[], &al);
     }
-    // dense regexes cannot inherit the enclosing callee's syntax exemption.
+    // dense regexes use the path-scoped regex exemption, but remain visible on the
+    // pathless text surface.
     for body in [r"^[A-Za-z0-9+/]{43}=$", r"(?i)\b[0-9a-f]{7,40}\b"] {
-        check_call_bodies(&format!("Regex::new(r#\"{body}\"#)"), &[body], &al);
+        let line = format!("Regex::new(r#\"{body}\"#)");
+        check_scan("notes/shapes.txt", &line, &[], &al);
+        let mut traced = allowlist();
+        traced.trace_exemptions = true;
+        check_scan(
+            "notes/shapes.txt",
+            &line,
+            &[("exempt:regex", body)],
+            &traced,
+        );
+        let text_matches = scan_text(&line, &SCANNER, &al);
+        assert_eq!(text_matches.len(), 1, "pathless text: {line}");
+        assert_eq!(text_matches[0].rule_id, ENTROPY);
+        assert_eq!(&line[text_matches[0].range.clone()], body);
+        check(&line, &[], &off);
     }
     // this dense regex stays below the unchanged 4.0-bit entropy gate.
     let body = r"^(?:[0-9a-f]{2}:){5}[0-9a-f]{2}$";

@@ -1,0 +1,9 @@
+# outcome tab source shape; first two rows are the settings controls
+fire	let k = "{S32}";
+clean	let k = {S32};
+clean	// k = {S32}
+clean	/* k = {S32} */
+fire	let k = r##"{S32}"##;
+fire	let k = b"{S32}";
+fire	let k = br#"{S32}"#;
+fire	let k = "\"{S32}";

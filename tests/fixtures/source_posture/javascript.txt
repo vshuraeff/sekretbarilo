@@ -1,0 +1,10 @@
+# outcome tab source shape; first two rows are the settings controls
+fire	const k = "{S32}";
+# known gap: javascript posture relief is deferred per adr 0003, so bare code and comments remain full-posture findings.
+fire	const k = {S32};
+fire	// k = {S32}
+fire	/* k = {S32} */
+fire	const k = `template`; const control = "{S32}";
+fire	const typed = "{S32}";
+fire	const typed = `template`; const control = "{S32}";
+fire	const k = "\"{S32}";

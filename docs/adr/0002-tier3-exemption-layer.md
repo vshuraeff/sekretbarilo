@@ -34,12 +34,12 @@ tokens.
 An exemption layer runs inside the candidate evaluation of `src/scanner/engine.rs`, scoped by rule
 id to `generic-high-entropy-value` and switchable by `[settings] exemption_layer` (default true).
 The layer is a sequence of structural predicates over the captured value; the first one that matches
-suppresses the finding. Each predicate is a pure function of bytes, and none of them consults the
-assignment key.
+suppresses the finding. Each predicate is a pure function of bytes, except the `pin` and `digest`
+steps, which are gated on the assignment key of the capture.
 
 The steps run in this order, all of them inside the `exemption_layer` guard:
 
-1. **file** - `is_generic_rule_skipped_path` in `src/config/allowlist.rs`. Ignore files
+1. **file** - `generic_rule_skip` in `src/config/allowlist.rs`. Ignore files
    (`.gitignore`, `.dockerignore`, `.npmignore`, `.prettierignore`, `.eslintignore`,
    `.gitattributes`, `.helmignore`) and `CODEOWNERS` disable this rule alone; every other rule still
    runs on them.
@@ -48,17 +48,53 @@ The steps run in this order, all of them inside the `exemption_layer` guard:
    than exempts: the range is narrowed to the link target and evaluation continues on the inner
    value, and only a target shorter than `MIN_ENTROPY_LENGTH` ends here. Skipped for call literals.
 4. **path** - `entropy::is_path_shaped` over the possibly retargeted value.
-5. **pin** - `is_pinned_action_ref`: a digest pinned behind a reference, as a workflow `uses:` line
-   writes it.
-6. **url** - `is_credential_free_url`: a URL none of whose components carries a credential. A
-   URL-shaped value can leave the layer through this predicate and through no other, so the two
-   shape predicates below are skipped when `is_url_shaped` holds.
-7. **syntax** - `expression_span` in `src/scanner/syntax.rs`, for unquoted and bare captures only. A
+5. **relpath** - for bare captures standing alone on their line only. A value is exempt when it is
+   a relative path: not rooted, no `://`, bytes limited to ASCII alphanumerics and `/`, `.`, `-`,
+   `_`, at least two `/`, no empty segment, a wordy leaf, exactly one non-leaf identifier segment
+   (alphanumeric, carrying a digit or mixed case, shorter than 20 bytes) and the remaining segments,
+   rejoined with `/`, word-structured by the same check the `wordshape` step uses. The shape
+   it covers is a printed branch name such as `task/<16-character id>/integrator/lead`, which carries no `./`
+   prefix and so reaches the layer where a prefixed relative path does not. It runs on every
+   surface, the pathless text surface of the redact hook included.
+6. **mktemp** - `entropy::is_mktemp_path`, under the same gating as relpath: a bare capture standing
+   alone on its line, with no assignment key. A value is exempt when it is a `./`-prefixed single
+   leaf whose stem is dash-joined lowercase words of three to nineteen bytes each and whose suffix
+   is exactly six alphanumerics, the shape `mktemp` prints, with stem and suffix together shorter
+   than `MIN_ENTROPY_LENGTH` so that the separators cannot hide an eligible opaque payload.
+7. **shell-path** - `entropy::is_shell_directory_path`, for a double-quoted capture standing alone
+   on its line with no assignment key. A value is exempt when it is a shell directory variable
+   followed by a wordy path: the variable is 5 to 19 bytes of uppercase, digits and underscores,
+   not opening on a digit, ending in `_DIR`, and the path
+   after it is shorter than `MIN_ENTROPY_LENGTH`, with every piece split on `/`, `-`, `_` or `.`
+   either ASCII letters or at most four digits, and a wordy leaf.
+8. **pin** - `is_pinned_action_ref`: a digest pinned behind a reference, as a workflow `uses:` line
+   writes it. Gated on the exact assignment key `uses`.
+9. **url** - `is_credential_free_url`: a URL none of whose components carries a credential. A
+   URL-shaped value can leave the layer through this predicate and through no other: the regex,
+   syntax and wordshape steps below are skipped when `is_url_shaped` holds.
+10. **regex** - for quoted, bracketed and call-literal captures on a surface that carries a file
+   path, never the pathless text surface of the redact hook. A value is exempt when it carries two
+   distinct construct kinds from a closed list - a bracket class holding a range, an escape, a POSIX
+   class name or a leading `^`; a quantifier standing directly after a class, a group or an escape;
+   a backslash escape from a fixed set; a group opener - and a counted bracket class is among them,
+   so a quantifier alone never satisfies the minimum although it counts as one of the two kinds.
+   Any contiguous run of 20 bytes or more of `[A-Za-z0-9_-]` outside those constructs disqualifies
+   the value and keeps it a candidate.
+11. **syntax** - `expression_span` in `src/scanner/syntax.rs`, for unquoted and bare captures only. A
    complete source expression that covers the flagged range is exempt. The recognizer refuses to
    cover a credential: an inner token of at least 20 bytes vetoes the span when its Shannon entropy
    reaches 4.0 or its length is exactly 32, 40 or 64 hex digits.
-8. **wordshape** - `is_word_structured` in `src/scanner/wordshape.rs`: values whose structure is
-   words, camel case or snake case rather than an opaque run.
+12. **wordshape** - `is_word_structured` in `src/scanner/wordshape.rs`: values whose structure is
+   words, camel case or snake case rather than an opaque run. The predicate is bounded against
+   chunked secrets: a word of four bytes or more counts as word-like only when it carries a vowel
+   (`y` included) and no run of more than four consonants, at least three quarters of those long
+   words must be word-like, and when their lengths are near-uniform (a spread of at most one byte)
+   a single failing word is enough to refuse the exemption.
+13. **digest** - `is_digest_record` in `src/scanner/hash_detect.rs`, the last step before the hex
+   bypass. Gated on an assignment key separated from its value by a `:`, and on that key being
+   `digest`, `checksum` or `x-checksum-<algorithm>`. The value is exempt when it is an exact-length
+   hex digest, 32, 40 or 64 digits, optionally carrying its own `md5`, `sha1`, `sha-1`, `sha256` or
+   `sha-256` prefix before a `:` or `=`, whose length agrees with the algorithm named on either side.
 
 Two properties bound the layer:
 
@@ -101,12 +137,12 @@ Three changes widen detection rather than narrowing it:
   (`src/scanner/calllit.rs`) collects quoted argument bodies once per logical line, independently of
   the regex capture cursor, and feeds their exact ranges to the same evaluator. These candidates
   skip the import and syntax steps, get no key allowance and no hex bypass, and keep the path, pin,
-  url and wordshape steps at their documented cost.
+  url, regex and wordshape steps at their documented cost.
 - `.terraform.lock.hcl` joined the generated-file list, which skips the file for every rule.
 
 ### the switch and the trace flag
 
-`[settings] exemption_layer = false` restores the 0.6.x behaviour of this rule: the eight steps
+`[settings] exemption_layer = false` restores the 0.6.x behaviour of this rule: the thirteen steps
 above, the call-literal collector and the hex bypass are all disabled together. Two things are not
 part of the switch and stay on either way: the unconditional path-shape check that precedes the
 layer, and the user entropy-key allowlist, which is applied after it.
@@ -136,6 +172,16 @@ they count as findings for the `scan` and `audit` exit codes while it is on.
   together with the assignment context around it and a second body on the same line is skipped
   entirely. Independent per-line collection is what gives call arguments exact, order-preserving
   ranges; a regex cannot produce them without a second pass, which is what the collector is.
+- **the callee name as evidence that a literal is a pattern.** Rejected for the regex step. The
+  true-positive corpus requires `re.compile("<opaque>")` to fire, so trusting the callee would
+  exempt an opaque token because of the function it is passed to, which is evidence about intent
+  rather than about content.
+- **scope the regex step to call literals only.** Rejected. Under the ownership rule of ADR 0003 a
+  quoted assignment is owned by its regex candidate, so a pattern written as an assignment would
+  never reach a body evaluation and would stay a finding.
+- **treat `|` alternation as evidence.** Rejected. A list of alternatives is a word list, which is
+  what the `wordshape` step exists to judge; accepting it here would exempt any `|`-joined run of
+  opaque chunks. It remains the known gap recorded in the residuals below.
 - **suppress the rule in whole file classes.** Rejected as too coarse. The layer's file step is
   deliberately limited to ignore files and `CODEOWNERS`, where an opaque run is a pattern rather
   than a value.
@@ -159,8 +205,10 @@ Accepted residuals, each of them measured rather than assumed:
   body below 4.0 bits is not reported.
 - **Python raw and byte string prefixes, and Go backtick literals.** Out of scope for the collector;
   their bodies are not collected.
-- **dense regex literals in calls.** A regex body can clear the entropy gate, and a call body skips
-  the syntax step, so such a literal is a finding unless a repository allowlists it.
+- **word alternations in regex bodies.** The regex step reads constructs, not alternation, so a
+  pattern whose only structure is `|`-separated words carries none of the evidence it asks for and
+  remains a finding. Four of the thirteen regex bodies measured in this repository are of that
+  shape; a word list is a `wordshape` matter and is left to that step.
 - **base64-standard and printable tokens inside URLs and expressions.** The url and syntax steps can
   cover a token embedded in a URL or an expression. This cost is accepted and report-only: the
   fixtures record it, no gate was changed for it.
@@ -169,7 +217,39 @@ Accepted residuals, each of them measured rather than assumed:
 - **the `hook_payload` fuzz target** is deferred, because the hook parsers read from stdin and the
   target would have to reimplement that boundary rather than exercise it.
 
+ADR 0003 resolves the multiline call fragments and the Go backtick and Python-prefixed string
+residuals above for source files, by reading their bodies with a per-language literal tracker.
+
 The `check-codex` relative-path allowlist defect found during this round is fixed in this release.
+
+## amendments
+
+- 2026-09-19: the **relpath** step joined the layer at position 5, between path and mktemp, with the
+  conditions recorded in the step list above. Its accepted cost is one opaque segment shorter than
+  20 bytes inside an otherwise wordy keyless relative path, which is no longer reported - the same
+  recall a `./` prefix already gave up. A bare file name, a path with two identifier segments and a
+  value carrying an assignment key are deliberately outside it.
+- 2026-09-19: the **mktemp** and **shell-path** steps joined the layer at positions 6 and 7, between
+  relpath and pin, and the **digest** step at position 13, after wordshape and before the hex
+  bypass, each with the conditions recorded in the step list above. Their accepted cost is that a
+  keyless `mktemp`-shaped leaf, a keyless `$<NAME>_DIR/<wordy path>` value and an exact-length hex
+  digest under a `digest`, `checksum` or `x-checksum-<algorithm>` key are no longer reported by
+  tier 3.
+- 2026-09-20: the **regex** step joined the layer at position 10, between url and syntax, with the
+  evidence rule and the opaque-run disqualifier recorded in the step list above. The measurement
+  behind it: thirteen regex-body locations remained in this repository after ADR 0003, of which the
+  step closes nine, the other four being the word alternations listed under the residuals. The
+  counted class is required because a quantifier alone was too weak: with a quantifier allowed to
+  satisfy the minimum, 0.37 percent of random 40-byte printable-ASCII values were exempt, and
+  requiring a class brought that to 0.055 percent, with zero exemptions across base62, base64 and
+  hex values of 20 to 64 bytes. The cost is measured in the Monte-Carlo grid: the step misses 3 of
+  2000 samples on each of two quoted 64-byte printable-ASCII families and none on any
+  opaque-alphabet family, and the test allows at most 0.5 percent per printable cell and zero on
+  every other family. Its accepted cost is that a secret shaped like a regular expression is not
+  reported by tier 3; tier 1 and tier 2 are untouched by it, as by every other step.
+- 2026-09-19: the **wordshape** step was bounded against chunked secrets, as its entry above now
+  records. A value whose long words are near-uniform in length no longer buys the exemption with a
+  minority of unpronounceable chunks.
 
 ## how to verify
 
@@ -188,6 +268,9 @@ The `check-codex` relative-path allowlist defect found during this round is fixe
 - `cargo test --test property_tests` and the five `fuzz/fuzz_targets` cover the predicates and the
   parsers against arbitrary input.
 - `sekretbarilo audit --trace-exemptions` on a real tree reports which step suppressed which value.
+  For the regex step specifically: a pattern body reports `exempt:regex` over its own range, while
+  the same body carrying a contiguous run of 20 bytes or more of `[A-Za-z0-9_-]` outside its
+  constructs stays a finding.
 - `scripts/corpus-audit.sh` runs a before/after comparison over a list of repositories and prints
   the per-rule delta.
 

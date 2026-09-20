@@ -18,13 +18,14 @@ const BASE64: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123
 const BASE64URL: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
 const UPPER_DIGITS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
 const DIGITS: &[u8] = b"0123456789";
-const PREDICATES: [&str; 8] = [
+const PREDICATES: [&str; 9] = [
     "file",
     "import",
     "markdown",
     "path",
     "pin",
     "url",
+    "regex",
     "syntax",
     "wordshape",
 ];
@@ -251,8 +252,8 @@ struct Measurement {
     base_detected: usize,
     layer_detected: usize,
     layer_misses: usize,
-    predicate_misses: [usize; 8],
-    predicate_samples: [Option<String>; 8],
+    predicate_misses: [usize; PREDICATES.len()],
+    predicate_samples: [Option<String>; PREDICATES.len()],
     unattributed: usize,
     first_unattributed: Option<String>,
     first_layer_gap: Option<String>,
@@ -287,11 +288,12 @@ fn masked(sample: &str) -> String {
 impl Measurement {
     fn observe(&mut self, sample: &str, form: LineForm, scanners: &ScannerPair) {
         let file = DiffFile {
-            path: "src/x.rs".to_string(),
+            path: "notes/shapes.txt".to_string(),
             is_new: true,
             is_deleted: false,
             is_renamed: false,
             is_binary: false,
+            context: None,
             added_lines: vec![AddedLine {
                 line_number: 1,
                 content: form.render(sample).into_bytes(),
@@ -389,9 +391,19 @@ impl Row {
 
     fn print(&self) {
         let m = &self.measurement;
-        let [file, import, markdown, path, pin, url, syntax, wordshape] = m.predicate_misses;
+        let [
+            file,
+            import,
+            markdown,
+            path,
+            pin,
+            url,
+            regex,
+            syntax,
+            wordshape,
+        ] = m.predicate_misses;
         println!(
-            "{:<7} {:<14} {:>4} {:<28} elig={:>5} base={:>5} layer={:>5} gap={:>4} miss={:>4} file={file:>4} import={import:>4} markdown={markdown:>4} path={path:>4} pin={pin:>4} url={url:>4} syntax={syntax:>4} wordshape={wordshape:>4} unattr={:>4}",
+            "{:<7} {:<14} {:>4} {:<28} elig={:>5} base={:>5} layer={:>5} gap={:>4} miss={:>4} file={file:>4} import={import:>4} markdown={markdown:>4} path={path:>4} pin={pin:>4} url={url:>4} regex={regex:>4} syntax={syntax:>4} wordshape={wordshape:>4} unattr={:>4}",
             self.group,
             self.generator,
             self.length,
@@ -459,10 +471,11 @@ impl Row {
                 continue;
             }
             let count = m.predicate_misses[index];
-            let allowed = if *predicate == "wordshape" {
-                m.base_detected.div_ceil(1000)
-            } else {
-                0
+            let allowed = match *predicate {
+                "wordshape" => m.base_detected.div_ceil(1000),
+                // printable's accepted cost is recorded in adr 0002's 2026-09-20 amendment.
+                "regex" if self.generator == "printable" => SAMPLES / 200,
+                _ => 0,
             };
             if count > allowed {
                 failures.push(format!(

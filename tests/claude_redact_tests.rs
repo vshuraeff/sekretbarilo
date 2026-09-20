@@ -10,6 +10,124 @@ const SECRET: &str = "AKIAIOSFODNN7REALKEY";
 const SECOND: &str = "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij";
 const MAX_BYTES: usize = 10 * 1024 * 1024;
 
+fn synthetic_hex(length: usize, seed: u64) -> String {
+    let mut state = seed;
+    (0..length)
+        .map(|_| {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1);
+            char::from_digit((state >> 60) as u32, 16).unwrap()
+        })
+        .collect()
+}
+
+fn check_bash_redaction(env: &IsolatedEnv, text: &str, expected: &str) {
+    let mut response =
+        json!({"stdout": text, "stderr": "notice", "interrupted": false, "returnCode": 0});
+    let output = run(env, "Bash", response.clone());
+    assert_eq!(output.status.code(), Some(0));
+    assert!(output.stderr.is_empty());
+    if text == expected {
+        assert!(
+            output.stdout.is_empty(),
+            "{:?}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+    } else {
+        let envelope: Value = serde_json::from_slice(&output.stdout)
+            .unwrap_or_else(|error| panic!("{text:?}: {error}"));
+        assert!(
+            envelope.get("continue").is_none(),
+            "unexpected fail-closed envelope"
+        );
+        assert!(envelope.get("stopReason").is_none());
+        response["stdout"] = json!(expected);
+        assert_eq!(replacement(&output), response);
+    }
+}
+
+#[test]
+fn digest_records_preserve_bash_output() {
+    let env = IsolatedEnv::new();
+    for eol in ["\n", "\r\n"] {
+        for (label, algorithm) in [
+            ("Digest:    ", "sha256:"),
+            ("Digest: ", "sha-256="),
+            ("digest: ", "sha256:"),
+            ("X-Checksum-Sha256: ", "sha-256="),
+        ] {
+            let digest = format!("{algorithm}{}", synthetic_hex(64, 3));
+            let clean = format!("before {label}{digest} after{eol}");
+            check_bash_redaction(&env, &clean, &clean);
+            for gap in [" ", eol] {
+                for line in [
+                    format!("{label}{digest}{gap}{SECOND} tail{eol}"),
+                    format!("{SECOND}{gap}{label}{digest} tail{eol}"),
+                ] {
+                    check_bash_redaction(&env, &line, &line.replace(SECOND, "[REDACTED]"));
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn digest_records_keep_malformed_and_credential_values_redacted() {
+    let env = IsolatedEnv::new();
+    let opaque: String = (b'A'..=b'Z').chain(b'a'..=b'f').map(char::from).collect();
+    for eol in ["\n", "\r\n"] {
+        let balanced: String = (0..32)
+            .map(|index| char::from_digit(index % 16, 16).unwrap())
+            .collect();
+        for value in [format!("sha256:{}", synthetic_hex(64, 3)), balanced] {
+            let line = format!("CHECKSUM={value}{eol}");
+            check_bash_redaction(&env, &line, &line.replace(&value, "[REDACTED]"));
+        }
+        for value in [
+            format!("sha256:{}0", synthetic_hex(64, 3)),
+            format!("sha256:{}Z", synthetic_hex(63, 3)),
+            format!("sha999:{}", synthetic_hex(64, 3)),
+            format!("sha-256={}suffix", synthetic_hex(64, 3)),
+        ] {
+            let line = format!("Digest: {value} tail{eol}");
+            check_bash_redaction(&env, &line, &line.replace(&value, "[REDACTED]"));
+        }
+        for (key, value) in [
+            ("API_KEY", synthetic_hex(40, 7)),
+            ("token", synthetic_hex(64, 7)),
+            ("secret", opaque.clone()),
+            ("password", opaque.clone()),
+        ] {
+            let line = format!("{key}={value}{eol}");
+            check_bash_redaction(&env, &line, &line.replace(&value, "[REDACTED]"));
+        }
+        for value in [
+            opaque.clone(),
+            format!("/work/{opaque}/diagnostic.log"),
+            format!("./{opaque}.md"),
+            format!("{opaque}.invalid"),
+        ] {
+            let line = format!("{value}{eol}");
+            check_bash_redaction(&env, &line, &format!("[REDACTED]{eol}"));
+        }
+        let line = format!("https://user:{opaque}@service.invalid/path{eol}");
+        let output = run(
+            &env,
+            "Bash",
+            json!({"stdout": line, "stderr": "notice", "interrupted": false, "returnCode": 0}),
+        );
+        let envelope: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert!(envelope.get("continue").is_none());
+        assert!(
+            !replacement(&output)["stdout"]
+                .as_str()
+                .unwrap()
+                .contains(&opaque)
+        );
+    }
+}
+
 fn run_bytes(env: &IsolatedEnv, bytes: &[u8]) -> Output {
     let mut child = env
         .command()
@@ -35,6 +153,44 @@ fn run_bytes(env: &IsolatedEnv, bytes: &[u8]) -> Output {
     output
 }
 
+#[test]
+fn mktemp_output_record_preserves_bash_whitespace_and_nearby_secrets() {
+    let env = IsolatedEnv::new();
+    let two_id_path = "task/q8Vn3sY6Kp4Zr9Tw/a7B2q9/lead";
+    let long_id = format!("{}{}", "q8Vn3sY6Kp4Zr9Tw", "a7B2q9");
+    let long_id_path = format!("task/{long_id}/integrator/lead");
+    for eol in ["\n", "\r\n"] {
+        let clean = format!(" \t./hitlr-request.a7B2q9\t {eol}");
+        check_bash_redaction(&env, &clean, &clean);
+        let text = format!("before{eol}{clean}{SECOND}{eol}after{eol}");
+        check_bash_redaction(&env, &text, &text.replace(SECOND, "[REDACTED]"));
+        let text = format!("task/q8Vn3sY6Kp4Zr9Tw/integrator/lead{eol}");
+        check_bash_redaction(&env, &text, &text);
+        for value in [
+            two_id_path,
+            long_id_path.as_str(),
+            "background-execution.md",
+            "./hitlr-request.a7B2q9Z",
+        ] {
+            let text = format!("{value}{eol}");
+            check_bash_redaction(&env, &text, &format!("[REDACTED]{eol}"));
+        }
+        for text in [
+            "secret=./hitlr-request.a7B2q9",
+            "note: ./hitlr-request.a7B2q9",
+        ] {
+            let text = format!("{text}{eol}");
+            check_bash_redaction(
+                &env,
+                &text,
+                &text.replace("./hitlr-request.a7B2q9", "[REDACTED]"),
+            );
+        }
+        let text = format!("Workspace: /Users/name/work/.worktrees/repo/unit-1{eol}");
+        check_bash_redaction(&env, &text, &text);
+    }
+}
+
 fn run(env: &IsolatedEnv, tool: &str, response: Value) -> Output {
     let workspace = env.home().join("workspace");
     std::fs::create_dir_all(&workspace).unwrap();
@@ -47,6 +203,128 @@ fn run(env: &IsolatedEnv, tool: &str, response: Value) -> Output {
         }))
         .unwrap(),
     )
+}
+
+#[test]
+fn shell_directory_expression_preserves_bash_quotes_and_neighbours() {
+    let env = IsolatedEnv::new();
+    let expression = "$STATE_DIR/diagnostic.log";
+    for eol in ["\n", "\r\n"] {
+        let clean = format!(" \t\"{expression}\"\t {eol}");
+        check_bash_redaction(&env, &clean, &clean);
+        for gap in [" ", eol] {
+            let text = format!("\"{expression}\"{gap}{SECOND}{eol}");
+            check_bash_redaction(&env, &text, &text.replace(SECOND, "[REDACTED]"));
+        }
+    }
+}
+
+#[test]
+fn shell_directory_expression_keeps_bash_secrets_redacted() {
+    let env = IsolatedEnv::new();
+    let opaque: String = (b'A'..=b'Z').chain(b'a'..=b'f').map(char::from).collect();
+    for eol in ["\n", "\r\n"] {
+        for value in [
+            format!("$STATE_DIR/{opaque}"),
+            format!("$STATE_DIR/{opaque}.log"),
+            format!("$STATE_DIR/{opaque}/diagnostic.log"),
+            format!("${opaque}/diagnostic.log"),
+            format!("${{STATE_DIR:-{opaque}}}/diagnostic.log"),
+        ] {
+            let text = format!("\"{value}\"{eol}");
+            check_bash_redaction(&env, &text, &text.replace(&value, "[REDACTED]"));
+        }
+        let value = "$STATE_DIR/diagnostic.log";
+        for text in [
+            format!("'{value}'"),
+            format!("secret=\"{value}\""),
+            format!("password=\"{value}\""),
+        ] {
+            let text = format!("{text}{eol}");
+            check_bash_redaction(&env, &text, &text.replace(value, "[REDACTED]"));
+        }
+        let text = format!("hashlib.sha256(x.encode(){eol}");
+        check_bash_redaction(&env, &text, &format!("[REDACTED]{eol}"));
+    }
+}
+
+#[test]
+fn shell_directory_separator_attacks_are_redacted_in_bash() {
+    let env = IsolatedEnv::new();
+    let left = "q8Vn3sY6Kp4Zr9Tw";
+    let right = "u2Jc5Hm7Rx1Bd6Q";
+    let lowercase: String = (0..32)
+        .map(|index| char::from(b'a' + ((index * 11 + 3) % 26) as u8))
+        .collect();
+    for eol in ["\n", "\r\n"] {
+        for separator in ["_", "-", ".", "/"] {
+            for path in [
+                format!("{left}{separator}{right}/diagnostic.log"),
+                format!("{left}{separator}{right}.log"),
+                format!("diagnostic-{left}{separator}{right}.log"),
+                format!(
+                    "{}{separator}{}/diagnostic.log",
+                    &lowercase[..16],
+                    &lowercase[16..]
+                ),
+            ] {
+                let value = format!("$STATE_DIR/{path}");
+                let text = format!(" \t\"{value}\"\t {eol}");
+                check_bash_redaction(&env, &text, &text.replace(&value, "[REDACTED]"));
+            }
+        }
+        for path in [
+            "diagnostic.log",
+            "logs/diagnostic.log",
+            "2026/diagnostic.log",
+            "v-2/diagnostic.log",
+        ] {
+            let text = format!("\"$STATE_DIR/{path}\"{eol}");
+            check_bash_redaction(&env, &text, &text);
+        }
+    }
+}
+
+#[test]
+fn mktemp_separator_attacks_are_redacted_in_bash() {
+    let env = IsolatedEnv::new();
+    let opaque: String = (0..32)
+        .map(|index| char::from(b'a' + ((index * 11 + 3) % 26) as u8))
+        .collect();
+    for eol in ["\n", "\r\n"] {
+        for value in [
+            format!("./{}-{}.a7B2q9", &opaque[..16], &opaque[16..]),
+            format!(
+                "./{}-{}-{}.a7B2q9",
+                &opaque[..11],
+                &opaque[11..22],
+                &opaque[22..]
+            ),
+            format!("./{}-{}.{}", &opaque[..7], &opaque[7..14], &opaque[14..20]),
+            "./hitlr-download.a7B2q9".to_owned(),
+        ] {
+            let text = format!(" \t{value}\t {eol}");
+            check_bash_redaction(&env, &text, &text.replace(&value, "[REDACTED]"));
+        }
+    }
+}
+
+#[test]
+fn digest_records_reject_separator_split_payloads_in_bash() {
+    let env = IsolatedEnv::new();
+    for eol in ["\n", "\r\n"] {
+        for separator in ["-", "_"] {
+            let digest = synthetic_hex(64, 3);
+            let inserted = format!("{}{separator}{}", &digest[..32], &digest[32..]);
+            let mut replaced = digest;
+            replaced.replace_range(31..32, separator);
+            for payload in [inserted, replaced] {
+                let value = format!("sha256:{payload}");
+                let text = format!("before Digest: {value} after{eol}");
+                check_bash_redaction(&env, &text, &text.replace(&value, "[REDACTED]"));
+            }
+        }
+    }
 }
 
 fn replacement(output: &Output) -> Value {
@@ -409,21 +687,35 @@ fn nontext_read_is_outside_scope_and_cli_errors_use_stop_protocol() {
 #[test]
 fn closed_stdout_and_stderr_do_not_abort_the_binary() {
     let env = IsolatedEnv::new();
-    let mut child = env
-        .command()
-        .args(["redact-claude", "--stdin-json"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
-    drop(child.stdout.take());
-    drop(child.stderr.take());
-    child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(b"invalid json")
-        .unwrap();
-    assert_eq!(child.wait().unwrap().code(), Some(1));
+    // the guarded behaviour is the child seeing EPIPE on a reader this process has closed. a
+    // sibling test spawning at the same moment can inherit that read end through the window
+    // between pipe() and its close-on-exec mark, which keeps the pipe writable for as long as
+    // that unrelated process lives and lets the child exit 0. such an attempt measures the
+    // leak rather than the binary, so it is retried instead of asserted. a read-only or
+    // /dev/null descriptor is no alternative: std's stdout handle maps EBADF to a successful
+    // write of the whole buffer, so only EPIPE ever reaches the guard.
+    let mut code = None;
+    for _ in 0..10 {
+        let mut child = env
+            .command()
+            .args(["redact-claude", "--stdin-json"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        drop(child.stdout.take());
+        drop(child.stderr.take());
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(b"invalid json")
+            .unwrap();
+        code = child.wait().unwrap().code();
+        if code == Some(1) {
+            break;
+        }
+    }
+    assert_eq!(code, Some(1));
 }

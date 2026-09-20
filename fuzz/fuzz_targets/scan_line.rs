@@ -28,6 +28,7 @@ fuzz_target!(|data: &[u8]| {
         is_deleted: false,
         is_renamed: false,
         is_binary: false,
+        context: None,
         added_lines: vec![AddedLine {
             line_number: 1,
             content: data.to_vec(),

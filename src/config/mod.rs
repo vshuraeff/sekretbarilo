@@ -72,6 +72,15 @@ pub struct SettingsConfig {
     pub detect_public_keys: Option<bool>,
     /// enable exemption-layer filtering (default: true)
     pub exemption_layer: Option<bool>,
+    pub source_posture: Option<SourcePosture>,
+    pub tier3_skip_test_paths: Option<bool>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SourcePosture {
+    Literals,
+    All,
 }
 
 /// load a single config file. returns None if the file doesn't exist or is empty.
@@ -285,6 +294,8 @@ pub fn build_allowlist_with_trace_exemptions(
         config.settings.detect_public_keys.unwrap_or(false),
     )?;
     allowlist.exemption_layer = config.settings.exemption_layer.unwrap_or(true);
+    allowlist.source_posture = config.settings.source_posture;
+    allowlist.tier3_skip_test_paths = config.settings.tier3_skip_test_paths.unwrap_or(true);
     allowlist.trace_exemptions = trace_exemptions;
     Ok(allowlist)
 }
@@ -417,6 +428,8 @@ entropy_threshold = 3.5
                 entropy_threshold: Some(4.0),
                 detect_public_keys: None,
                 exemption_layer: None,
+                source_posture: None,
+                tier3_skip_test_paths: None,
             },
             rules: vec![],
             ..Default::default()

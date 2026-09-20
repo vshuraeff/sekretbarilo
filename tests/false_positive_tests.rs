@@ -27,6 +27,7 @@ fn make_file(path: &str, lines: Vec<(usize, &[u8])>) -> DiffFile {
         is_deleted: false,
         is_renamed: false,
         is_binary: false,
+        context: None,
         added_lines: lines
             .into_iter()
             .map(|(num, content)| AddedLine {
@@ -215,10 +216,38 @@ fn entropy_flags_base64_image_data_uri() {
 
 #[test]
 fn entropy_flags_base64_in_test_fixture() {
-    assert_only_entropy_finding(
-        "tests/fixtures/data.rs",
-        b"let encoded = \"SGVsbG8gV29ybGQhIFRoaXMgaXMgYSB0ZXN0IG1lc3NhZ2U=\";",
+    // tier3_skip_test_paths (decision C, default true) turns the keywordless entropy rule
+    // off under a tests/fixtures path segment, so the default config sees nothing here.
+    let path = "tests/fixtures/data.rs";
+    let line: &[u8] = b"let encoded = \"SGVsbG8gV29ybGQhIFRoaXMgaXMgYSB0ZXN0IG1lc3NhZ2U=\";";
+    assert_no_findings(path, line);
+
+    let rules = load_default_rules().unwrap();
+    let scanner = compile_rules(&rules).unwrap();
+    let mut traced = config::build_allowlist(&config::ProjectConfig::default(), &rules).unwrap();
+    traced.trace_exemptions = true;
+    let file = make_file(path, vec![(1, line)]);
+    let traced_findings = scan(&[file], &scanner, &traced);
+    assert!(
+        traced_findings
+            .iter()
+            .any(|f| f.rule_id == "exempt:testpath"),
+        "expected an exempt:testpath trace: {traced_findings:?}"
     );
+
+    // the original intent, still detected when the test-path skip is switched off.
+    let mut al = config::build_allowlist(&config::ProjectConfig::default(), &rules).unwrap();
+    al.tier3_skip_test_paths = false;
+    let file = make_file(path, vec![(1, line)]);
+    let findings = scan(&[file], &scanner, &al);
+    assert_eq!(
+        findings.len(),
+        1,
+        "expected one entropy finding with tier3_skip_test_paths=false: {findings:?}"
+    );
+    assert_eq!(findings[0].rule_id, "generic-high-entropy-value");
+    assert!(findings[0].matched_value.len() >= 20);
+    assert!(sekretbarilo::scanner::entropy::shannon_entropy(&findings[0].matched_value) >= 4.0);
 }
 
 #[test]
@@ -583,19 +612,51 @@ fn fp_full_pipeline_test_file_with_assertions() {
     let token: String = (0..32)
         .map(|index| char::from_digit(index % 16, 16).unwrap())
         .collect();
-    let diff = make_new_file_diff(
-        "tests/auth_test.rs",
-        &[
-            "fn test_password_validation() {",
-            "    assert!(validate_password(\"test_placeholder_value\"));",
-            "    assert!(!validate_password(\"short\"));",
-            "    let api_key_format = Regex::new(r\"[A-Za-z0-9]{32}\").unwrap();",
-            &format!("    assert!(api_key_format.is_match(\"{token}\"));"),
-            "}",
-        ],
+    let lines = [
+        "fn test_password_validation() {",
+        "    assert!(validate_password(\"test_placeholder_value\"));",
+        "    assert!(!validate_password(\"short\"));",
+        "    let api_key_format = Regex::new(r\"[A-Za-z0-9]{32}\").unwrap();",
+        &format!("    assert!(api_key_format.is_match(\"{token}\"));"),
+        "}",
+    ];
+    let diff = make_new_file_diff("tests/auth_test.rs", &lines);
+    let files = parse_diff(&diff);
+    let rules = load_default_rules().unwrap();
+    let scanner = compile_rules(&rules).unwrap();
+
+    // the filename matches `_test.` too, so tier3_skip_test_paths (decision C, default
+    // true) drops the keywordless entropy rule here regardless of the directory segment.
+    let al = config::build_allowlist(&config::ProjectConfig::default(), &rules).unwrap();
+    let findings = scan(&files, &scanner, &al);
+    assert!(
+        findings.is_empty(),
+        "expected no findings under the default test-path skip, got: {:?}",
+        findings
+            .iter()
+            .map(|f| format!(
+                "{}:{}",
+                f.rule_id,
+                String::from_utf8_lossy(&f.matched_value)
+            ))
+            .collect::<Vec<_>>()
     );
-    let findings = scan_diff(&diff);
-    // reclassified per g1: opaque call-argument literals are tier-3 candidates (s19b).
+
+    let mut traced = config::build_allowlist(&config::ProjectConfig::default(), &rules).unwrap();
+    traced.trace_exemptions = true;
+    let traced_findings = scan(&files, &scanner, &traced);
+    assert!(
+        traced_findings
+            .iter()
+            .any(|f| f.rule_id == "exempt:testpath"),
+        "expected an exempt:testpath trace: {traced_findings:?}"
+    );
+
+    // the original intent, still detected when the test-path skip is switched off:
+    // opaque call-argument literals are tier-3 candidates (s19b), and nothing else fires.
+    let mut al = config::build_allowlist(&config::ProjectConfig::default(), &rules).unwrap();
+    al.tier3_skip_test_paths = false;
+    let findings = scan(&files, &scanner, &al);
     assert!(
         findings.len() == 1
             && findings[0].rule_id == "generic-high-entropy-value"

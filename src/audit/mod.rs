@@ -228,6 +228,7 @@ pub fn read_file_to_diff_result(path: &str, repo_root: &Path) -> ReadFileResult 
         is_deleted: false,
         is_renamed: false,
         is_binary: false,
+        context: Some(content),
         added_lines,
     })
 }

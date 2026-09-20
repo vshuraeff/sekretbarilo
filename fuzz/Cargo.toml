@@ -49,3 +49,10 @@ path = "fuzz_targets/predicates.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "literals"
+path = "fuzz_targets/literals.rs"
+test = false
+doc = false
+bench = false

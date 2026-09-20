@@ -643,6 +643,8 @@ fn apply_cli_overrides(base: ProjectConfig, overrides: &CliOverrides) -> Project
                 None
             },
             exemption_layer: None,
+            source_posture: None,
+            tier3_skip_test_paths: None,
         },
         rules: vec![],
         audit: config::AuditConfig {
@@ -830,7 +832,8 @@ fn run_scan(overrides: &CliOverrides) -> i32 {
     }
 
     // step 2: parse diff into file blocks
-    let files = diff::parser::parse_diff(&raw_diff);
+    let mut files = diff::parser::parse_diff(&raw_diff);
+    diff::attach_staged_context(&mut files);
 
     // step 3: check for blocked .env files
     let env_check = diff::check_env_files(&files);

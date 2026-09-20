@@ -2,7 +2,9 @@
 
 use sekretbarilo::config::discovery::{discover_configs, discover_hierarchy};
 use sekretbarilo::config::merge::{merge_all, merge_two};
-use sekretbarilo::config::{AllowlistConfig, ProjectConfig, SettingsConfig, load_single_config};
+use sekretbarilo::config::{
+    AllowlistConfig, ProjectConfig, SettingsConfig, SourcePosture, load_single_config,
+};
 use serial_test::serial;
 use std::fs;
 use tempfile::tempdir;
@@ -16,6 +18,8 @@ fn scalar_override_local_entropy_threshold_overrides_parent() {
             entropy_threshold: Some(3.0),
             detect_public_keys: None,
             exemption_layer: None,
+            source_posture: None,
+            tier3_skip_test_paths: None,
         },
         ..Default::default()
     };
@@ -24,6 +28,8 @@ fn scalar_override_local_entropy_threshold_overrides_parent() {
             entropy_threshold: Some(4.5),
             detect_public_keys: None,
             exemption_layer: None,
+            source_posture: None,
+            tier3_skip_test_paths: None,
         },
         ..Default::default()
     };
@@ -161,6 +167,38 @@ paths = ["test/.*"]
 }
 
 #[test]
+fn source_posture_values_parse_and_invalid_value_is_rejected() {
+    let literals: ProjectConfig =
+        toml::from_str("[settings]\nsource_posture = \"literals\"").unwrap();
+    assert_eq!(
+        literals.settings.source_posture,
+        Some(SourcePosture::Literals)
+    );
+
+    let all: ProjectConfig = toml::from_str("[settings]\nsource_posture = \"all\"").unwrap();
+    assert_eq!(all.settings.source_posture, Some(SourcePosture::All));
+
+    assert!(toml::from_str::<ProjectConfig>("[settings]\nsource_posture = \"bogus\"").is_err());
+}
+
+#[test]
+fn tier3_skip_test_paths_parses() {
+    let config: ProjectConfig =
+        toml::from_str("[settings]\ntier3_skip_test_paths = false").unwrap();
+    assert_eq!(config.settings.tier3_skip_test_paths, Some(false));
+}
+
+#[test]
+fn source_posture_child_overrides_parent() {
+    let parent: ProjectConfig =
+        toml::from_str("[settings]\nsource_posture = \"literals\"").unwrap();
+    let child: ProjectConfig = toml::from_str("[settings]\nsource_posture = \"all\"").unwrap();
+
+    let merged = merge_two(parent, child);
+    assert_eq!(merged.settings.source_posture, Some(SourcePosture::All));
+}
+
+#[test]
 fn load_single_config_invalid_toml_returns_none() {
     let tmp = tempdir().unwrap();
     let path = tmp.path().join(".sekretbarilo.toml");
@@ -179,6 +217,8 @@ fn three_level_hierarchy_merges_correctly() {
             entropy_threshold: Some(2.0),
             detect_public_keys: None,
             exemption_layer: None,
+            source_posture: None,
+            tier3_skip_test_paths: None,
         },
         allowlist: AllowlistConfig {
             paths: vec!["vendor/.*".to_string()],
@@ -193,6 +233,8 @@ fn three_level_hierarchy_merges_correctly() {
             entropy_threshold: Some(3.0),
             detect_public_keys: None,
             exemption_layer: None,
+            source_posture: None,
+            tier3_skip_test_paths: None,
         },
         allowlist: AllowlistConfig {
             paths: vec!["generated/.*".to_string()],
@@ -207,6 +249,8 @@ fn three_level_hierarchy_merges_correctly() {
             entropy_threshold: Some(4.5),
             detect_public_keys: None,
             exemption_layer: None,
+            source_posture: None,
+            tier3_skip_test_paths: None,
         },
         allowlist: AllowlistConfig {
             paths: vec!["tmp/.*".to_string()],

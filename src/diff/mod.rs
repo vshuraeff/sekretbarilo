@@ -1,6 +1,7 @@
 pub mod parser;
 
-use std::process::Command;
+use std::io::Read;
+use std::process::{Command, Stdio};
 
 pub use parser::DiffFile;
 
@@ -61,6 +62,43 @@ pub fn get_staged_diff() -> Result<Vec<u8>, GitError> {
     }
 
     Ok(output.stdout)
+}
+
+/// attach bounded lexical context from the index, never from the working tree.
+pub fn attach_staged_context(files: &mut [DiffFile]) {
+    const MAX_CONTEXT_BYTES: u64 = 4 * 1024 * 1024;
+    for file in files {
+        file.context = None;
+        if file.is_renamed
+            || file.is_deleted
+            || crate::scanner::literals::language_for_path(&file.path).is_none()
+        {
+            continue;
+        }
+        let Ok(mut child) = Command::new("git")
+            .arg("show")
+            .arg(format!(":{}", file.path))
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+        else {
+            continue;
+        };
+        let mut full = Vec::new();
+        let read = child
+            .stdout
+            .take()
+            .map(|stdout| stdout.take(MAX_CONTEXT_BYTES + 1).read_to_end(&mut full));
+        if !matches!(read, Some(Ok(_))) || full.len() as u64 > MAX_CONTEXT_BYTES {
+            let _ = child.kill();
+            let _ = child.wait();
+            continue;
+        }
+        if child.wait().is_ok_and(|status| status.success()) {
+            file.context = Some(full);
+        }
+    }
 }
 
 /// result of checking staged files for .env files
@@ -188,6 +226,7 @@ mod tests {
                 is_deleted: false,
                 is_renamed: false,
                 is_binary: false,
+                context: None,
                 added_lines: vec![],
             },
             DiffFile {
@@ -196,6 +235,7 @@ mod tests {
                 is_deleted: false,
                 is_renamed: false,
                 is_binary: false,
+                context: None,
                 added_lines: vec![],
             },
             DiffFile {
@@ -204,6 +244,7 @@ mod tests {
                 is_deleted: false,
                 is_renamed: false,
                 is_binary: false,
+                context: None,
                 added_lines: vec![],
             },
         ];
@@ -221,6 +262,7 @@ mod tests {
             is_deleted: true,
             is_renamed: false,
             is_binary: false,
+            context: None,
             added_lines: vec![],
         }];
 

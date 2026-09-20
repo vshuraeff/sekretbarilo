@@ -422,6 +422,7 @@ where
         is_deleted: false,
         is_renamed: false,
         is_binary: false,
+        context: None,
         added_lines: command
             .split('\n')
             .enumerate()
@@ -1643,6 +1644,7 @@ mod tests {
             is_deleted: false,
             is_renamed: false,
             is_binary: false,
+            context: None,
             added_lines: command
                 .split('\n')
                 .enumerate()

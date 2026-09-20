@@ -37,6 +37,8 @@ fn merge_settings(base: SettingsConfig, overlay: SettingsConfig) -> SettingsConf
         entropy_threshold: overlay.entropy_threshold.or(base.entropy_threshold),
         detect_public_keys: overlay.detect_public_keys.or(base.detect_public_keys),
         exemption_layer: overlay.exemption_layer.or(base.exemption_layer),
+        source_posture: overlay.source_posture.or(base.source_posture),
+        tier3_skip_test_paths: overlay.tier3_skip_test_paths.or(base.tier3_skip_test_paths),
     }
 }
 
@@ -119,6 +121,8 @@ mod tests {
                 entropy_threshold: Some(3.0),
                 detect_public_keys: None,
                 exemption_layer: None,
+                source_posture: None,
+                tier3_skip_test_paths: None,
             },
             ..Default::default()
         };
@@ -127,6 +131,8 @@ mod tests {
                 entropy_threshold: Some(4.5),
                 detect_public_keys: None,
                 exemption_layer: None,
+                source_posture: None,
+                tier3_skip_test_paths: None,
             },
             ..Default::default()
         };
@@ -141,6 +147,8 @@ mod tests {
                 entropy_threshold: Some(3.0),
                 detect_public_keys: None,
                 exemption_layer: None,
+                source_posture: None,
+                tier3_skip_test_paths: None,
             },
             ..Default::default()
         };
@@ -249,6 +257,8 @@ mod tests {
                 entropy_threshold: Some(2.0),
                 detect_public_keys: None,
                 exemption_layer: None,
+                source_posture: None,
+                tier3_skip_test_paths: None,
             },
             allowlist: AllowlistConfig {
                 paths: vec!["vendor/.*".to_string()],
@@ -263,6 +273,8 @@ mod tests {
                 entropy_threshold: Some(3.0),
                 detect_public_keys: None,
                 exemption_layer: None,
+                source_posture: None,
+                tier3_skip_test_paths: None,
             },
             allowlist: AllowlistConfig {
                 paths: vec!["generated/.*".to_string()],
@@ -277,6 +289,8 @@ mod tests {
                 entropy_threshold: Some(4.5),
                 detect_public_keys: None,
                 exemption_layer: None,
+                source_posture: None,
+                tier3_skip_test_paths: None,
             },
             allowlist: AllowlistConfig {
                 paths: vec!["tmp/.*".to_string()],
