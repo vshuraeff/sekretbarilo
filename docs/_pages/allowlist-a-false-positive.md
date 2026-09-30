@@ -23,7 +23,7 @@ You need two things from it: the **rule id**, which the entry must name exactly,
 
 ## 2. Check whether a structural exemption already covers it
 
-For `generic-high-entropy-value`, which is the rule behind most false positives, ask first whether the shape is one the scanner already knows how to dismiss:
+For `generic-high-entropy-value`, which is disabled by default in 0.9.0 and runs only after opt-in, ask first whether the shape is one the scanner already knows how to dismiss:
 
 ```sh
 sekretbarilo audit --trace-exemptions

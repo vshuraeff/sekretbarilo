@@ -1,0 +1,34 @@
+# variable-path: paths rooted at, or carrying, a shell, make, template or windows variable reference.
+# every literal piece still has to read as a word or a short number, and the words of the whole
+# value must outweigh its short pieces, a reference named in words counting as one word, so an
+# opaque component, name or default, or short chunks beside a reference, stay reported.
+cache_dir="$HOME/Library/Caches/example-tool"
+local config_file="${XDG_CONFIG_HOME:-$HOME/.config}/example/settings.toml"
+archive_log="${ARCHIVE%.*}.extraction.log"
+OBJECT_DIR = $(BUILD_ROOT)/objects/release-universal
+settings_path = %APPDATA%\ExampleTool\user-settings.json
+plist="/Library/Preferences/$bundle_id.plist"
+"$HOME/.local/share/example-tool/state.json"
+LOG_FILE="$STATE_DIR/logs/session-archive.log"
+LOG_DIR="${TMPDIR:-/tmp}/example-2026/run-logs"
+    bin_path: $CARGO_HOME/bin/example-cli-v2
+# a format template whose placeholders sit in a path of words reads as a reference path:
+LOG_FILE="${LOG_DIR}/deploy-${HOSTNAME}-${RUN_ID}.log"
+const render = _.template('${bucket}/thumbnails/${width}x${height}.jpg');
+# a name and its default are words of the path, and a vocabulary word such as `com` is a word, not
+# a short group of a chunked value:
+cache_dir="${XDG_CACHE_HOME:-$HOME/.cache}/example-tool"
+plist="$HOME/Library/Preferences/com.apple.dock.plist"
+state_dir="$HOME/Library/WebKit/com.apple.WebKit.WebContent/$bundle_id"
+# a glob, a `|` or `:` list of such paths, an escaped path inside an echoed string and a reference
+# with a subscript or a message read the same way (shell-expansion.txt holds the expansion forms):
+cleanup_logs="$HOME/Library/Caches/*.log"
+helper_caches="$HOME/Library/Caches/com.example.helper*"
+cleanup_targets="$HOME/Library/Caches|backups|com.example.*:org.example.*"
+PATH="$HOME/.cargo/bin:/usr/local/bin:$PATH"
+echo "hook=\"$HOME/.claude/hooks/account-swap-hook.sh\""
+settings_hint="\$HOME/.config/example-tool/settings.json"
+archive_list="${archive_names[@]}/extracted-release.log"
+# known gap: references alone whose words are all chunk-sized (`${path/#\~/$HOME}`) and an
+# expansion the capture cuts short (`$(command arg`) are not read as paths of words and stay
+# reported.

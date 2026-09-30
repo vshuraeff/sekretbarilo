@@ -15,7 +15,7 @@ pub enum Language {
 pub fn language_for_path(path: &str) -> Option<Language> {
     let segment = path.rsplit('/').next()?;
     let (_, extension) = segment.rsplit_once('.')?;
-    // python/js-ts/c-c++ posture relief is deferred per adr 0003; 0.8.0 ships literals posture for rust and go only.
+    // complete-source parsers select other languages separately from this streaming tracker.
     [(Language::Rust, &["rs"][..]), (Language::Go, &["go"][..])]
         .into_iter()
         .find_map(|(language, extensions)| {
@@ -53,17 +53,23 @@ enum Mode {
     Template,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 enum RustTestPending {
     None,
-    Cfg(usize),
-    Item,
-    OuterStart,
-    Outer(usize),
-    Pub,
-    Restriction(usize),
-    Mod,
-    Name,
+    Hash {
+        test: bool,
+        inner: bool,
+    },
+    Attribute {
+        test: bool,
+        inner: bool,
+        delimiters: Vec<u8>,
+        tokens: Vec<Vec<u8>>,
+    },
+    Item {
+        test: bool,
+        header: Vec<Vec<u8>>,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -76,6 +82,10 @@ struct State {
     rust_brace_depth: usize,
     rust_test_pending: RustTestPending,
     test_region: Option<usize>,
+    rust_scope_eligible: Vec<bool>,
+    rust_scope_fresh: Vec<bool>,
+    rust_item_boundary: bool,
+    rust_macro_delimiters: Vec<u8>,
 }
 
 impl State {
@@ -88,7 +98,292 @@ impl State {
             rust_brace_depth: 0,
             rust_test_pending: RustTestPending::None,
             test_region: None,
+            rust_scope_eligible: vec![true],
+            rust_scope_fresh: vec![true],
+            rust_item_boundary: true,
+            rust_macro_delimiters: Vec::new(),
         }
+    }
+}
+
+fn cfg_attribute_implies_test(tokens: &[Vec<u8>]) -> bool {
+    if tokens.first().is_none_or(|token| token != b"cfg")
+        || tokens.get(1).is_none_or(|token| token != b"(")
+    {
+        return false;
+    }
+    let mut index = 2;
+    let implied = cfg_expr_implies_test(tokens, &mut index, 0);
+    implied == Some(true)
+        && tokens.get(index).is_some_and(|token| token == b")")
+        && index + 1 == tokens.len()
+}
+
+fn cfg_expr_implies_test(tokens: &[Vec<u8>], index: &mut usize, depth: usize) -> Option<bool> {
+    if depth > 32 {
+        return None;
+    }
+    let name = tokens.get(*index)?;
+    *index += 1;
+    if !rust_identifier(name) {
+        return None;
+    }
+    if tokens.get(*index).is_some_and(|token| token == b"=") {
+        *index += 1;
+        if tokens.get(*index).is_none_or(|token| token != b"\"") {
+            return None;
+        }
+        *index += 1;
+        return Some(false);
+    }
+    if tokens.get(*index).is_none_or(|token| token != b"(") {
+        return Some(name == b"test");
+    }
+    if !matches!(name.as_slice(), b"all" | b"any" | b"not") {
+        return None;
+    }
+    *index += 1;
+    let mut count = 0;
+    let mut implied = name == b"any";
+    loop {
+        if tokens.get(*index).is_some_and(|token| token == b")") {
+            *index += 1;
+            return (name != b"not" || count == 1)
+                .then_some(count > 0 && implied && name != b"not");
+        }
+        let child = cfg_expr_implies_test(tokens, index, depth + 1)?;
+        count += 1;
+        if name == b"all" {
+            implied |= child;
+        } else {
+            implied &= child;
+        }
+        match tokens.get(*index).map(Vec::as_slice) {
+            Some(b",") => {
+                *index += 1;
+                if tokens.get(*index).is_some_and(|token| token == b")") {
+                    *index += 1;
+                    return (name != b"not" || count == 1)
+                        .then_some(count > 0 && implied && name != b"not");
+                }
+            }
+            Some(b")") => {}
+            _ => return None,
+        }
+    }
+}
+
+fn rust_body_header(header: &[Vec<u8>]) -> bool {
+    let mut index = 0;
+    if header.get(index).is_some_and(|token| token == b"pub") {
+        index += 1;
+        if header.get(index).is_some_and(|token| token == b"(") {
+            let mut depth = 1;
+            index += 1;
+            while depth > 0 && index < header.len() {
+                match header[index].as_slice() {
+                    b"(" => depth += 1,
+                    b")" => depth -= 1,
+                    _ => {}
+                }
+                index += 1;
+            }
+            if depth != 0 {
+                return false;
+            }
+        }
+    }
+    while header.get(index).is_some_and(|token| {
+        matches!(
+            token.as_slice(),
+            b"async" | b"unsafe" | b"default" | b"const" | b"extern"
+        )
+    }) {
+        let external = header[index] == b"extern";
+        index += 1;
+        if external && header.get(index).is_some_and(|token| token == b"\"") {
+            index += 1;
+        }
+    }
+    match header.get(index).map(Vec::as_slice) {
+        Some(b"mod") => header.len() == index + 2 && rust_identifier(&header[index + 1]),
+        Some(b"fn") => {
+            if !header
+                .get(index + 1)
+                .is_some_and(|token| rust_identifier(token))
+            {
+                return false;
+            }
+            let mut paren = 0_usize;
+            let mut angle = 0_usize;
+            let mut bracket = 0_usize;
+            let mut saw_params = false;
+            for (position, token) in header[index + 2..].iter().enumerate() {
+                match token.as_slice() {
+                    b"(" => {
+                        if paren == 0 && angle == 0 {
+                            saw_params = true;
+                        }
+                        paren += 1;
+                    }
+                    b")" => {
+                        if paren == 0 {
+                            return false;
+                        }
+                        paren -= 1;
+                    }
+                    b"<" if paren == 0 => angle += 1,
+                    b">" if paren == 0 => {
+                        if angle == 0 {
+                            let previous = position
+                                .checked_sub(1)
+                                .and_then(|i| header.get(index + 2 + i));
+                            if !saw_params || previous.is_none_or(|part| part != b"-") {
+                                return false;
+                            }
+                        } else {
+                            angle -= 1;
+                        }
+                    }
+                    b"[" => bracket += 1,
+                    b"]" => {
+                        if bracket == 0 {
+                            return false;
+                        }
+                        bracket -= 1;
+                    }
+                    b"=" | b"!" | b"#" => return false,
+                    _ => {}
+                }
+            }
+            saw_params && paren == 0 && angle == 0 && bracket == 0
+        }
+        Some(b"impl") => {
+            let rest = &header[index + 1..];
+            let mut angle = 0_usize;
+            let mut bracket = 0_usize;
+            for token in rest {
+                match token.as_slice() {
+                    b"<" => angle += 1,
+                    b">" => {
+                        if angle == 0 {
+                            return false;
+                        }
+                        angle -= 1;
+                    }
+                    b"[" => bracket += 1,
+                    b"]" => {
+                        if bracket == 0 {
+                            return false;
+                        }
+                        bracket -= 1;
+                    }
+                    b"=" | b"!" | b"#" | b"{" | b"}" => return false,
+                    _ => {}
+                }
+            }
+            !rest.is_empty() && angle == 0 && bracket == 0
+        }
+        _ => false,
+    }
+}
+
+fn rust_identifier(token: &[u8]) -> bool {
+    token
+        .first()
+        .is_some_and(|&byte| identifier_start(byte) && byte != b'$')
+        && token
+            .iter()
+            .all(|&byte| identifier_continue(byte) && byte != b'$')
+}
+
+fn go_tag_bodies(line: &[u8], body: Range<usize>) -> Option<Vec<Range<usize>>> {
+    let tag = line.get(body.clone())?;
+    let mut index = 0;
+    let mut values = Vec::new();
+    while index < tag.len() {
+        while tag.get(index) == Some(&b' ') {
+            index += 1;
+        }
+        if index == tag.len() {
+            break;
+        }
+        let key_start = index;
+        while tag
+            .get(index)
+            .is_some_and(|&byte| byte > b' ' && byte != 0x7f && !matches!(byte, b':' | b'"'))
+        {
+            index += 1;
+        }
+        if index == key_start || tag.get(index..index + 2) != Some(&b":\""[..]) {
+            return None;
+        }
+        values.push(body.start + key_start..body.start + index);
+        index += 2;
+        let value_start = index;
+        let mut item_start = index;
+        let mut items = Vec::new();
+        loop {
+            match *tag.get(index)? {
+                b'"' => break,
+                b'\\' => index += go_tag_escape_width(tag.get(index..)?)?,
+                b',' => {
+                    if item_start < index {
+                        items.push(body.start + item_start..body.start + index);
+                    }
+                    index += 1;
+                    item_start = index;
+                }
+                byte if byte < b' ' || byte == 0x7f => return None,
+                _ => index += 1,
+            }
+        }
+        if value_start < index {
+            values.push(body.start + value_start..body.start + index);
+        }
+        if item_start < index && item_start != value_start {
+            items.push(body.start + item_start..body.start + index);
+        }
+        values.extend(items);
+        index += 1;
+        if index < tag.len() && tag[index] != b' ' {
+            return None;
+        }
+    }
+    (!values.is_empty()).then_some(values)
+}
+
+fn go_tag_escape_width(input: &[u8]) -> Option<usize> {
+    let escape = *input.get(1)?;
+    match escape {
+        b'a' | b'b' | b'f' | b'n' | b'r' | b't' | b'v' | b'\\' | b'"' => Some(2),
+        b'x' => input
+            .get(2..4)
+            .filter(|digits| digits.iter().all(u8::is_ascii_hexdigit))
+            .map(|_| 4),
+        b'u' | b'U' => {
+            let digits = if escape == b'u' { 4 } else { 8 };
+            let hex = input.get(2..2 + digits)?;
+            if !hex.iter().all(u8::is_ascii_hexdigit) {
+                return None;
+            }
+            let scalar = u32::from_str_radix(std::str::from_utf8(hex).ok()?, 16).ok()?;
+            char::from_u32(scalar).map(|_| 2 + digits)
+        }
+        b'0'..=b'7' => input
+            .get(1..4)
+            .filter(|digits| digits.iter().all(|byte| matches!(byte, b'0'..=b'7')))
+            .filter(|digits| digits[0] <= b'3')
+            .map(|_| 4),
+        _ => None,
+    }
+}
+
+fn rust_closer(opener: &[u8]) -> u8 {
+    match opener {
+        b"(" => b')',
+        b"[" => b']',
+        _ => b'}',
     }
 }
 
@@ -141,6 +436,10 @@ impl LiteralTracker {
             self.state.rust_brace_depth = 0;
             self.state.rust_test_pending = RustTestPending::None;
             self.state.test_region = None;
+            self.state.rust_scope_eligible = vec![true];
+            self.state.rust_scope_fresh = vec![true];
+            self.state.rust_item_boundary = true;
+            self.state.rust_macro_delimiters.clear();
         }
         LineLiterals {
             bodies,
@@ -199,19 +498,9 @@ impl State {
                     let comment =
                         line[start..].starts_with(b"//") || line[start..].starts_with(b"/*");
                     self.code(language, line, &mut index)?;
-                    if language == Language::Rust {
-                        if comment {
-                            if matches!(self.rust_test_pending, RustTestPending::Cfg(_)) {
-                                self.rust_test_pending = RustTestPending::None;
-                            }
-                        } else if !line[start].is_ascii_whitespace() {
-                            self.rust_test_token(
-                                &line[start..index],
-                                start,
-                                input.len(),
-                                test_span,
-                            )?;
-                        }
+                    if language == Language::Rust && !comment && !line[start].is_ascii_whitespace()
+                    {
+                        self.rust_test_token(&line[start..index], start, input.len(), test_span)?;
                     }
                     body_start = index;
                 }
@@ -338,7 +627,19 @@ impl State {
                             _ => 0,
                         };
                         if width > 0 {
-                            bodies.push(body_start..index);
+                            let body = body_start..index;
+                            if matches!(self.mode, Mode::GoRaw)
+                                && body_start > 0
+                                && line[body_start - 1] == b'`'
+                            {
+                                if let Some(tag_bodies) = go_tag_bodies(line, body.clone()) {
+                                    bodies.extend(tag_bodies);
+                                } else {
+                                    bodies.push(body);
+                                }
+                            } else {
+                                bodies.push(body);
+                            }
                             index += width;
                             closed = true;
                             break;
@@ -390,64 +691,211 @@ impl State {
         line_len: usize,
         test_span: &mut Option<Range<usize>>,
     ) -> Result<(), ()> {
-        use RustTestPending::*;
-        const CFG: [&[u8]; 6] = [b"[", b"cfg", b"(", b"test", b")", b"]"];
-
-        if token == b"{" {
-            if self.test_region.is_none()
-                && test_span.is_none()
-                && matches!(self.rust_test_pending, Name)
-            {
-                self.test_region = Some(self.rust_brace_depth);
-                *test_span = Some(start + 1..line_len);
+        use RustTestPending::{Attribute, Hash, Item, None};
+        if !self.rust_macro_delimiters.is_empty() {
+            match token {
+                b"(" | b"[" | b"{" => {
+                    if self.rust_macro_delimiters.len() >= 256 {
+                        self.mode = Mode::Unknown;
+                        return Err(());
+                    }
+                    self.rust_macro_delimiters.push(rust_closer(token));
+                }
+                b")" | b"]" | b"}" => {
+                    if self.rust_macro_delimiters.pop() != Some(token[0]) {
+                        self.mode = Mode::Unknown;
+                        return Err(());
+                    }
+                    if self.rust_macro_delimiters.is_empty() {
+                        self.rust_item_boundary = true;
+                    }
+                }
+                _ => {}
             }
-            self.rust_brace_depth = self.rust_brace_depth.checked_add(1).ok_or(())?;
-        } else if token == b"}" {
+            return Ok(());
+        }
+        if token == b"}" && !matches!(self.rust_test_pending, Attribute { .. }) {
             self.rust_brace_depth = self.rust_brace_depth.saturating_sub(1);
+            self.rust_scope_eligible.pop();
+            self.rust_scope_fresh.pop();
             if self.test_region == Some(self.rust_brace_depth) {
                 self.test_region = Option::None;
                 if let Some(span) = test_span {
                     span.end = start;
                 }
             }
-        }
-        if self.test_region.is_some() {
             self.rust_test_pending = None;
+            self.rust_item_boundary = true;
             return Ok(());
         }
-        self.rust_test_pending = match (self.rust_test_pending, token) {
-            (Cfg(progress), token) if token == CFG[progress] => {
-                if progress + 1 == CFG.len() {
-                    Item
+        let pending = std::mem::replace(&mut self.rust_test_pending, None);
+        self.rust_test_pending = match pending {
+            Hash { test, inner } if token == b"!" && !inner => Hash { test, inner: true },
+            Hash { test, inner } if token == b"[" => Attribute {
+                test,
+                inner,
+                delimiters: vec![b']'],
+                tokens: Vec::new(),
+            },
+            Attribute {
+                test,
+                inner,
+                mut delimiters,
+                mut tokens,
+            } => {
+                if (delimiters.len() != 1 || token != b"]") && tokens.len() >= 512 {
+                    self.mode = Mode::Unknown;
+                    return Err(());
+                }
+                if matches!(token, b"[" | b"(" | b"{") {
+                    tokens.push(token.to_vec());
+                    delimiters.push(rust_closer(token));
+                    Attribute {
+                        test,
+                        inner,
+                        delimiters,
+                        tokens,
+                    }
+                } else if matches!(token, b"]" | b")" | b"}") {
+                    if delimiters.pop() != Some(token[0]) {
+                        self.mode = Mode::Unknown;
+                        return Err(());
+                    }
+                    if !delimiters.is_empty() {
+                        tokens.push(token.to_vec());
+                        Attribute {
+                            test,
+                            inner,
+                            delimiters,
+                            tokens,
+                        }
+                    } else {
+                        let implied = cfg_attribute_implies_test(&tokens);
+                        if inner {
+                            if implied
+                                && self.test_region.is_none()
+                                && test_span.is_none()
+                                && *self.rust_scope_eligible.last().unwrap_or(&false)
+                                && *self.rust_scope_fresh.last().unwrap_or(&false)
+                            {
+                                let close_depth =
+                                    self.rust_brace_depth.checked_sub(1).unwrap_or(usize::MAX);
+                                self.test_region = Some(close_depth);
+                                *test_span = Some(start + 1..line_len);
+                            }
+                            self.rust_item_boundary = true;
+                            None
+                        } else if test || implied {
+                            self.rust_item_boundary = true;
+                            Item {
+                                test: true,
+                                header: Vec::new(),
+                            }
+                        } else {
+                            self.rust_item_boundary = true;
+                            None
+                        }
+                    }
                 } else {
-                    Cfg(progress + 1)
+                    tokens.push(token.to_vec());
+                    Attribute {
+                        test,
+                        inner,
+                        delimiters,
+                        tokens,
+                    }
                 }
             }
-            (Item, b"#") => OuterStart,
-            (OuterStart, b"[") => Outer(1),
-            (Outer(depth), b"[") => Outer(depth.checked_add(1).ok_or(())?),
-            (Outer(1), b"]") => Item,
-            (Outer(depth), b"]") => Outer(depth.saturating_sub(1)),
-            (Outer(depth), _) => Outer(depth),
-            (Item, b"pub") => Pub,
-            (Pub, b"(") => Restriction(1),
-            (Restriction(depth), b"(") => Restriction(depth.checked_add(1).ok_or(())?),
-            (Restriction(1), b")") => Item,
-            (Restriction(depth), b")") => Restriction(depth.saturating_sub(1)),
-            (Restriction(depth), _) => Restriction(depth),
-            (Item | Pub, b"mod") => Mod,
-            (Mod, name)
-                if name
-                    .first()
-                    .is_some_and(|&byte| identifier_start(byte) && byte != b'$')
-                    && name
-                        .iter()
-                        .all(|&byte| identifier_continue(byte) && byte != b'$') =>
-            {
-                Name
+            Item { test, header } if token == b"#" && header.is_empty() => {
+                Hash { test, inner: false }
             }
-            (_, b"#") => Cfg(0),
-            _ => None,
+            Item { test, header } if token == b"{" => {
+                if let Some(fresh) = self.rust_scope_fresh.last_mut() {
+                    *fresh = false;
+                }
+                if header.iter().any(|part| part == b"!") {
+                    self.rust_macro_delimiters.push(b'}');
+                    self.rust_item_boundary = false;
+                    return Ok(());
+                }
+                let body =
+                    *self.rust_scope_eligible.last().unwrap_or(&false) && rust_body_header(&header);
+                if test && body && self.test_region.is_none() && test_span.is_none() {
+                    self.test_region = Some(self.rust_brace_depth);
+                    *test_span = Some(start + 1..line_len);
+                }
+                self.rust_scope_eligible.push(body);
+                self.rust_scope_fresh.push(body);
+                self.rust_brace_depth = self.rust_brace_depth.checked_add(1).ok_or(())?;
+                self.rust_item_boundary = body;
+                None
+            }
+            Item { mut header, .. } if token == b";" => {
+                if let Some(fresh) = self.rust_scope_fresh.last_mut() {
+                    *fresh = false;
+                }
+                self.rust_item_boundary = true;
+                header.clear();
+                None
+            }
+            Item { header, .. }
+                if matches!(token, b"(" | b"[") && header.iter().any(|part| part == b"!") =>
+            {
+                self.rust_macro_delimiters.push(rust_closer(token));
+                self.rust_item_boundary = false;
+                None
+            }
+            Item { test, mut header } if header.len() < 512 => {
+                if header.is_empty()
+                    && let Some(fresh) = self.rust_scope_fresh.last_mut()
+                {
+                    *fresh = false;
+                }
+                header.push(token.to_vec());
+                self.rust_item_boundary = false;
+                Item { test, header }
+            }
+            _ if token == b"#"
+                && self.rust_item_boundary
+                && self.test_region.is_none()
+                && *self.rust_scope_eligible.last().unwrap_or(&false) =>
+            {
+                Hash {
+                    test: false,
+                    inner: false,
+                }
+            }
+            _ if token == b"{" => {
+                if let Some(fresh) = self.rust_scope_fresh.last_mut() {
+                    *fresh = false;
+                }
+                self.rust_scope_eligible.push(false);
+                self.rust_scope_fresh.push(false);
+                self.rust_brace_depth = self.rust_brace_depth.checked_add(1).ok_or(())?;
+                self.rust_item_boundary = false;
+                None
+            }
+            _ if token == b";" => {
+                if let Some(fresh) = self.rust_scope_fresh.last_mut() {
+                    *fresh = false;
+                }
+                self.rust_item_boundary = true;
+                None
+            }
+            _ if self.rust_item_boundary && self.test_region.is_none() => {
+                self.rust_item_boundary = false;
+                if let Some(fresh) = self.rust_scope_fresh.last_mut() {
+                    *fresh = false;
+                }
+                Item {
+                    test: false,
+                    header: vec![token.to_vec()],
+                }
+            }
+            _ => {
+                self.rust_item_boundary = false;
+                None
+            }
         };
         Ok(())
     }

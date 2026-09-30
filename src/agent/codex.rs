@@ -286,11 +286,46 @@ fn evaluate_payload_with_loader<F>(input: &[u8], load_context: F) -> HookDecisio
 where
     F: FnOnce(Option<&str>) -> Result<ScanContext, String>,
 {
+    match parse_codex_payload(input) {
+        Ok(CodexToolCall::Unscanned) => HookDecision::Allow,
+        Ok(CodexToolCall::ApplyPatch { command, cwd }) => {
+            evaluate_apply_patch(&command, cwd.as_deref(), load_context)
+        }
+        Ok(CodexToolCall::Bash { command, cwd }) => {
+            evaluate_bash(&command, cwd.as_deref(), load_context)
+        }
+        Err(reason) => HookDecision::Block(reason),
+    }
+}
+
+/// the tool call a Codex `PreToolUse` payload hands the hook, before any scanning.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CodexToolCall {
+    /// another hook event or a tool the hook does not scan: the hook allows it
+    Unscanned,
+    /// an `apply_patch` call carrying its patch text
+    ApplyPatch {
+        command: String,
+        cwd: Option<String>,
+    },
+    /// a `Bash` call carrying its command line
+    Bash {
+        command: String,
+        cwd: Option<String>,
+    },
+}
+
+/// parse a Codex `PreToolUse` payload into the tool call the hook scans.
+///
+/// pure: it stops before config loading and scanning, so it touches no filesystem,
+/// environment or git state. an `Err` is the hook's block reason, already sanitized
+/// for display.
+pub fn parse_codex_payload(input: &[u8]) -> Result<CodexToolCall, String> {
     let value: Value = match serde_json::from_slice(input) {
         Ok(value) => value,
         Err(error) => {
             let error = sanitize_display(&error.to_string());
-            return HookDecision::Block(format!("malformed Codex hook JSON: {error}"));
+            return Err(format!("malformed Codex hook JSON: {error}"));
         }
     };
 
@@ -298,30 +333,24 @@ where
         Ok(payload) => payload,
         Err(error) => {
             let error = sanitize_display(&error.to_string());
-            return HookDecision::Block(format!("Codex hook payload schema mismatch: {error}"));
+            return Err(format!("Codex hook payload schema mismatch: {error}"));
         }
     };
 
     if payload.hook_event_name != "PreToolUse" {
-        return HookDecision::Allow;
+        return Ok(CodexToolCall::Unscanned);
     }
 
     match payload.tool_name.as_str() {
-        "apply_patch" => {
-            let command = match command_from_tool_input(&payload.tool_input, "apply_patch") {
-                Ok(command) => command,
-                Err(reason) => return HookDecision::Block(reason),
-            };
-            evaluate_apply_patch(command, payload.cwd.as_deref(), load_context)
-        }
-        "Bash" => {
-            let command = match command_from_tool_input(&payload.tool_input, "Bash") {
-                Ok(command) => command,
-                Err(reason) => return HookDecision::Block(reason),
-            };
-            evaluate_bash(command, payload.cwd.as_deref(), load_context)
-        }
-        _ => HookDecision::Allow,
+        "apply_patch" => Ok(CodexToolCall::ApplyPatch {
+            command: command_from_tool_input(&payload.tool_input, "apply_patch")?.to_owned(),
+            cwd: payload.cwd,
+        }),
+        "Bash" => Ok(CodexToolCall::Bash {
+            command: command_from_tool_input(&payload.tool_input, "Bash")?.to_owned(),
+            cwd: payload.cwd,
+        }),
+        _ => Ok(CodexToolCall::Unscanned),
     }
 }
 
@@ -476,18 +505,22 @@ fn env_policy_reason(path: &str) -> String {
 ///
 /// an untrusted in-workspace layer is dropped whole because config rules merge by
 /// id, so an apparent rule addition can replace and disable a built-in rule.
+/// every trusted layer is read and parsed strictly: one that cannot be read, is not UTF-8 or
+/// does not parse is a fixed, content-free error, so the blocking hooks fail closed instead of
+/// scanning without the switches and allowlists it carries.
 pub(crate) fn load_trusted_project_config(
     base_dir: &Path,
 ) -> Result<config::ProjectConfig, String> {
     load_trusted_config(base_dir, false)
 }
 
-/// use the same trust boundary, but fail on config errors without logging input.
+/// use the same trust boundary and strict parsing, and name no path in the warning about an
+/// untrusted layer.
 pub(crate) fn load_trusted_redact_config(base_dir: &Path) -> Result<config::ProjectConfig, String> {
     load_trusted_config(base_dir, true)
 }
 
-fn load_trusted_config(base_dir: &Path, strict: bool) -> Result<config::ProjectConfig, String> {
+fn load_trusted_config(base_dir: &Path, redact: bool) -> Result<config::ProjectConfig, String> {
     let home = std::env::var_os("HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|| base_dir.to_path_buf());
@@ -516,16 +549,13 @@ fn load_trusted_config(base_dir: &Path, strict: bool) -> Result<config::ProjectC
         };
 
         if is_trusted {
-            if strict {
-                let content = std::fs::read_to_string(&path)
-                    .map_err(|_| "could not read trusted configuration".to_string())?;
-                let config = toml::from_str::<config::ProjectConfig>(&content)
-                    .map_err(|_| "invalid trusted configuration".to_string())?;
-                trusted.push(config);
-            } else if let Some(config) = config::load_single_config(&path) {
-                trusted.push(config);
-            }
-        } else if strict {
+            // untrusted layers are never read; trusted ones never skip an error.
+            let content = std::fs::read_to_string(&path)
+                .map_err(|_| "could not read trusted configuration".to_string())?;
+            let config = toml::from_str::<config::ProjectConfig>(&content)
+                .map_err(|_| "invalid trusted configuration".to_string())?;
+            trusted.push(config);
+        } else if redact {
             let _ = writeln!(
                 std::io::stderr(),
                 "[WARN] ignoring untrusted in-workspace config"
@@ -542,10 +572,43 @@ fn load_trusted_config(base_dir: &Path, strict: bool) -> Result<config::ProjectC
     Ok(config::merge::merge_all(trusted))
 }
 
+/// the repository-local variables git itself clears before it enters another repository,
+/// as `git rev-parse --local-env-vars` lists them.
+///
+/// inherited by the hook, they would make git judge an index, work tree or repository other
+/// than the checkout the layer lives in: the relative `GIT_INDEX_FILE=.git/index` git exports
+/// to commit hooks breaks every linked worktree, and a `GIT_WORK_TREE` pointing at a clean
+/// checkout vouches for a modified layer.
+const GIT_LOCAL_ENV_VARS: &[&str] = &[
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_CONFIG",
+    "GIT_CONFIG_PARAMETERS",
+    "GIT_CONFIG_COUNT",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_IMPLICIT_WORK_TREE",
+    "GIT_GRAFT_FILE",
+    "GIT_INDEX_FILE",
+    "GIT_NO_REPLACE_OBJECTS",
+    "GIT_REPLACE_REF_BASE",
+    "GIT_PREFIX",
+    "GIT_SHALLOW_FILE",
+    "GIT_COMMON_DIR",
+];
+
+/// `git -C <dir>` whose answer depends only on the checkout found from `dir`.
+fn git_in(dir: &Path) -> Command {
+    let mut command = Command::new("git");
+    command.arg("-C").arg(dir);
+    for name in GIT_LOCAL_ENV_VARS {
+        command.env_remove(name);
+    }
+    command
+}
+
 fn resolve_git_repo_root(base_dir: &Path) -> Option<PathBuf> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(base_dir)
+    let output = git_in(base_dir)
         .args(["rev-parse", "--show-toplevel"])
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -567,9 +630,7 @@ fn is_committed_config(repo_root: &Path, path: &Path) -> bool {
     let Ok(relative_path) = path.strip_prefix(repo_root) else {
         return false;
     };
-    let tracked = Command::new("git")
-        .arg("-C")
-        .arg(repo_root)
+    let tracked = git_in(repo_root)
         .args(["ls-files", "--error-unmatch", "--"])
         .arg(relative_path)
         .stdout(Stdio::null())
@@ -579,9 +640,7 @@ fn is_committed_config(repo_root: &Path, path: &Path) -> bool {
         return false;
     }
 
-    Command::new("git")
-        .arg("-C")
-        .arg(repo_root)
+    git_in(repo_root)
         .args(["diff", "--quiet", "HEAD", "--"])
         .arg(relative_path)
         .stdout(Stdio::null())
@@ -596,10 +655,19 @@ fn load_scan_context(cwd: Option<&str>) -> Result<ScanContext, String> {
         .map_err(|error| format!("failed to load project config: {error}"))?;
     let rules = config::load_rules_with_config(&project_config)
         .map_err(|error| format!("failed to load scanner rules: {error}"))?;
-    let allowlist = config::build_allowlist(&project_config, &rules)
-        .map_err(|error| format!("failed to build scanner allowlist: {error}"))?;
-    let bash_allowlist = build_bash_allowlist(&project_config, &rules)
-        .map_err(|error| format!("failed to build Bash scanner allowlist: {error}"))?;
+    // allowlist compiler errors quote the offending pattern; only the fixed category is reported.
+    let allowlist = config::build_allowlist(&project_config, &rules).map_err(|_| {
+        format!(
+            "failed to build scanner allowlist: {}",
+            config::ALLOWLIST_ERROR_CATEGORY
+        )
+    })?;
+    let bash_allowlist = build_bash_allowlist(&project_config, &rules).map_err(|_| {
+        format!(
+            "failed to build Bash scanner allowlist: {}",
+            config::ALLOWLIST_ERROR_CATEGORY
+        )
+    })?;
     let scanner = compile_rules(&rules)
         .map_err(|error| format!("failed to compile scanner rules: {error}"))?;
 
@@ -668,8 +736,14 @@ mod tests {
 
     use super::*;
 
+    // the traversal tests assert heuristic findings, so the default-off rule is opted in.
     fn test_scan_context() -> ScanContext {
-        test_scan_context_with_config(config::ProjectConfig::default())
+        let mut config = config::ProjectConfig::default();
+        config
+            .settings
+            .rules
+            .insert("generic-high-entropy-value".to_string(), true);
+        test_scan_context_with_config(config)
     }
 
     fn test_scan_context_with_config(config: config::ProjectConfig) -> ScanContext {
@@ -1383,6 +1457,34 @@ mod tests {
     }
 
     #[test]
+    fn parse_codex_payload_extracts_the_scanned_tool_call() {
+        let bash = payload("PreToolUse", "Bash", json!({"command": "echo hello"}));
+        assert_eq!(
+            parse_codex_payload(&bash),
+            Ok(CodexToolCall::Bash {
+                command: "echo hello".to_string(),
+                cwd: Some("/tmp".to_string()),
+            })
+        );
+
+        let patch = "*** Begin Patch\n*** Add File: clean.rs\n+let clean = true;\n*** End Patch\n";
+        let apply_patch = payload("PreToolUse", "apply_patch", json!({"command": patch}));
+        assert_eq!(
+            parse_codex_payload(&apply_patch),
+            Ok(CodexToolCall::ApplyPatch {
+                command: patch.to_string(),
+                cwd: Some("/tmp".to_string()),
+            })
+        );
+
+        let other_event = payload("PostToolUse", "Bash", Value::Null);
+        assert_eq!(
+            parse_codex_payload(&other_event),
+            Ok(CodexToolCall::Unscanned)
+        );
+    }
+
+    #[test]
     fn clean_apply_patch_is_silent_allow() {
         let input = payload(
             "PreToolUse",
@@ -1460,6 +1562,10 @@ mod tests {
         );
         let mut project_config = config::ProjectConfig::default();
         project_config.allowlist.paths.push("tests/.*".to_string());
+        project_config
+            .settings
+            .rules
+            .insert("generic-high-entropy-value".to_string(), true);
 
         let decision = evaluate_payload_with_loader(&input, |_| {
             Ok(test_scan_context_with_config(project_config))
@@ -1693,6 +1799,10 @@ mod tests {
         );
         let mut project_config = config::ProjectConfig::default();
         project_config.allowlist.paths.push("tests/.*".to_string());
+        project_config
+            .settings
+            .rules
+            .insert("generic-high-entropy-value".to_string(), true);
 
         assert_block_contains(
             evaluate_payload_with_loader(&input, |_| {
@@ -1727,6 +1837,10 @@ mod tests {
         );
         let mut project_config = config::ProjectConfig::default();
         project_config.allowlist.paths.push("tests/.*".to_string());
+        project_config
+            .settings
+            .rules
+            .insert("generic-high-entropy-value".to_string(), true);
 
         assert_block_contains(
             evaluate_payload_with_loader(&input, |_| {
@@ -1743,6 +1857,10 @@ mod tests {
         for pattern in ["tests/.*", ".*"] {
             for per_rule in [false, true] {
                 let mut project_config = config::ProjectConfig::default();
+                project_config
+                    .settings
+                    .rules
+                    .insert("generic-high-entropy-value".to_string(), true);
                 if per_rule {
                     project_config
                         .allowlist
@@ -1818,6 +1936,10 @@ mod tests {
         );
         let mut project_config = config::ProjectConfig::default();
         project_config.allowlist.paths.push("tests/.*".to_string());
+        project_config
+            .settings
+            .rules
+            .insert("generic-high-entropy-value".to_string(), true);
         assert_eq!(
             evaluate_apply_patch(&patch, Some("/repo"), |_| {
                 Ok(test_scan_context_with_config(project_config))

@@ -1,0 +1,19 @@
+# member-chain: property and method chains that stand alone as a value, without a call group.
+# the syntax exemption reads two or more identifier segments joined by `.`, `?.`, `::` or `->`,
+# where every segment reads as words and at most one short segment of eight bytes or fewer does
+# not. a `$0` closure parameter or a `.0` tuple field counts as a segment without a name.
+# known gap: a segment carrying an upper-case acronym inside a lower-case word, such as
+# `surfaceConfigDPI`, does not read as words, so `RendererApp.shared.surfaceConfigDPI?.size` is
+# still reported.
+        guard let window = workspaceStore?.activeWindowController.hostWindow,
+        let frame = NSApp.keyWindowController?.windowFrameAutosaveName
+        let frame = NSApp.keyWindow?.firstResponder
+        let first = workspaceStore?.activeWindow?.keyViewController
+        let mode = display?.io.lastRenderedFrameID
+            action: AppActions.toggleSidebarVisibility,
+	Default: &policy.DefaultActionTimeoutSec},
+    source: &runtime_config.paths,
+        if let session = $0.workspaceSessions.first(where: { $0.isFocused }) {
+        self.0.pendingTransitions.removeAll()
+        runtime.0.handle(generated_code.value.clone());
+            .sheet(isPresented: $viewModel.isShowingRestorePrompt) {

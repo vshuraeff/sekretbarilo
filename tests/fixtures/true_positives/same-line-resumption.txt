@@ -5,3 +5,19 @@ generic-high-entropy-value	Regex::new(r"[a-z]+") ;TOKEN={S32}
 generic-high-entropy-value	container.querySelector<HTMLElement>(".wui-kanban__card") ;TOKEN={S32}
 generic-high-entropy-value	runtime.environment["ACME_WIDGET_SERVICE_ACCOUNT"], ;TOKEN={S32}
 generic-high-entropy-value	refreshGateway.noteLifecycleChangeHappened(); ;TOKEN={S32}
+# a misread key (a `::` scope, a posix class, an escape letter) is dropped, and the scan resumes
+# after its separator, so the assignment behind it is still read.
+generic-high-entropy-value	use std::collections::HashMap; api_key={S32}
+generic-high-entropy-value	apt-get -o Acquire::Check-Valid-Until=false update; api_key={S32}
+generic-high-entropy-value	Config::Path::Leaf={S32}
+generic-high-entropy-value	tr -d '[:space:]' ; SECRET_VALUE={S32}
+generic-high-entropy-value	printf 'a\n: b' ; SECRET_VALUE={S32}
+generic-high-entropy-value	echo "header\ntoken={S32}"
+# hash context belongs to one assignment: a digest before a hex secret does not make it a hash.
+generic-high-entropy-value	sha256=e3b0c442 api_key={HEX40}
+# a shell `&&` list operator ends the value it follows.
+generic-high-entropy-value	TOKEN={HEX40}&&echo done
+# a regex-taking command or a delimited regex literal hands its pattern to the regex step, and an
+# opaque pattern is still reported.
+generic-high-entropy-value	grep -E api_key={S32} audit.log
+generic-high-entropy-value	pattern = /{S32}/i

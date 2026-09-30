@@ -241,6 +241,19 @@ fn scanned_rules(line: &str) -> Vec<String> {
         .collect()
 }
 
+fn go_tag_fixture(path: &Path) -> bool {
+    path.file_name()
+        .is_some_and(|name| name == "go-struct-tag.txt")
+}
+
+fn scan_go_tag(line: &str) -> Vec<sekretbarilo::scanner::engine::Finding> {
+    let mut file = fixture_file(line);
+    file.path = "pkg/sample.go".to_owned();
+    let mut allowlist = CompiledAllowlist::default_allowlist().expect("default allowlist");
+    allowlist.source_posture = Some(SourcePosture::Literals);
+    scan(&[file], &SCANNER, &allowlist)
+}
+
 /// rule and byte range of every file finding, on the same surface as the scan assertions.
 fn reported_spans(line: &str) -> Vec<String> {
     scan(&[fixture_file(line)], &SCANNER, &ALLOWLIST)
@@ -288,15 +301,27 @@ fn false_positive_corpus_produces_no_findings() {
         for (number, line) in shapes {
             checked += 1;
             let expanded = expand(&line);
-            let rules = scanned_rules(&expanded.text);
+            let go_tag = go_tag_fixture(&path);
+            let rules = if go_tag {
+                scan_go_tag(&expanded.text)
+                    .into_iter()
+                    .map(|finding| finding.rule_id)
+                    .collect()
+            } else {
+                scanned_rules(&expanded.text)
+            };
             if !rules.is_empty() {
+                let report = if go_tag {
+                    format!("{rules:?}")
+                } else {
+                    format!("{:?}", reported_spans(&expanded.text))
+                };
                 failures.push(format!(
-                    "{}:{number}: scan reported {:?} :: {line}",
+                    "{}:{number}: scan reported {report} :: {line}",
                     label(&path),
-                    reported_spans(&expanded.text)
                 ));
             }
-            if redact_text(&expanded.text, &SCANNER, &ALLOWLIST) != expanded.text {
+            if !go_tag && redact_text(&expanded.text, &SCANNER, &ALLOWLIST) != expanded.text {
                 failures.push(format!(
                     "{}:{number}: redact_text masked the line via {:?} :: {line}",
                     label(&path),
@@ -326,7 +351,11 @@ fn true_positive_corpus_is_detected() {
             checked += 1;
             let (rule_id, shape) = expectation(&path, number, &line);
             let expanded = expand(shape);
-            let findings = scan(&[fixture_file(&expanded.text)], &SCANNER, &ALLOWLIST);
+            let findings = if go_tag_fixture(&path) {
+                scan_go_tag(&expanded.text)
+            } else {
+                scan(&[fixture_file(&expanded.text)], &SCANNER, &ALLOWLIST)
+            };
             let rules: Vec<&str> = findings
                 .iter()
                 .map(|finding| finding.rule_id.as_str())
@@ -430,8 +459,10 @@ fn source_posture_fixture_matrix() {
         ("python", "pkg/sample.py", "tests/sample.py"),
         ("javascript", "src/sample.js", "tests/sample.js"),
         ("javascript", "src/sample.ts", "tests/sample.ts"),
+        ("javascript", "src/sample.tsx", "tests/sample.tsx"),
         ("c", "src/sample.c", "tests/sample.c"),
         ("c", "src/sample.cpp", "tests/sample.cpp"),
+        ("swift", "src/sample.swift", "tests/sample.swift"),
     ] {
         let path = corpus_dir("source_posture").join(format!("{name}.txt"));
         let rows = shapes(&path);
@@ -446,7 +477,7 @@ fn source_posture_fixture_matrix() {
                 _ => panic!("{name}:{number}: unknown outcome {outcome}"),
             };
             if index < 2 {
-                let expected = if matches!(name, "python" | "javascript" | "c") {
+                let expected = if matches!(name, "python" | "javascript" | "c" | "swift") {
                     true
                 } else {
                     index == 0
@@ -478,7 +509,7 @@ fn source_posture_fixture_matrix() {
                     }
                     "testpath" => (test_path, false),
                     "testpath-skip-off" => {
-                        al.tier3_skip_test_paths = false;
+                        al.heuristic_skip_test_paths = false;
                         (test_path, fire)
                     }
                     _ => (source_path, fire),

@@ -3,7 +3,7 @@ use sekretbarilo::diff::{
     attach_staged_context,
     parser::{AddedLine, DiffFile, parse_diff},
 };
-use sekretbarilo::scanner::engine::{Finding, scan, scan_text};
+use sekretbarilo::scanner::engine::{Finding, redact_text, scan, scan_text};
 use sekretbarilo::scanner::entropy::shannon_entropy;
 use sekretbarilo::scanner::rules::{CompiledScanner, compile_rules, load_default_rules};
 use std::process::Command;
@@ -108,7 +108,9 @@ fn finding_identities(
 }
 
 fn assert_deferred_postures(label: &str, input: DiffFile) {
-    let baseline = finding_identities(input.clone(), &allowlist());
+    let mut all = allowlist();
+    all.source_posture = Some(SourcePosture::All);
+    let baseline = finding_identities(input.clone(), &all);
     assert!(!baseline.is_empty(), "{label}: default baseline is empty");
     for (name, posture) in [
         ("literals", SourcePosture::Literals),
@@ -133,7 +135,9 @@ fn assert_deferred_source_scenario(
     for (ending, eol) in [("lf", "\n"), ("crlf", "\r\n")] {
         for (input_kind, with_context) in [("added-only", false), ("full-context", true)] {
             let input = source_input(path, lines, eol, with_context);
-            let baseline = finding_identities(input.clone(), &allowlist());
+            let mut all = allowlist();
+            all.source_posture = Some(SourcePosture::All);
+            let baseline = finding_identities(input.clone(), &all);
             assert!(
                 !baseline.is_empty(),
                 "{label}/{ending}/{input_kind}: empty baseline"
@@ -437,12 +441,66 @@ fn testpath_skip_is_labelled_and_only_applies_to_tier3_with_layer_on() {
             .any(|f| f.rule_id == "aws-access-key-id")
     );
     al.trace_exemptions = false;
-    al.tier3_skip_test_paths = false;
+    al.heuristic_skip_test_paths = false;
     assert_eq!(findings(file("tests/x.rs", &[(1, &line)]), &al).len(), 1);
-    al.tier3_skip_test_paths = true;
+    al.heuristic_skip_test_paths = true;
     al.exemption_layer = false;
     // the pre-existing skip decision is inside the layer guard.
     assert_eq!(findings(file("tests/x.rs", &[(1, &line)]), &al).len(), 1);
+}
+
+/// an xctest layout is a test path for tier 3 only: the opaque value on the line is
+/// traced as exempt:testpath while a tier-1 provider key on the same line still fires.
+#[test]
+fn xctest_layout_skips_tier3_but_not_tier1_on_the_same_line() {
+    let value = token(5);
+    let provider = format!(
+        "AKIA{}",
+        (0..16)
+            .map(|index| char::from(b'A' + ((index * 7 + 3) % 26) as u8))
+            .collect::<String>()
+    );
+    let line = format!("let a = \"{provider}\"; let b = \"{value}\"");
+    let carries = |found: &[Finding], rule: &str, needle: &str| {
+        found.iter().any(|f| {
+            f.rule_id == rule
+                && f.matched_value
+                    .windows(needle.len())
+                    .any(|part| part == needle.as_bytes())
+        })
+    };
+    let mut al = allowlist();
+
+    // control: the same line outside a test layout reports both values.
+    let control = scan(
+        &[file("Foo/Sources/Bar/Baz.swift", &[(1, &line)])],
+        &SCANNER,
+        &al,
+    );
+    assert!(carries(&control, ENTROPY, &value), "{control:?}");
+    assert!(
+        carries(&control, "aws-access-key-id", &provider),
+        "{control:?}"
+    );
+
+    let path = "Foo/Tests/BarTests/BazTests.swift";
+    let found = scan(&[file(path, &[(1, &line)])], &SCANNER, &al);
+    assert!(found.iter().all(|f| f.rule_id != ENTROPY), "{found:?}");
+    assert!(carries(&found, "aws-access-key-id", &provider), "{found:?}");
+
+    al.trace_exemptions = true;
+    let traced = scan(&[file(path, &[(1, &line)])], &SCANNER, &al);
+    assert!(carries(&traced, "exempt:testpath", &value), "{traced:?}");
+    assert!(
+        carries(&traced, "aws-access-key-id", &provider),
+        "{traced:?}"
+    );
+    assert!(traced.iter().all(|f| f.rule_id != ENTROPY), "{traced:?}");
+
+    al.trace_exemptions = false;
+    al.heuristic_skip_test_paths = false;
+    let unskipped = scan(&[file(path, &[(1, &line)])], &SCANNER, &al);
+    assert!(carries(&unskipped, ENTROPY, &value), "{unskipped:?}");
 }
 
 /// without context line five uses the bare regex; complete context exposes a body.
@@ -632,6 +690,99 @@ fn rust_cfg_test_region_suppresses_entropy_with_exact_testpath_trace() {
 }
 
 #[test]
+fn rust_cfg_implication_and_inner_scopes_keep_exact_testpath_traces() {
+    let value = token(333);
+    for prefix in [
+        "#[cfg(all(test, feature = \"fast\"))] fn f() {",
+        "#[cfg(any(all(test, unix), test))] impl Thing {",
+        "mod m {\n#![cfg(test)]\nfn f() {",
+        "fn f() {\n#![cfg(all(test, unix))]",
+    ] {
+        let close = if prefix.starts_with("mod m") {
+            "}}"
+        } else {
+            "}"
+        };
+        let source = format!("{prefix}\nlet key = \"{value}\";\n{close}\nlet prod = \"{value}\";");
+        let lines: Vec<_> = source
+            .lines()
+            .enumerate()
+            .map(|(i, line)| (i + 1, line))
+            .collect();
+        let input = file("src/x.rs", &lines);
+        let found = findings(input.clone(), &allowlist());
+        assert_eq!(found.len(), 1, "{source}");
+        let mut al = allowlist();
+        al.trace_exemptions = true;
+        let traced: Vec<_> = scan(&[input], &SCANNER, &al)
+            .into_iter()
+            .filter(|finding| finding.matched_value == value.as_bytes())
+            .collect();
+        assert_eq!(traced.len(), 2, "{source}");
+        assert_eq!(traced[0].rule_id, "exempt:testpath", "{source}");
+        assert_eq!(traced[1].rule_id, ENTROPY, "{source}");
+    }
+    for predicate in [
+        "not(test)",
+        "any(test, unix)",
+        "any(test, not(test))",
+        "all(test, mystery(test))",
+        "all(test, not(test, unix))",
+    ] {
+        let source = format!("#[cfg({predicate})] fn f() {{ let key = \"{value}\"; }}");
+        let input = file("src/x.rs", &[(1, &source)]);
+        assert_eq!(findings(input, &allowlist()).len(), 1, "{source}");
+    }
+}
+
+#[test]
+fn rust_inner_cfg_never_exempts_production_between_same_line_regions() {
+    let test_value = token(901);
+    let production_value = token(902);
+    for first in [
+        format!("#[cfg(test)] fn t() {{ let k = \"{test_value}\"; }}"),
+        format!("#[cfg(test)] mod t {{\nlet k = \"{test_value}\";\n}}"),
+    ] {
+        for later in ["fn p()", "mod p", "impl Thing"] {
+            let source = format!(
+                "{first} const K: &str = \"{production_value}\"; {later} {{ #![cfg(test)] }}"
+            );
+            let lines: Vec<_> = source
+                .lines()
+                .enumerate()
+                .map(|(index, line)| (index + 1, line))
+                .collect();
+            let input = file("src/x.rs", &lines);
+            let found = findings(input.clone(), &allowlist());
+            assert_eq!(found.len(), 1, "{source}");
+            assert_eq!(found[0].matched_value, production_value.as_bytes());
+
+            let mut al = allowlist();
+            al.trace_exemptions = true;
+            let traced = scan(&[input], &SCANNER, &al);
+            assert!(
+                traced.iter().any(|finding| {
+                    finding.rule_id == "exempt:testpath"
+                        && finding.matched_value == test_value.as_bytes()
+                }),
+                "{source}"
+            );
+            assert!(
+                traced.iter().any(|finding| {
+                    finding.rule_id == ENTROPY
+                        && finding.matched_value == production_value.as_bytes()
+                }),
+                "{source}"
+            );
+
+            let redacted =
+                redact_text(&format!("token={production_value}"), &SCANNER, &allowlist());
+            assert!(!redacted.contains(&production_value), "{source}");
+        }
+    }
+}
+
+#[test]
 fn rust_cfg_test_region_from_full_context_exempts_only_the_added_literal() {
     let value = token(3);
     let line = format!("let k = \"{value}\";");
@@ -678,7 +829,7 @@ fn rust_cfg_test_region_requires_testpath_setting_and_exemption_layer() {
         (true, false, Some(SourcePosture::Literals)),
     ] {
         let mut al = allowlist();
-        al.tier3_skip_test_paths = skip;
+        al.heuristic_skip_test_paths = skip;
         al.exemption_layer = layer;
         al.source_posture = posture;
         assert_eq!(findings(file("src/x.rs", &[(1, &line)]), &al).len(), 1);

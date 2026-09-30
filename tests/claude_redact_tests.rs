@@ -49,7 +49,7 @@ fn check_bash_redaction(env: &IsolatedEnv, text: &str, expected: &str) {
 
 #[test]
 fn digest_records_preserve_bash_output() {
-    let env = IsolatedEnv::new();
+    let env = IsolatedEnv::with_heuristic();
     for eol in ["\n", "\r\n"] {
         for (label, algorithm) in [
             ("Digest:    ", "sha256:"),
@@ -74,7 +74,7 @@ fn digest_records_preserve_bash_output() {
 
 #[test]
 fn digest_records_keep_malformed_and_credential_values_redacted() {
-    let env = IsolatedEnv::new();
+    let env = IsolatedEnv::with_heuristic();
     let opaque: String = (b'A'..=b'Z').chain(b'a'..=b'f').map(char::from).collect();
     for eol in ["\n", "\r\n"] {
         let balanced: String = (0..32)
@@ -155,7 +155,7 @@ fn run_bytes(env: &IsolatedEnv, bytes: &[u8]) -> Output {
 
 #[test]
 fn mktemp_output_record_preserves_bash_whitespace_and_nearby_secrets() {
-    let env = IsolatedEnv::new();
+    let env = IsolatedEnv::with_heuristic();
     let two_id_path = "task/q8Vn3sY6Kp4Zr9Tw/a7B2q9/lead";
     let long_id = format!("{}{}", "q8Vn3sY6Kp4Zr9Tw", "a7B2q9");
     let long_id_path = format!("task/{long_id}/integrator/lead");
@@ -207,7 +207,7 @@ fn run(env: &IsolatedEnv, tool: &str, response: Value) -> Output {
 
 #[test]
 fn shell_directory_expression_preserves_bash_quotes_and_neighbours() {
-    let env = IsolatedEnv::new();
+    let env = IsolatedEnv::with_heuristic();
     let expression = "$STATE_DIR/diagnostic.log";
     for eol in ["\n", "\r\n"] {
         let clean = format!(" \t\"{expression}\"\t {eol}");
@@ -221,7 +221,7 @@ fn shell_directory_expression_preserves_bash_quotes_and_neighbours() {
 
 #[test]
 fn shell_directory_expression_keeps_bash_secrets_redacted() {
-    let env = IsolatedEnv::new();
+    let env = IsolatedEnv::with_heuristic();
     let opaque: String = (b'A'..=b'Z').chain(b'a'..=b'f').map(char::from).collect();
     for eol in ["\n", "\r\n"] {
         for value in [
@@ -235,8 +235,12 @@ fn shell_directory_expression_keeps_bash_secrets_redacted() {
             check_bash_redaction(&env, &text, &text.replace(&value, "[REDACTED]"));
         }
         let value = "$STATE_DIR/diagnostic.log";
+        // the path step judges a reference path by its value alone, so a quoted wordy reference
+        // path passes through like the standalone one; the opaque controls stay redacted, and a
+        // `secret` or `password` key keeps the value redacted by its tier-2 assignment rule.
+        let text = format!("'{value}'{eol}");
+        check_bash_redaction(&env, &text, &text);
         for text in [
-            format!("'{value}'"),
             format!("secret=\"{value}\""),
             format!("password=\"{value}\""),
         ] {
@@ -244,13 +248,14 @@ fn shell_directory_expression_keeps_bash_secrets_redacted() {
             check_bash_redaction(&env, &text, &text.replace(value, "[REDACTED]"));
         }
         let text = format!("hashlib.sha256(x.encode(){eol}");
-        check_bash_redaction(&env, &text, &format!("[REDACTED]{eol}"));
+        // an open call at the line end is source syntax and passes through unchanged
+        check_bash_redaction(&env, &text, &text);
     }
 }
 
 #[test]
 fn shell_directory_separator_attacks_are_redacted_in_bash() {
-    let env = IsolatedEnv::new();
+    let env = IsolatedEnv::with_heuristic();
     let left = "q8Vn3sY6Kp4Zr9Tw";
     let right = "u2Jc5Hm7Rx1Bd6Q";
     let lowercase: String = (0..32)
@@ -287,7 +292,7 @@ fn shell_directory_separator_attacks_are_redacted_in_bash() {
 
 #[test]
 fn mktemp_separator_attacks_are_redacted_in_bash() {
-    let env = IsolatedEnv::new();
+    let env = IsolatedEnv::with_heuristic();
     let opaque: String = (0..32)
         .map(|index| char::from(b'a' + ((index * 11 + 3) % 26) as u8))
         .collect();
@@ -311,7 +316,7 @@ fn mktemp_separator_attacks_are_redacted_in_bash() {
 
 #[test]
 fn digest_records_reject_separator_split_payloads_in_bash() {
-    let env = IsolatedEnv::new();
+    let env = IsolatedEnv::with_heuristic();
     for eol in ["\n", "\r\n"] {
         for separator in ["-", "_"] {
             let digest = synthetic_hex(64, 3);
@@ -339,7 +344,7 @@ fn replacement(output: &Output) -> Value {
 
 #[test]
 fn clean_outputs_are_silent_for_all_three_tools() {
-    let env = IsolatedEnv::new();
+    let env = IsolatedEnv::with_heuristic();
     for (tool, response) in [
         (
             "Bash",
@@ -366,7 +371,7 @@ fn clean_outputs_are_silent_for_all_three_tools() {
 
 #[test]
 fn password_quoting_forms_are_masked_in_all_three_tools() {
-    let env = IsolatedEnv::new();
+    let env = IsolatedEnv::with_heuristic();
     let password = "h9L!q2N#v7T@r4W$";
     let original = format!(
         "host=localhost\r\npassword={password}\r\npassword=\"{password}\"\r\npasswd='{password}'\r\npwd=`{password}`\r\nport=5432\r\n"
@@ -398,7 +403,7 @@ fn password_quoting_forms_are_masked_in_all_three_tools() {
 
 #[test]
 fn bash_streams_and_text_blocks_preserve_structure_and_unknown_metadata() {
-    let env = IsolatedEnv::new();
+    let env = IsolatedEnv::with_heuristic();
     let response = json!({
         "stdout": format!("привет {SECRET}\r\n{SECRET}\n"),
         "stderr": format!("notice {SECOND}"), "interrupted": false, "isImage": false,
@@ -416,7 +421,7 @@ fn bash_streams_and_text_blocks_preserve_structure_and_unknown_metadata() {
 
 #[test]
 fn text_read_preserves_file_and_metadata_even_for_env_and_vendor_paths() {
-    let env = IsolatedEnv::new();
+    let env = IsolatedEnv::with_heuristic();
     let path = env.home().join(".env");
     let original = format!("host = localhost\r\naws_key = {SECRET}\r\nport = 5432\r\n");
     std::fs::write(&path, &original).unwrap();
@@ -431,7 +436,7 @@ fn text_read_preserves_file_and_metadata_even_for_env_and_vendor_paths() {
 
 #[test]
 fn grep_modes_and_alternate_lines_redact_values_without_changing_counts() {
-    let env = IsolatedEnv::new();
+    let env = IsolatedEnv::with_heuristic();
     for mode in ["content", "count", "files_with_matches"] {
         let response = json!({"mode": mode, "numFiles": 1, "filenames": [format!("{SECRET}.txt")],
             "content": format!("file:17:{SECOND}\r\n"), "numLines": 1, "numMatches": 3,
@@ -450,7 +455,7 @@ fn grep_modes_and_alternate_lines_redact_values_without_changing_counts() {
 
 #[test]
 fn trusted_custom_rules_and_value_allowlist_apply_but_path_exclusions_do_not() {
-    let env = IsolatedEnv::new();
+    let env = IsolatedEnv::with_heuristic();
     let dir = env.home().join(".config/sekretbarilo");
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(
@@ -483,7 +488,7 @@ paths = [".*"]
 
 #[test]
 fn invalid_trusted_config_stops_and_erases_all_supported_text_without_diagnostics() {
-    let env = IsolatedEnv::new();
+    let env = IsolatedEnv::with_heuristic();
     let dir = env.home().join(".config/sekretbarilo");
     std::fs::create_dir_all(&dir).unwrap();
     for invalid in [
@@ -508,7 +513,7 @@ fn invalid_trusted_config_stops_and_erases_all_supported_text_without_diagnostic
 
 #[test]
 fn workspace_config_requires_committed_and_unmodified_provenance() {
-    let env = IsolatedEnv::new();
+    let env = IsolatedEnv::with_heuristic();
     let repo = env.git_repo();
     let config = repo.join(".sekretbarilo.toml");
     let content = "[[rules]]\nid='custom'\ndescription='synthetic custom value'\nregex='CUSTOM=([A-Z0-9]+)'\nkeywords=['CUSTOM']\nsecret_group=1\n";
@@ -547,7 +552,7 @@ fn workspace_config_requires_committed_and_unmodified_provenance() {
 
 #[test]
 fn malformed_input_and_schema_drift_stop_with_fixed_safe_reason() {
-    let env = IsolatedEnv::new();
+    let env = IsolatedEnv::with_heuristic();
     for bytes in [
         format!("not-json {SECRET}").into_bytes(),
         vec![0xff],
@@ -570,7 +575,7 @@ fn malformed_input_and_schema_drift_stop_with_fixed_safe_reason() {
 
 #[test]
 fn oversized_input_and_serialized_replacement_stop_with_bounded_output() {
-    let env = IsolatedEnv::new();
+    let env = IsolatedEnv::with_heuristic();
     let output = run_bytes(&env, &vec![b' '; MAX_BYTES + 1]);
     assert_eq!(output.status.code(), Some(0));
     assert_eq!(
@@ -621,7 +626,7 @@ fn oversized_input_and_serialized_replacement_stop_with_bounded_output() {
 
 #[test]
 fn drifted_text_containers_are_erased_on_failure() {
-    let env = IsolatedEnv::new();
+    let env = IsolatedEnv::with_heuristic();
     for (tool, response) in [
         (
             "Bash",
@@ -661,7 +666,7 @@ fn drifted_text_containers_are_erased_on_failure() {
 
 #[test]
 fn nontext_read_is_outside_scope_and_cli_errors_use_stop_protocol() {
-    let env = IsolatedEnv::new();
+    let env = IsolatedEnv::with_heuristic();
     for kind in ["image", "pdf", "parts", "notebook", "file_unchanged"] {
         let output = run(
             &env,
@@ -686,7 +691,7 @@ fn nontext_read_is_outside_scope_and_cli_errors_use_stop_protocol() {
 
 #[test]
 fn closed_stdout_and_stderr_do_not_abort_the_binary() {
-    let env = IsolatedEnv::new();
+    let env = IsolatedEnv::with_heuristic();
     // the guarded behaviour is the child seeing EPIPE on a reader this process has closed. a
     // sibling test spawning at the same moment can inherit that read end through the window
     // between pipe() and its close-on-exec mark, which keeps the pipe writable for as long as

@@ -287,7 +287,7 @@ pub struct CompiledAllowlist {
     /// explicit source posture override for exemption-layer filtering
     pub source_posture: Option<SourcePosture>,
     /// whether generic rules skip test-shaped paths (default: true)
-    pub tier3_skip_test_paths: bool,
+    pub heuristic_skip_test_paths: bool,
     /// whether exemption decisions are emitted as diagnostic findings (default: false)
     pub trace_exemptions: bool,
     /// per-rule allowlist compiled regexes: maps rule_id -> (value_regexes, path_regexes, key_patterns)
@@ -402,7 +402,7 @@ impl CompiledAllowlist {
             detect_public_keys,
             exemption_layer: true,
             source_posture: None,
-            tier3_skip_test_paths: true,
+            heuristic_skip_test_paths: true,
             trace_exemptions: false,
             per_rule_allowlists,
         })
@@ -470,13 +470,13 @@ impl CompiledAllowlist {
 
     /// returns the reason a path skips generic-rule matching, or None if it doesn't.
     /// "file" = a GENERIC_ONLY_FILES / CODEOWNERS basename; "testpath" = a test-shaped
-    /// path skipped because tier3_skip_test_paths is enabled.
+    /// path skipped because heuristic_skip_test_paths is enabled.
     pub fn generic_rule_skip(&self, path: &str) -> Option<&'static str> {
         let filename = path.rsplit('/').next().unwrap_or(path);
         if GENERIC_ONLY_FILES.contains(&filename) || filename.eq_ignore_ascii_case("CODEOWNERS") {
             return Some("file");
         }
-        if self.tier3_skip_test_paths && is_test_path(path) {
+        if self.heuristic_skip_test_paths && is_test_path(path) {
             return Some("testpath");
         }
         None
@@ -712,23 +712,94 @@ impl CompiledAllowlist {
     }
 }
 
+/// directory segments that mark a test path, matched exactly and case-sensitively.
+/// "testing" is deliberately absent: it usually names shipped test-support code
+/// (numpy/testing, go testing helpers) rather than the tests themselves. "spec" and
+/// "specs" are deliberately absent too: a bare `spec/` directory is also a common
+/// production specification/schema package name, not necessarily a test suite.
+const TEST_DIR_SEGMENTS: &[&str] = &[
+    "test",
+    "tests",
+    "__tests__",
+    "testdata",
+    "fixtures",
+    "benches",
+];
+
+/// JS/TS file extensions recognised for the dotted `.test.`/`.spec.` naming
+/// convention, decided by the file's LAST extension (so `x.spec.d.ts` still
+/// matches via the final `.ts`).
+const JS_TS_TEST_EXTENSIONS: &[&str] = &["js", "jsx", "mjs", "cjs", "ts", "tsx", "mts", "cts"];
+
+/// a directory segment is test-shaped when it is one of TEST_DIR_SEGMENTS, ends in
+/// "_tests" or "-tests", is an xctest target name: the segment "Tests", or a
+/// CamelCase "Tests" suffix after an ascii letter or digit ("FooTests", "FooUITests"),
+/// or is a dotted .NET test project name: a non-empty prefix, a ".", then a run of
+/// ascii alphanumeric characters ending in "Tests" ("Foo.Tests", "Foo.UnitTests",
+/// "Foo.IntegrationTests"). lowercase lookalikes such as "latest", "contests" or
+/// "mytests" do not match, and neither does an underscore before "Tests"
+/// ("Foo_Tests") since that suffix rule requires an alphanumeric predecessor.
+fn is_test_dir_segment(segment: &str) -> bool {
+    TEST_DIR_SEGMENTS.contains(&segment)
+        || segment.ends_with("_tests")
+        || segment.ends_with("-tests")
+        || segment.strip_suffix("Tests").is_some_and(|stem| {
+            stem.as_bytes()
+                .last()
+                .is_none_or(|byte| byte.is_ascii_alphanumeric())
+        })
+        || is_dotnet_test_segment(segment)
+}
+
+/// a ".NET test project" directory segment: a non-empty prefix, a ".", then a
+/// non-empty run of ascii alphanumeric characters ending in "Tests"
+/// ("Foo.Tests", "Foo.UnitTests", "Foo.IntegrationTests").
+fn is_dotnet_test_segment(segment: &str) -> bool {
+    let Some(dot) = segment.rfind('.') else {
+        return false;
+    };
+    let (prefix, rest) = segment.split_at(dot);
+    let suffix = &rest[1..];
+    !prefix.is_empty()
+        && suffix.ends_with("Tests")
+        && suffix.bytes().all(|byte| byte.is_ascii_alphanumeric())
+}
+
+/// a file name is test-shaped when it matches `*Tests.swift`, `*Test.swift`,
+/// `*_test.*`, `test_*.py`, `*_spec.rb`, a JS/TS-family `*.test.<ext>` or
+/// `*.spec.<ext>` name (decided by the file's LAST extension, so `*.spec.d.ts`
+/// still matches via the final `.ts`), or is exactly `conftest.py`.
+fn is_test_file_name(name: &str) -> bool {
+    name.ends_with("Tests.swift")
+        || name.ends_with("Test.swift")
+        || name.contains("_test.")
+        || (name.starts_with("test_") && name.ends_with(".py"))
+        || name.ends_with("_spec.rb")
+        || ((name.contains(".test.") || name.contains(".spec."))
+            && name
+                .rsplit('.')
+                .next()
+                .is_some_and(|ext| JS_TS_TEST_EXTENSIONS.contains(&ext)))
+        || name == "conftest.py"
+}
+
 /// returns true when `path` looks like a test/fixture/benchmark path: any path
-/// segment except the last one equal to exactly "tests", "fixtures", "testdata"
-/// or "benches" (case-sensitive), or the last segment containing the literal byte
-/// sequence "_test." anywhere in it. a leading "./" is stripped before matching.
+/// segment except the last one is test-shaped (`is_test_dir_segment`), or the last
+/// segment is a test-shaped file name (`is_test_file_name`). the path is split on
+/// `/` only; a leading "./" is stripped, and the empty first segment of an absolute
+/// path matches nothing, so relative and absolute paths are matched the same way.
+/// a path carrying a literal ".." segment anywhere is never a test path, since a
+/// traversal segment is never trusted to classify a path.
 pub(crate) fn is_test_path(path: &str) -> bool {
     let path = path.strip_prefix("./").unwrap_or(path);
     let segments: Vec<&str> = path.split('/').collect();
-    if segments.is_empty() {
+    if segments.contains(&"..") {
         return false;
     }
-    let last_index = segments.len() - 1;
-    for (i, segment) in segments.iter().enumerate() {
-        if i != last_index && matches!(*segment, "tests" | "fixtures" | "testdata" | "benches") {
-            return true;
-        }
-    }
-    segments[last_index].contains("_test.")
+    let Some((name, dirs)) = segments.split_last() else {
+        return false;
+    };
+    dirs.iter().any(|segment| is_test_dir_segment(segment)) || is_test_file_name(name)
 }
 
 #[cfg(test)]
@@ -737,6 +808,16 @@ mod tests {
 
     fn default_al() -> CompiledAllowlist {
         CompiledAllowlist::default_allowlist().unwrap()
+    }
+
+    fn stripe_live_key() -> String {
+        let body: String = (0..24u8)
+            .map(|index| {
+                let base = if index % 2 == 0 { b'A' } else { b'a' };
+                char::from(base + (index * 7 % 26))
+            })
+            .collect();
+        format!("sk_live_{body}")
     }
 
     #[test]
@@ -809,20 +890,103 @@ mod tests {
     #[test]
     fn test_path_matching() {
         for path in [
+            // leaf: *_test.*
             "foo_test.go",
             "foo.bar_test.rs",
             "foo_test.extra.rs",
+            // plain directory segments
             "tests/x.rs",
             "benches/b.rs",
+            "test/x.js",
+            "src/test/java/FooIT.java",
+            "web/__tests__/x.js",
+            "pkg/testdata/x.json",
+            "fixtures/x.txt",
+            "./tests/x.rs",
+            // _tests / -tests suffix
+            "unit_tests/x.go",
+            "integration-tests/x.go",
+            "_tests/x.go",
+            // xctest target naming
+            "Foo/Tests/x.swift",
+            "FooTests/x.swift",
+            "myappUITests/x.swift",
+            "myappCore/Tests/myappCoreTests/x.swift",
+            "Foo2Tests/x.swift",
+            "Foo/Tests/BarTests/BazTests.swift",
+            // dotted .NET test project naming
+            "Foo.Tests/x.cs",
+            "Foo.UnitTests/x.cs",
+            "Foo.IntegrationTests/x.cs",
+            // leaf patterns
+            "Sources/BazTests.swift",
+            "Sources/BazTest.swift",
+            "test_x.py",
+            "scripts/test_parse.py",
+            "x/conftest.py",
+            "conftest.py",
+            "src/x.test.ts",
+            "src/x.spec.js",
+            "src/x.spec.d.ts",
+            "foo_spec.rb",
+            "spec/foo_spec.rb",
+            // absolute paths match the same way
+            "/abs/Foo/Tests/x.swift",
+            "/abs/src/x_test.go",
         ] {
             assert!(is_test_path(path), "{path}");
         }
         for path in [
+            "",
             "foo_test",
             "_testx.rs",
             "src/tests.rs",
             "mytests/x.rs",
             "testsuite/x.rs",
+            // lookalike directory segments
+            "latest/x.rs",
+            "contests/x.rs",
+            "Contests/x.swift",
+            "attestation/x.rs",
+            "Testimonials/x.swift",
+            "specification/x.md",
+            "spectrum/x.rs",
+            "Test/x.swift",
+            "TESTS/x.rs",
+            "Spec/x.rb",
+            "Foo_Tests/x.swift",
+            // "spec"/"specs" are also production specification/schema package names
+            "spec/x.rb",
+            "specs/x.rb",
+            "/abs/spec/x.rb",
+            // "testing" is not a test segment: it usually holds shipped test helpers
+            "testing/x.go",
+            "numpy/testing/x.py",
+            // lookalike leaves
+            "src/protest.rs",
+            "docs/testing.md",
+            "src/inspect.py",
+            "src/latest.swift",
+            "src/Contest.swift",
+            "src/tests.swift",
+            "src/test.py",
+            "src/testing_x.py",
+            "src/test_x.rb",
+            "src/x.test",
+            "src/x.spec",
+            "src/conftest.pyc",
+            "src/myconftest.py",
+            // *.test./*.spec. names outside the JS/TS family
+            "openapi.spec.yaml",
+            "config.test.env",
+            "api.spec.json",
+            // a directory-shaped leaf is a file name, not a directory segment
+            "src/Tests",
+            "src/spec",
+            "/abs/src/x.rs",
+            // a ".." segment anywhere is never a test path
+            "tests/../src/x.rs",
+            "../tests/x.rs",
         ] {
             assert!(!is_test_path(path), "{path}");
         }
@@ -834,7 +998,7 @@ mod tests {
         assert_eq!(al.generic_rule_skip("tests/x.rs"), Some("testpath"));
 
         let mut al = default_al();
-        al.tier3_skip_test_paths = false;
+        al.heuristic_skip_test_paths = false;
         assert_eq!(al.generic_rule_skip("tests/x.rs"), None);
     }
 
@@ -989,7 +1153,7 @@ mod tests {
         let al = default_al();
         assert!(!al.contains_stopword(b"AKIAIOSFODNN7REALKEY"));
         assert!(!al.contains_stopword(b"ghp_ABCDEFreal1234567890abcdefgh"));
-        assert!(!al.contains_stopword(b"sk_live_4eC39HqLyjWDarjtT1zdp7dc"));
+        assert!(!al.contains_stopword(stripe_live_key().as_bytes()));
     }
 
     #[test]
@@ -1276,7 +1440,7 @@ mod tests {
         let al = default_al();
         assert!(!al.is_variable_reference(b"AKIAIOSFODNN7EXAMPLE"));
         assert!(!al.is_variable_reference(b"ghp_ABCDEFreal1234567890abcdefgh"));
-        assert!(!al.is_variable_reference(b"sk_live_4eC39HqLyjWDarjtT1zdp7dc"));
+        assert!(!al.is_variable_reference(stripe_live_key().as_bytes()));
         assert!(!al.is_variable_reference(b"my-actual-password-123"));
     }
 

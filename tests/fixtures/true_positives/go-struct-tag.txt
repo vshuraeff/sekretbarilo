@@ -1,0 +1,11 @@
+# scanned as pkg/sample.go in literal posture by fixture_corpus_tests
+# bare opaque keys are covered by the file-only generated test; k= also exercises pathless redaction
+generic-high-entropy-value	v := `k={S32}:"x"`
+generic-high-entropy-value	v := `k={S32}:"x" json:"y"`
+generic-high-entropy-value	v := `k={S32}:""`
+generic-high-entropy-value	type Record struct { Field string `json:"{S32}"` }
+generic-high-entropy-value	type Record struct { Field string `json:"name,{S32}"` }
+generic-high-entropy-value	type Record struct { Field string `json:"{S32},omitempty"` }
+generic-high-entropy-value	type Record struct { Field string `json:"left\"quote,{S32}"` }
+generic-high-entropy-value	type Record struct { Field string `json:"{S32}" malformed` }
+generic-high-entropy-value	type Record struct { Field string `json:"bad\q,{S32}"` }

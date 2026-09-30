@@ -19,7 +19,9 @@ fn scalar_override_local_entropy_threshold_overrides_parent() {
             detect_public_keys: None,
             exemption_layer: None,
             source_posture: None,
-            tier3_skip_test_paths: None,
+            heuristic_skip_test_paths: None,
+            rule_classes: Default::default(),
+            rules: Default::default(),
         },
         ..Default::default()
     };
@@ -29,7 +31,9 @@ fn scalar_override_local_entropy_threshold_overrides_parent() {
             detect_public_keys: None,
             exemption_layer: None,
             source_posture: None,
-            tier3_skip_test_paths: None,
+            heuristic_skip_test_paths: None,
+            rule_classes: Default::default(),
+            rules: Default::default(),
         },
         ..Default::default()
     };
@@ -81,6 +85,7 @@ fn rule_merge_child_overrides_parent_same_id() {
         keywords: vec!["akia".to_string()],
         entropy_threshold: None,
         allowlist: RuleAllowlist::default(),
+        class: None,
     };
     let child_rule = sekretbarilo::scanner::rules::Rule {
         id: "aws-key".to_string(),
@@ -91,6 +96,7 @@ fn rule_merge_child_overrides_parent_same_id() {
         keywords: vec!["akia".to_string()],
         entropy_threshold: Some(3.5),
         allowlist: RuleAllowlist::default(),
+        class: None,
     };
     let new_rule = sekretbarilo::scanner::rules::Rule {
         id: "custom-token".to_string(),
@@ -101,6 +107,7 @@ fn rule_merge_child_overrides_parent_same_id() {
         keywords: vec!["custom".to_string()],
         entropy_threshold: None,
         allowlist: RuleAllowlist::default(),
+        class: None,
     };
 
     let parent = ProjectConfig {
@@ -182,10 +189,10 @@ fn source_posture_values_parse_and_invalid_value_is_rejected() {
 }
 
 #[test]
-fn tier3_skip_test_paths_parses() {
+fn heuristic_skip_test_paths_parses() {
     let config: ProjectConfig =
-        toml::from_str("[settings]\ntier3_skip_test_paths = false").unwrap();
-    assert_eq!(config.settings.tier3_skip_test_paths, Some(false));
+        toml::from_str("[settings]\nheuristic_skip_test_paths = false").unwrap();
+    assert_eq!(config.settings.heuristic_skip_test_paths, Some(false));
 }
 
 #[test]
@@ -218,7 +225,9 @@ fn three_level_hierarchy_merges_correctly() {
             detect_public_keys: None,
             exemption_layer: None,
             source_posture: None,
-            tier3_skip_test_paths: None,
+            heuristic_skip_test_paths: None,
+            rule_classes: Default::default(),
+            rules: Default::default(),
         },
         allowlist: AllowlistConfig {
             paths: vec!["vendor/.*".to_string()],
@@ -234,7 +243,9 @@ fn three_level_hierarchy_merges_correctly() {
             detect_public_keys: None,
             exemption_layer: None,
             source_posture: None,
-            tier3_skip_test_paths: None,
+            heuristic_skip_test_paths: None,
+            rule_classes: Default::default(),
+            rules: Default::default(),
         },
         allowlist: AllowlistConfig {
             paths: vec!["generated/.*".to_string()],
@@ -250,7 +261,9 @@ fn three_level_hierarchy_merges_correctly() {
             detect_public_keys: None,
             exemption_layer: None,
             source_posture: None,
-            tier3_skip_test_paths: None,
+            heuristic_skip_test_paths: None,
+            rule_classes: Default::default(),
+            rules: Default::default(),
         },
         allowlist: AllowlistConfig {
             paths: vec!["tmp/.*".to_string()],

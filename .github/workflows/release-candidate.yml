@@ -1,0 +1,181 @@
+name: Release candidate
+
+run-name: Release candidate ${{ inputs.ref }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Full commit SHA, branch or tag to build (resolved to one exact commit)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  resolve:
+    name: Resolve ref
+    runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ steps.resolve.outputs.sha }}
+      label: ${{ steps.resolve.outputs.label }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
+
+      - name: Resolve exact commit
+        id: resolve
+        env:
+          INPUT_REF: ${{ inputs.ref }}
+        run: |
+          sha=$(git rev-parse --verify HEAD)
+          echo "sha=${sha}" >> "$GITHUB_OUTPUT"
+          echo "label=rc-${sha:0:12}" >> "$GITHUB_OUTPUT"
+          echo "requested ref ${INPUT_REF} resolved to ${sha}"
+          {
+            echo "### Release candidate"
+            echo
+            echo "- requested ref: \`${INPUT_REF}\`"
+            echo "- resolved commit: \`${sha}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # mirrors the build job of release.yml; only needs, the checkout ref and the version label differ.
+  # keep the two in sync so a candidate is built exactly the way the tagged release will be.
+  build:
+    name: Build ${{ matrix.target }}
+    needs: resolve
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-apple-darwin
+            runner: macos-15-intel
+            os: macos
+            rustflags: "-C target-cpu=x86-64-v2"
+          - target: aarch64-apple-darwin
+            runner: macos-latest
+            os: macos
+            rustflags: "-C target-cpu=apple-m1"
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-latest
+            os: linux
+            rustflags: "-C target-cpu=x86-64-v2"
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-latest
+            os: linux
+            cross: true
+            rustflags: "-C target-feature=+neon"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.resolve.outputs.sha }}
+
+      - name: Install Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f # v2.0.0
+        with:
+          toolchain: stable
+          target: ${{ matrix.target }}
+          # per-target RUSTFLAGS are set on the build steps below; do not override here.
+          # no build.warnings=deny (the v2 default): a warning must not fail a release build
+          rustflags: ""
+          build-warnings: ""
+
+      - name: Install cross-compilation tools
+        if: matrix.cross
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+
+      - name: Build
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: ${{ matrix.cross && 'aarch64-linux-gnu-gcc' || '' }}
+          RUSTFLAGS: ${{ matrix.rustflags }}
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Install cargo-deb
+        if: matrix.os == 'linux'
+        run: cargo install cargo-deb
+
+      - name: Build .deb package
+        if: matrix.os == 'linux'
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: ${{ matrix.cross && 'aarch64-linux-gnu-gcc' || '' }}
+          RUSTFLAGS: ${{ matrix.rustflags }}
+        run: cargo deb --no-build --target ${{ matrix.target }}
+
+      - name: Get version
+        id: version
+        env:
+          RC_LABEL: ${{ needs.resolve.outputs.label }}
+        run: echo "version=${RC_LABEL}" >> "$GITHUB_OUTPUT"
+
+      - name: Package tarball
+        run: |
+          cd target/${{ matrix.target }}/release
+          tar czf ../../../sekretbarilo-${{ steps.version.outputs.version }}-${{ matrix.target }}.tar.gz sekretbarilo
+          cd ../../..
+
+      - name: Upload tarball
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sekretbarilo-${{ matrix.target }}-tarball
+          path: sekretbarilo-*.tar.gz
+          if-no-files-found: error
+
+      - name: Upload .deb
+        if: matrix.os == 'linux'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sekretbarilo-${{ matrix.target }}-deb
+          path: target/${{ matrix.target }}/debian/*.deb
+          if-no-files-found: error
+
+  checksums:
+    name: Checksum manifest
+    needs: [resolve, build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          path: artifacts/
+          merge-multiple: true
+
+      - name: Write SHA256SUMS
+        env:
+          RC_SHA: ${{ needs.resolve.outputs.sha }}
+        run: |
+          cd artifacts
+          shopt -s nullglob
+          tarballs=(*.tar.gz)
+          debs=(*.deb)
+          if [ "${#tarballs[@]}" -ne 4 ] || [ "${#debs[@]}" -ne 2 ]; then
+            echo "::error::expected 4 tarballs and 2 .deb packages, found ${#tarballs[@]} and ${#debs[@]}"
+            ls -la
+            exit 1
+          fi
+          sha256sum "${tarballs[@]}" "${debs[@]}" > SHA256SUMS
+          cat SHA256SUMS
+          {
+            echo "### SHA256SUMS for \`${RC_SHA}\`"
+            echo
+            echo '```'
+            cat SHA256SUMS
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload release candidate
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sekretbarilo-rc-${{ needs.resolve.outputs.sha }}
+          path: artifacts/
+          if-no-files-found: error

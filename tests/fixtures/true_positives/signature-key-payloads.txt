@@ -1,0 +1,9 @@
+# generated counterparts to low-entropy placeholders and pem-internal prefix matches.
+openai-api-key	OPENAI_API_KEY="sk-proj-{S40}"
+openai-api-key	OPENAI_API_KEY="sk-proj-{S32}_{S40}"
+openai-api-key	OPENAI_API_KEY="sk-proj-{S32}-{S40}"
+openai-api-key	client = OpenAI(api_key="sk-proj-{S40}")
+facebook-access-token	access_token="EAA{S40}"
+facebook-access-token	const key = 'EAA{S32}';
+facebook-access-token	{"credential": "EAA{S36}"}
+facebook-access-token	Bearer EAA{S40}

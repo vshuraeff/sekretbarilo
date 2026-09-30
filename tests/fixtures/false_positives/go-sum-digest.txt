@@ -1,0 +1,14 @@
+# go-sum-digest: go module checksums and unquoted subresource-integrity values. a digest
+# authenticates content, it does not authorise access. the record names the algorithm (`h1:` is
+# sha-256, `sha256-` is sri) and the value is its base64 encoding of exact length with padding.
+# the quoted json and toml forms of sri are in lockfile-hash-line-shapes.txt.
+example.com/widget v1.4.2 h1:{B64_44}
+example.com/widget v1.4.2/go.mod h1:{B64_44}
+github.com/acme/widget-core v0.0.0-20260901120000-a1b2c3d4e5f6 h1:{B64_44}
+golang.org/x/text v0.21.0/go.mod h1:{B64_44}
+gopkg.in/yaml.v3 v3.0.1 h1:{B64_44}
+integrity: sha256-{B64_44}
+    integrity: sha256-{B64_44}
+hash: sha256-{B64_44}
+digest: sha256-{B64_44}
+checksum: sha256-{B64_44}

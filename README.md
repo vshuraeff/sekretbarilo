@@ -13,7 +13,7 @@ High-performance secret scanner for git workflows and AI coding agents. Catches 
 ## Features
 
 - **Fast**: ~2.5 µs per commit, ~3.7 ms for 400-file diffs; parallel audit via rayon
-- **113 built-in rules** in three precision tiers (prefix-based, context-aware, catch-all) — see [rules reference](docs/_pages/rules-reference.md)
+- **113 built-in rules** in three rule classes (`signature`, `contextual`, `heuristic`); 109 active by default — see [rules reference](https://vshuraeff.github.io/sekretbarilo/rules-reference/)
 - **Low false positives**: entropy analysis, stopword filtering, hash/variable detection, template-aware, public key suppression
 - **Pre-commit hook**: scans staged changes on every commit
 - **Working tree & history audit**: scan tracked files or full git history with deduplication and branch resolution
@@ -110,7 +110,7 @@ sekretbarilo install all --global
 
 The default for a new installation is `block`: a `PreToolUse` hook scans files before `Read` and blocks secrets or `.env` files. Binary files, vendor directories, and lock files are fast-path skipped. Omitting `--mode` preserves the mode already installed in the selected settings file, including when running `install all`.
 
-`redact` installs a synchronous `PostToolUse` hook for `Bash`, `Read`, and `Grep`. Tools execute normally; detected secret values in supported text results become `[REDACTED]` before the result reaches the model. This is an **in-memory output editor**: source files are unchanged. Eligible high-entropy values are redacted regardless of variable name, so harmless base64 blobs or checksums may also be redacted. Response structure, metadata, surrounding text, UTF-8, and line endings are preserved. For example, `cat config.txt` can return:
+`redact` installs a synchronous `PostToolUse` hook for `Bash`, `Read`, and `Grep`. Tools execute normally; detected secret values in supported text results become `[REDACTED]` before the result reaches the model. This is an **in-memory output editor**: source files are unchanged. In 0.9.0, keywordless high-entropy detection is off by default: prefix-less random tokens in output such as `printenv` are not masked unless another enabled rule matches them. A value under a credential-named variable such as `API_KEY=`, `HF_TOKEN=` or `DJANGO_SECRET_KEY=`, in an `env` dump or inside a command such as `docker run -e API_KEY=… img`, is such a match: the contextual rules still mask it. Opt in with `[settings.rules]` and `"generic-high-entropy-value" = true`; that rule can also mask harmless base64 blobs or checksums. Response structure, metadata, surrounding text, UTF-8, and line endings are preserved. For example, `cat config.txt` can return:
 
 ```text
 host = localhost
@@ -118,7 +118,7 @@ password = [REDACTED]
 port = 5432
 ```
 
-`redact` uses the same trusted configuration, rules, entropy thresholds, password heuristics, and value exceptions. Path exclusions and documentation relaxations do not apply; `.env` output is scanned by content. Installation checks Claude Code >= 2.1.121 before changing protection, and installation/`doctor` warn about a blocking Read hook in another settings scope. See [redaction behavior and limits](docs/_pages/agent-hooks.md#redact-mode-output-editor), including unsupported tools, hook failures, and telemetry.
+`redact` uses the same trusted configuration, rules, entropy thresholds, password heuristics, and value exceptions. Path exclusions and documentation relaxations do not apply; `.env` output is scanned by content. Installation checks Claude Code >= 2.1.121 before changing protection, and installation/`doctor` warn about a blocking Read hook in another settings scope. See [redaction behavior and limits](https://vshuraeff.github.io/sekretbarilo/agent-hooks/#redact-mode-output-editor), including unsupported tools, hook failures, and telemetry.
 
 Password assignments are detected with double quotes, single quotes, backticks, or no quotes. Existing strength and placeholder checks apply to every form.
 
@@ -138,7 +138,7 @@ Adds a `PreToolUse` hook on the `apply_patch` and `Bash` tools. For `apply_patch
 
 **Codex will not run a newly installed hook until you approve it** — run `/hooks` in the Codex TUI. An unapproved hook is skipped silently. sekretbarilo does not write the trust state itself: the trust hash is an internal Codex detail, and a security tool that grants itself trust defeats the point of the trust model. For non-interactive use, Codex offers `--dangerously-bypass-hook-trust`, which disables the check for every hook in the session.
 
-Verified on codex-cli `0.145.0`; older releases may not deliver `PreToolUse` for `apply_patch`. Note two limits: Codex has no Read-equivalent tool, so the hook cannot stop the agent from *reading* a file with secrets, and the `Bash` check is a text scan — a guardrail against accidental leakage, not a sandbox. See the [agent hooks docs](docs/_pages/agent-hooks.md) for details.
+Verified on codex-cli `0.145.0`; older releases may not deliver `PreToolUse` for `apply_patch`. Note two limits: Codex has no Read-equivalent tool, so the hook cannot stop the agent from *reading* a file with secrets, and the `Bash` check is a text scan — a guardrail against accidental leakage, not a sandbox. See the [agent hooks docs](https://vshuraeff.github.io/sekretbarilo/agent-hooks/) for details.
 
 `sekretbarilo install all` sets up the pre-commit hook plus every agent hook at once. `--mode block|redact` selects the Claude mode; omitted, it preserves the installed mode or chooses `block` for a new installation. Selecting `redact` requires a supported Claude version. `--settings <path>` applies only to the Claude step; the pre-commit and Codex steps keep their normal local/global behavior. The Codex step is skipped when `codex` is neither on `PATH` nor has a `$CODEX_HOME` directory.
 
@@ -240,6 +240,26 @@ id = "generic-api-key"
 paths = ["test/.*"]
 ```
 
+### Rule classes and individual switches
+
+Signature and contextual rules are enabled by default; the heuristic class is
+disabled. To include keywordless high-entropy values in scans and redaction:
+
+```toml
+[settings.rules]
+"generic-high-entropy-value" = true
+```
+
+Set `heuristic = true` under `[settings.rule_classes]` to enable the whole class
+instead. Both tables merge per key across config layers; rule-id switches win
+over class switches. `exemption_layer`, `source_posture`, and
+`heuristic_skip_test_paths` tune the enabled heuristic rule but do not enable it.
+The old `tier3_skip_test_paths` spelling is a deprecated alias.
+
+`sekretbarilo help config` prints the full configuration reference on stdout and
+`sekretbarilo help rules` the resolved class and state of every rule; both are
+meant for humans and agents fixing a config without leaving the terminal.
+
 ### Custom rules
 
 ```toml
@@ -270,7 +290,7 @@ include_patterns = ["\\.rs$"]
 
 ## False positive reduction
 
-- **Entropy thresholds**: tier 2/3 rules filter low-randomness strings (+1.0 bonus for doc files)
+- **Entropy thresholds**: rules that declare a threshold filter low-randomness strings (+1.0 bonus for doc files, except the opt-in heuristic rule)
 - **Stopwords**: `example`, `test`, `placeholder`, `changeme`, `fake`, `mock`, `dummy`, etc.
 - **Hash detection**: SHA-1, SHA-256, MD5, git commit hashes
 - **Variable references**: `${VAR}`, `$VAR`, `process.env.VAR`, `os.environ["VAR"]`, `System.getenv("VAR")`, etc.

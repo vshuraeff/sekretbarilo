@@ -14,6 +14,11 @@ number of recognisable shapes.
 Those shapes are now committed as a fixture corpus that the test suite checks on every run, so a
 detection change that revives one of them fails a test instead of reaching a user.
 
+In 0.9.0, the heuristic rule is off by default. Tests of its exemptions and recall
+must explicitly enable it; a clean default scan alone does not validate those
+predicates. Check default behavior separately from opt-in behavior. The study
+above predates this default change.
+
 ## The corpus
 
 ```
@@ -25,14 +30,15 @@ tests/fixture_corpus_tests.rs          the test that walks both directories
 Every file name is a class of the taxonomy: `generated-constant-table`, `dotted-identifier`,
 `url-no-credential`, `code-expression`, `path-glob`, `lockfile-hash-line-shapes`,
 `documented-test-fixture-shapes`, `regex-literal`, `commit-sha-pin`, `placeholder-example`,
-`env-var-name`, `css-selector`, `markdown-link`, `import-line`, `checksum-record`.
+`env-var-name`, `css-selector`, `markdown-link`, `import-line`, `checksum-record`,
+`variable-path`.
 
 One shape per line. A blank line is ignored, and so is a comment, which is a `#` followed by a
 space or a tab — `#include <sys/socket.h>` and `#widget-settings-panel` stay shapes. Leading
 whitespace is part of the shape, because an indented line matches different alternatives of the
-tier-3 rule than a bare one.
+heuristic rule than a bare one.
 
-The path a fixture is scanned under is part of the fixture, because the tier-3 rule reads only
+The path a fixture is scanned under is part of the fixture, because the heuristic rule reads only
 string-literal bodies in a source file. A file named `<class>.<ext>.txt`, with `ext` one of `rs`,
 `go`, `py`, `js`, `ts` or `c`, is scanned under `src/fixture.<ext>` and so exercises that language's
 posture; every other fixture is scanned under `src/fixture.conf`, which no path allowlist covers and
@@ -78,10 +84,10 @@ password-in-url	https://widget-ci:{S32}@artifacts.example.internal/repository/re
 The test asserts a finding of that rule whose reported span covers the expanded value, and that
 `redact_text` masks it. The rule id must be one that `src/config/rules.toml` defines.
 
-One of those files records behaviour rather than secrets: `lockfile-digests.txt` holds the
-`sha256-` integrity digests that the layer still reports. They are not credentials, and if the
-exemption layer ever learns that prefix, the deliberate move is to take those lines out of
-`true_positives/` and put them in `false_positives/lockfile-hash-line-shapes.txt`.
+A line moves between the two directories only as a deliberate decision. The quoted `sha256-`
+integrity digests of lock files did so in 0.9.0: once the digest step learned the exact encoded
+length of a subresource-integrity value, they left `true_positives/` for
+`false_positives/lockfile-hash-line-shapes.txt`.
 
 ## Running it
 
@@ -135,4 +141,4 @@ smallest delta first, so a change that removes a class of false positives is vis
 Not in a fixture, not in a test, not in a comment that documents one. Generate it, or write a
 placeholder the test expands. The only literals the corpus carries are the two documented fake AWS
 keys the suite has always used: the `...EXAMPLE` one, which the default rules allowlist, and the
-`...ABCDEFG` one, which stands in for a tier-1 finding.
+`...ABCDEFG` one, which stands in for a signature finding.

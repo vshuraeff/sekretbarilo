@@ -143,6 +143,72 @@ fn go_stream_moves_between_raw_strings_comments_and_interpreted_strings() {
 }
 
 #[test]
+fn go_struct_tags_keep_keys_whole_values_and_comma_items() {
+    let cases: &[(&str, &[&str])] = &[
+        (
+            r#"json:"name,omitempty""#,
+            &["json", "name,omitempty", "name", "omitempty"],
+        ),
+        (
+            r#"json:"left\"quote,opaque" yaml:"other""#,
+            &[
+                "json",
+                r#"left\"quote,opaque"#,
+                r#"left\"quote"#,
+                "opaque",
+                "yaml",
+                "other",
+            ],
+        ),
+        (
+            r#"json:"first\x2csecond,third""#,
+            &[
+                "json",
+                r#"first\x2csecond,third"#,
+                r#"first\x2csecond"#,
+                "third",
+            ],
+        ),
+        (
+            r#"json:"a,b,c,d""#,
+            &["json", "a,b,c,d", "a", "b", "c", "d"],
+        ),
+        (r#"unusual=key:"x" json:"""#, &["unusual=key", "x", "json"]),
+    ];
+    for (tag, expected) in cases {
+        let line = format!("type T struct {{ Field string `{tag}` }}");
+        let mut tracker = LiteralTracker::new(Language::Go);
+        let result = tracker.feed(line.as_bytes(), 1);
+        assert!(result.known);
+        let bodies: Vec<_> = result
+            .bodies
+            .iter()
+            .map(|range| &line[range.clone()])
+            .collect();
+        assert_eq!(bodies, *expected, "{tag}");
+    }
+}
+
+#[test]
+fn go_malformed_tag_keeps_the_raw_body() {
+    for tag in [
+        r#"json:"broken" extra"#,
+        r#"json:"unterminated"#,
+        r#"json:"bad\q""#,
+        r#"json:"bad\777""#,
+        r#"json:"bad\uD800""#,
+        "bad\x7fkey:\"value\"",
+    ] {
+        let line = format!("type T struct {{ Field string `{tag}` }}");
+        let mut tracker = LiteralTracker::new(Language::Go);
+        let result = tracker.feed(line.as_bytes(), 1);
+        assert!(result.known);
+        assert_eq!(result.bodies.len(), 1);
+        assert_eq!(&line[result.bodies[0].clone()], tag);
+    }
+}
+
+#[test]
 fn python_stream_preserves_triple_quoted_bodies_and_resumes_prefixed_strings() {
     let mut tracker = LiteralTracker::new(Language::Python);
     assert_bodies(&mut tracker, 1, b"value = r'''first", &[b"first"]);
@@ -309,9 +375,6 @@ fn rust_test_regions_reject_noncode_attributes_and_other_items() {
         "#[cfg(test)] const X: u8 = 1;",
         "#[cfg(test)] mod t;",
         "#[cfg(test)] ; mod t {",
-        "#[cfg(test)] fn f() {",
-        "#![cfg(test)] mod t {",
-        "#[cfg(all(test, unix))] mod t {",
         "#[cfg(any(test, unix))] mod t {",
         "#[cfg(not(test))] mod t {",
         "#[cfg_attr(test, allow(dead_code))] mod t {",
@@ -319,7 +382,6 @@ fn rust_test_regions_reject_noncode_attributes_and_other_items() {
         "#[cfg(test)] module t {",
         "#[cfg(test)] mod 123 {",
         "#[cfg(test)] mod t extra {",
-        "#[cfg(/* comment */ test)] mod t {",
         "#[cfg(test)] \"ignored\" mod t {",
     ] {
         let mut tracker = LiteralTracker::new(Language::Rust);
@@ -336,6 +398,198 @@ fn rust_test_regions_reject_noncode_attributes_and_other_items() {
         tracker.feed(opener.as_bytes(), 1);
         assert_eq!(tracker.feed(b"#[cfg(test)] mod t {", 2).test_span, None);
     }
+}
+
+#[test]
+fn rust_cfg_implication_and_body_items() {
+    for predicate in [
+        "test",
+        "all(test, unix)",
+        "all(unix, any(test, all(test, feature = \"fast\")))",
+        "all(test, not(unix))",
+        "any(test, all(test, unix))",
+        "any(all(test, unix), all(test, feature = \"fast\"))",
+    ] {
+        for item in [
+            "mod t",
+            "fn f()",
+            "fn f() -> Thing",
+            "const fn f() -> Vec<Thing>",
+            "extern \"C\" fn f()",
+            "pub(crate) async fn f()",
+            "impl Thing",
+        ] {
+            let source = format!("#[cfg({predicate})] {item} {{ body }} after");
+            let mut tracker = LiteralTracker::new(Language::Rust);
+            let start = source.find('{').unwrap() + 1;
+            let end = source.rfind('}').unwrap();
+            assert_eq!(
+                tracker.feed(source.as_bytes(), 1).test_span,
+                Some(start..end),
+                "{source}"
+            );
+            assert_eq!(tracker.feed(b"production", 2).test_span, None, "{source}");
+        }
+    }
+    let mut tracker = LiteralTracker::new(Language::Rust);
+    let source = "#[cfg(/* comment */ test)] mod t { body }";
+    let start = source.find('{').unwrap() + 1;
+    let end = source.rfind('}').unwrap();
+    assert_eq!(
+        tracker.feed(source.as_bytes(), 1).test_span,
+        Some(start..end)
+    );
+    for predicate in [
+        "any(test, unix)",
+        "any(test, not(test))",
+        "not(test)",
+        "all(unix, feature = \"fast\")",
+        "all()",
+        "any()",
+        "all(test,)",
+        "all(test, mystery(test))",
+        "all(test, not(test, unix))",
+        "all(test, not())",
+    ] {
+        let source = format!("#[cfg({predicate})] fn f() {{ body }}");
+        let mut tracker = LiteralTracker::new(Language::Rust);
+        let expected = predicate == "all(test,)";
+        assert_eq!(
+            tracker.feed(source.as_bytes(), 1).test_span.is_some(),
+            expected,
+            "{source}"
+        );
+    }
+}
+
+#[test]
+fn rust_inner_cfg_applies_only_to_fresh_eligible_scope() {
+    for source in [
+        "#![cfg(test)]\nfn f() { body }",
+        "mod m {\n#![cfg(test)]\nfn f() { body }\n}",
+        "fn f() {\n#![cfg(test)]\nlet x = 1;\n}",
+        "impl Thing {\n#![cfg(test)]\nfn f() { body }\n}",
+    ] {
+        let mut tracker = LiteralTracker::new(Language::Rust);
+        let lines: Vec<_> = source.lines().collect();
+        let marked: Vec<_> = lines
+            .iter()
+            .enumerate()
+            .map(|(i, line)| tracker.feed(line.as_bytes(), i + 1).test_span)
+            .collect();
+        assert!(marked.iter().any(Option::is_some), "{source}");
+        if !source.starts_with("#!") {
+            assert_eq!(
+                tracker.feed(b"production", lines.len() + 1).test_span,
+                None,
+                "{source}"
+            );
+        }
+    }
+    for source in [
+        "mod m {\nlet x = 1;\n#![cfg(test)]\nfn f() { body }\n}",
+        "macro_rules! m {\n#![cfg(test)]\nfn f() { body }\n}",
+        "#[cfg(test)] use a::{b,c};\nfn f() { body }",
+        "#[cfg(test)] mod other;\nfn f() { body }",
+        "#[cfg(test)] fn f() -> [u8; { 1 }] { body }",
+        "emit! {\n; fn apparent() {\n#![cfg(test)]\nproduction_marker\n}\n}",
+        "emit!(; #[cfg(test)] fn apparent() {\nproduction_marker\n});",
+        "emit![; #[cfg(test)] fn apparent() {\nproduction_marker\n}];",
+    ] {
+        let mut tracker = LiteralTracker::new(Language::Rust);
+        for (i, line) in source.lines().enumerate() {
+            assert_eq!(
+                tracker.feed(line.as_bytes(), i + 1).test_span,
+                None,
+                "{source}: {line}"
+            );
+        }
+    }
+    let mut tracker = LiteralTracker::new(Language::Rust);
+    assert_eq!(tracker.feed(b"mod m {", 1).test_span, None);
+    assert!(
+        tracker
+            .feed(b"#[cfg(test)] fn f() {}", 2)
+            .test_span
+            .is_some()
+    );
+    assert_eq!(tracker.feed(b"#![cfg(test)]", 3).test_span, None);
+    assert_eq!(tracker.feed(b"fn prod() { body }", 4).test_span, None);
+}
+
+#[test]
+fn rust_inner_cfg_does_not_extend_an_earlier_same_line_region() {
+    for first in ["#[cfg(test)] fn t() {}", "#[cfg(test)] mod t {\n}"] {
+        for later in ["fn p()", "mod p", "impl Thing"] {
+            let source =
+                format!("{first} const K: &str = \"production\"; {later} {{ #![cfg(test)] }}");
+            let mut tracker = LiteralTracker::new(Language::Rust);
+            for (index, line) in source.lines().enumerate() {
+                let result = tracker.feed(line.as_bytes(), index + 1);
+                if line.contains("production") {
+                    let production = line.find("production").unwrap();
+                    assert!(result.known, "{source}");
+                    assert!(
+                        result
+                            .test_span
+                            .as_ref()
+                            .is_none_or(|span| !span.contains(&production)),
+                        "{source}: {result:?}"
+                    );
+                }
+            }
+            assert_eq!(
+                tracker
+                    .feed(b"production", source.lines().count() + 1)
+                    .test_span,
+                None
+            );
+        }
+    }
+}
+
+#[test]
+fn rust_attribute_braces_do_not_change_item_scope_depth() {
+    for attribute in ["#[note { a }]", "#[note({ a })]", "#[note([{ a }])]"] {
+        let source = format!("{attribute} fn x() {{}} #[cfg(test)] mod t {{ body }}");
+        let mut tracker = LiteralTracker::new(Language::Rust);
+        let result = tracker.feed(source.as_bytes(), 1);
+        let body = source.find("body").unwrap();
+        assert!(result.known, "{source}");
+        assert!(
+            result.test_span.is_some_and(|span| span.contains(&body)),
+            "{source}"
+        );
+        assert_eq!(tracker.feed(b"production", 2).test_span, None, "{source}");
+    }
+}
+
+#[test]
+fn rust_inner_cfg_after_a_boundary_is_not_a_fresh_scope() {
+    for earlier in [
+        ";",
+        "#[cfg(test)] ;",
+        "{ let a = 1; }",
+        "#[allow(dead_code)] { let a = 1; }",
+    ] {
+        let source = format!("fn f() {{ {earlier} #![cfg(test)] let k = \"production\"; }}");
+        let mut tracker = LiteralTracker::new(Language::Rust);
+        let result = tracker.feed(source.as_bytes(), 1);
+        assert!(result.known, "{source}");
+        assert_eq!(result.test_span, None, "{source}");
+    }
+}
+
+#[test]
+fn rust_attribute_buffer_limit_keeps_later_lines_unknown() {
+    let mut tracker = LiteralTracker::new(Language::Rust);
+    let nested = format!("#[cfg(test)] #[allow({})] fn f() {{}}", "[".repeat(600));
+    let first = tracker.feed(nested.as_bytes(), 1);
+    assert!(!first.known);
+    assert_eq!(first.test_span, None);
+    let later = tracker.feed(b"#[cfg(test)] fn f() { body }", 2);
+    assert!(!later.known);
+    assert_eq!(later.test_span, None);
 }
 
 #[test]
@@ -366,7 +620,7 @@ fn rust_test_region_depth_ignores_literals_comments_and_nested_attributes() {
     assert_eq!(tracker.feed(b"}}}", 9).test_span, None);
     assert_eq!(
         tracker.feed(b"#[cfg(test)] mod next {}", 10).test_span,
-        Some(23..23)
+        None
     );
 }
 

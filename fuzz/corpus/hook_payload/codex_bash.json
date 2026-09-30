@@ -1,0 +1,1 @@
+{"session_id":"session-1","turn_id":"turn-1","cwd":"/work/project","hook_event_name":"PreToolUse","model":"model-name","permission_mode":"default","tool_name":"Bash","tool_input":{"command":"echo hello\npwd"},"tool_use_id":"tool-1"}

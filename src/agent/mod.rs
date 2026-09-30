@@ -26,6 +26,10 @@ pub use redact::{redact_cli_error, run_redact_claude};
 
 pub(crate) use hooks_json::find_hook;
 
+// the pure codex payload parser, public for the fuzz harness
+#[allow(unused_imports)]
+pub use codex::{CodexToolCall, parse_codex_payload};
+
 use crate::audit::history::sanitize_display;
 use crate::audit::{ReadFileResult, read_file_to_diff_result};
 use crate::config;
@@ -46,8 +50,7 @@ struct ToolInput {
     file_path: String,
 }
 
-/// parse the claude code hook JSON payload from stdin.
-/// expects: { "tool_input": { "file_path": "..." }, "cwd": "..." }
+/// read the claude code hook JSON payload from stdin and parse it.
 fn parse_hook_stdin() -> Result<(String, Option<String>), String> {
     let mut input = String::new();
     // limit stdin to 1MB to prevent unbounded memory consumption
@@ -56,8 +59,17 @@ fn parse_hook_stdin() -> Result<(String, Option<String>), String> {
         .read_to_string(&mut input)
         .map_err(|e| format!("failed to read stdin: {}", e))?;
 
+    parse_hook_payload(&input)
+}
+
+/// parse a claude code hook JSON payload into `(file_path, cwd)`.
+/// expects: { "tool_input": { "file_path": "..." }, "cwd": "..." }
+///
+/// pure: it touches no filesystem, environment or working directory; resolving the
+/// path against `cwd` stays with the caller.
+pub fn parse_hook_payload(input: &str) -> Result<(String, Option<String>), String> {
     let payload: HookPayload =
-        serde_json::from_str(&input).map_err(|e| format!("failed to parse hook payload: {}", e))?;
+        serde_json::from_str(input).map_err(|e| format!("failed to parse hook payload: {}", e))?;
 
     if payload.tool_input.file_path.is_empty() {
         return Err("file_path is empty in hook payload".to_string());
@@ -263,11 +275,15 @@ pub fn run_check_file(stdin_json: bool, file_arg: Option<&str>) -> i32 {
         }
     };
 
+    // allowlist compiler errors quote the offending pattern; report only the fixed category.
     let allowlist = match config::build_allowlist(&project_config, &rules_list) {
         Ok(al) => al,
-        Err(e) => {
-            let error = sanitize_display(&e);
-            let _ = writeln!(std::io::stderr(), "[ERROR] {error}");
+        Err(_) => {
+            let _ = writeln!(
+                std::io::stderr(),
+                "[ERROR] failed to build allowlist: {}",
+                config::ALLOWLIST_ERROR_CATEGORY
+            );
             return 2;
         }
     };
@@ -438,6 +454,24 @@ mod tests {
         let json = r#"not valid json"#;
         let result = serde_json::from_str::<HookPayload>(json);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_hook_payload_returns_path_and_cwd() {
+        let json = r#"{"tool_input": {"file_path": "src/main.rs"}, "cwd": "/project"}"#;
+        assert_eq!(
+            parse_hook_payload(json),
+            Ok(("src/main.rs".to_string(), Some("/project".to_string())))
+        );
+    }
+
+    #[test]
+    fn parse_hook_payload_rejects_empty_file_path() {
+        let json = r#"{"tool_input": {"file_path": ""}}"#;
+        assert_eq!(
+            parse_hook_payload(json),
+            Err("file_path is empty in hook payload".to_string())
+        );
     }
 
     // -- file path resolution tests --

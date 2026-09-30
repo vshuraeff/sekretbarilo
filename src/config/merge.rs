@@ -1,6 +1,6 @@
 // config merging - combines multiple ProjectConfig instances into one effective config
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 
 use super::{AllowlistConfig, AllowlistRuleOverride, AuditConfig, ProjectConfig, SettingsConfig};
 use crate::scanner::rules::Rule;
@@ -38,8 +38,22 @@ fn merge_settings(base: SettingsConfig, overlay: SettingsConfig) -> SettingsConf
         detect_public_keys: overlay.detect_public_keys.or(base.detect_public_keys),
         exemption_layer: overlay.exemption_layer.or(base.exemption_layer),
         source_posture: overlay.source_posture.or(base.source_posture),
-        tier3_skip_test_paths: overlay.tier3_skip_test_paths.or(base.tier3_skip_test_paths),
+        heuristic_skip_test_paths: overlay
+            .heuristic_skip_test_paths
+            .or(base.heuristic_skip_test_paths),
+        rule_classes: merge_switches(base.rule_classes, overlay.rule_classes),
+        rules: merge_switches(base.rules, overlay.rules),
     }
+}
+
+/// merge switch maps key by key: a key the overlay sets wins, every other key
+/// of the base is kept (a nearer layer never wipes the whole table).
+fn merge_switches<K: Ord>(
+    mut base: BTreeMap<K, bool>,
+    overlay: BTreeMap<K, bool>,
+) -> BTreeMap<K, bool> {
+    base.extend(overlay);
+    base
 }
 
 /// merge rules by id: overlay rule with same id replaces base; new ids are appended.
@@ -111,6 +125,7 @@ mod tests {
             keywords: vec![id.to_string()],
             entropy_threshold: None,
             allowlist: RuleAllowlist::default(),
+            class: None,
         }
     }
 
@@ -122,7 +137,9 @@ mod tests {
                 detect_public_keys: None,
                 exemption_layer: None,
                 source_posture: None,
-                tier3_skip_test_paths: None,
+                heuristic_skip_test_paths: None,
+                rule_classes: Default::default(),
+                rules: Default::default(),
             },
             ..Default::default()
         };
@@ -132,7 +149,9 @@ mod tests {
                 detect_public_keys: None,
                 exemption_layer: None,
                 source_posture: None,
-                tier3_skip_test_paths: None,
+                heuristic_skip_test_paths: None,
+                rule_classes: Default::default(),
+                rules: Default::default(),
             },
             ..Default::default()
         };
@@ -148,7 +167,9 @@ mod tests {
                 detect_public_keys: None,
                 exemption_layer: None,
                 source_posture: None,
-                tier3_skip_test_paths: None,
+                heuristic_skip_test_paths: None,
+                rule_classes: Default::default(),
+                rules: Default::default(),
             },
             ..Default::default()
         };
@@ -212,6 +233,7 @@ mod tests {
             keywords: vec!["custom_aws".to_string()],
             entropy_threshold: Some(4.0),
             allowlist: RuleAllowlist::default(),
+            class: None,
         };
         let overlay = ProjectConfig {
             rules: vec![overlay_rule],
@@ -258,7 +280,9 @@ mod tests {
                 detect_public_keys: None,
                 exemption_layer: None,
                 source_posture: None,
-                tier3_skip_test_paths: None,
+                heuristic_skip_test_paths: None,
+                rule_classes: Default::default(),
+                rules: Default::default(),
             },
             allowlist: AllowlistConfig {
                 paths: vec!["vendor/.*".to_string()],
@@ -274,7 +298,9 @@ mod tests {
                 detect_public_keys: None,
                 exemption_layer: None,
                 source_posture: None,
-                tier3_skip_test_paths: None,
+                heuristic_skip_test_paths: None,
+                rule_classes: Default::default(),
+                rules: Default::default(),
             },
             allowlist: AllowlistConfig {
                 paths: vec!["generated/.*".to_string()],
@@ -290,7 +316,9 @@ mod tests {
                 detect_public_keys: None,
                 exemption_layer: None,
                 source_posture: None,
-                tier3_skip_test_paths: None,
+                heuristic_skip_test_paths: None,
+                rule_classes: Default::default(),
+                rules: Default::default(),
             },
             allowlist: AllowlistConfig {
                 paths: vec!["tmp/.*".to_string()],

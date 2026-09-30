@@ -1,7 +1,7 @@
 # dotted-identifier: fully qualified module, class and symbol paths in code, configuration and logs.
 # a dotted path is a name. it is long and mixed-case, but it is not an opaque token.
-# known gap: a dotted name whose every segment is CamelCase, with no lower-case or snake_case
-# segment to anchor it, is reported: `resolver: System.Collections.Generic.Dictionary.TryGetValue`.
+# a dotted name whose every segment is CamelCase, with no lower-case or snake_case
+# segment to anchor it, is recognized as words too, not reported as an opaque value.
 strategy: hummingbot.strategy.strategy_v2_base.ExecutorOrchestrator
 logger = logging.getLogger("acme.widget.pipeline.transform.BatchWriter")
 handler: com.acme.widget.internal.transport.NettyChannelInitializer
@@ -12,3 +12,19 @@ module = "example.internal.reporting.aggregates.daily_totals"
 export_symbol: github.example.internal/acme/widget/internal/telemetry.NewRecorder
 resolver: acme.widget.internal.serialization.MessagePackFormatter
 callback = acme_widget.pipeline.transform.batch_writer.BatchWriterConfiguration
+# one separator between two camelCase segments reads as a dotted field path.
+event_path: hookSpecificOutput.hookEventName
+field = "sessionPayload.workspaceFolderPath"
+# a framework symbol opens with its prefix of capitals or a hungarian `k` (`NS`, `CGS`, `kCF`).
+# `org` and `co` are recognized now, so a reverse domain name carrying only those short
+# labels is not reported.
+# known gap: a reverse domain name with a short label outside the vocabulary, such as `cs`
+# (`identifier = "uk.cs.example.billing.ledger-export"`), is still reported. a label of two
+# or three letters cannot be told from a chunk of a token, and a random dotted lowercase
+# token passes a rule that admits one such label more than 2% of the time.
+usage = "NSAppleEventsUsageDescription"
+purpose = "NSBluetoothPeripheralUsageDescription"
+let sym = dlsym(handle, "CGSDefaultConnectionForThread")
+let name = kAXFocusedUIElementChangedNotification
+info_key = "UIApplicationSupportsIndirectInputEvents"
+version_key = "kCFBundleShortVersionString"

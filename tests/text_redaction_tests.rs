@@ -78,6 +78,7 @@ fn rule(id: &str, regex: &str, keyword: &str, entropy: Option<f64>) -> Rule {
         keywords: vec![keyword.into()],
         entropy_threshold: entropy,
         allowlist: RuleAllowlist::default(),
+        class: None,
     }
 }
 

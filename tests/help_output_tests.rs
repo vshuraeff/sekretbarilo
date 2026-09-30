@@ -9,6 +9,17 @@ fn help_lists_claude_install_settings_and_redact_examples() {
             .unwrap();
         assert!(output.status.success(), "{args:?}");
         let stderr = String::from_utf8_lossy(&output.stderr);
+        if args == ["--help"].as_slice() {
+            for expected in [
+                "heuristic is disabled by default",
+                "[settings.rule_classes]",
+                "rule-id switches override class switches",
+                "\"generic-high-entropy-value\" = true",
+                "report disabled rules and exemption decisions",
+            ] {
+                assert!(stderr.contains(expected), "{stderr}");
+            }
+        }
         for expected in [
             "--mode block|redact",
             "--settings <path>",

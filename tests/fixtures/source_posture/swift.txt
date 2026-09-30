@@ -1,0 +1,13 @@
+# outcome tab source shape; first two rows are the settings controls
+fire	let k = "{S32}"
+# known gap: this matrix scans single added lines without the complete source blob, and the swift parser posture needs that blob, so bare code and comments remain full-posture findings here.
+fire	let k = {S32}
+fire	// k = {S32}
+fire	/* k = {S32} */
+fire	let k = "\(name){S32}"
+fire	let k = "\"{S32}"
+fire	let k = "plain"; let control = "{S32}"
+fire	key=#"{S32}"#
+fire	let k = #"{S32}"#
+fire	let k = ##"{S32}"##
+fire	configure(token: #"{S32}"#)

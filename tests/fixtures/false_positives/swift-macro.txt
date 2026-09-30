@@ -1,0 +1,20 @@
+# swift-macro: freestanding macros, attributes and rust attributes applied to a source expression.
+# a `#name` or `@Name` head, or a `#[` / `#![` attribute, applies to the balanced group after it,
+# and the syntax exemption reads the head and its group as one expression. every identifier inside
+# the group is still checked, so an opaque token in an argument keeps the line reported.
+# known gap: a macro call left open at the line end after a bare argument, the first line of a
+# multi-line `#expect(` whose comparison continues on the next line, is still reported, because an
+# open call is accepted only when its tail breaks after an opener, a separator or a closed group.
+        #expect(settings.workspaceIdentifier)
+        #expect(result.configuration.sessionCount)
+        #expect(!store.pendingTransitions.isEmpty)
+        #expect(manager.installedHooks.contains(expectedHookName))
+        #expect(profile.displayName.localizedUppercase(.current))
+        #require(controller.activeWorkspace.selectedSession)
+        #expect(settings.transitionAnimations(.disabled))
+        #require(store.workspaces.first?.selectedSessionIdentifier)
+        #expect(Session(identifier: sessionName).displayTitle(forWindow: 2) == expectedTitle)
+            let name = #selector(WorkspaceController.handleSelection(_:))
+    @AppStorage(PreferenceKeys.preferredColorScheme)
+    @NSApplicationDelegateAdaptor(ApplicationDelegate.self)
+#[serial(environment_lock)]

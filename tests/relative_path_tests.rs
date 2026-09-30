@@ -75,6 +75,7 @@ fn fragment_scanner() -> CompiledScanner {
         keywords: Vec::new(),
         entropy_threshold: Some(4.0),
         allowlist: RuleAllowlist::default(),
+        class: None,
     }])
     .unwrap()
 }

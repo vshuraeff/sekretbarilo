@@ -15,9 +15,104 @@ use crate::scanner::literals::{LineLiterals, LiteralTracker};
 use crate::scanner::password;
 use crate::scanner::pubkey;
 use crate::scanner::rules::CompiledScanner;
+use crate::scanner::source_literals::{BodyKind, ParsedLine};
 
 /// minimum number of files to trigger parallel processing with rayon
 const PARALLEL_FILE_THRESHOLD: usize = 4;
+
+/// the keywordless tier-3 rule that the exemption layer and the source postures govern.
+const ENTROPY_RULE: &str = "generic-high-entropy-value";
+
+/// the capture group of a contextual rule's unquoted `NAME=value` / `name: value` alternative
+/// (rules.toml); its value is dropped when it is not a whole word or is a path, a reference, code
+/// or words, see `evaluate_candidate`.
+const CONTEXT_UNQUOTED_GROUP: &str = "context_unquoted";
+
+/// the contextual rules that read a value under a credential name (`API_KEY`, `*_TOKEN`,
+/// `*_SECRET`) in quoted and unquoted form.
+const NAMED_KEY_RULES: [&str; 3] = [
+    "generic-api-key",
+    "generic-secret-assignment",
+    "generic-token-assignment",
+];
+
+/// the share of distinct bytes, letters folded to one case, at or above which a value of token
+/// length that clears its rule's entropy threshold is never taken for a source expression.
+/// a member chain repeats the letters of its words and of the credential name it reads
+/// (`config.providers.anthropic.api_key` 0.56, `os.environ.GITHUB_TOKEN` 0.65,
+/// `app.config.SECRET_KEY` 0.76 at 3.98 bits, which the 3.5-bit secret rule would report); the
+/// case fold keeps `settings.DJANGO_SECRET_KEY` at 0.62 rather than the 0.81 its mixed case gives.
+/// the guard protects a value that clears its threshold with that many distinct bytes, such as a
+/// random single-case value of 20 or 21 bytes over a 4.0-bit threshold, which needs 17 distinct
+/// (`plmoknijuh.bqygtverfc` is 1.0). a longer random single-case value clears 4.0 bits with fewer
+/// (17 of 24 is 0.71), as does one of 20 bytes over 3.5 bits (about 13 of 20), so those rest on
+/// `wordlike_piece` alone; a random mixed-case value fails `wordlike_piece` before this matters.
+const NEAR_DISTINCT_RATIO: f64 = 0.8;
+
+/// an unquoted named value that reads as code or words, not a credential: a member chain or index
+/// (`self.data.api_key`, `text[token_start`), a type or other identifier (`SecretStr`) or a name
+/// made of words (`ingress-tls-secret`), optionally ending in a call-argument or statement `,`/`;`.
+/// the shape is not enough: every alphanumeric piece must read as words or be a number, the value
+/// must carry at least two letter words, or one below `LONE_WORD_MAX_LEN` bytes, so a lone letter
+/// run of token length is never one, and no run of short groups may cross it. a value that could be a token standing alone (`MIN_ENTROPY_LENGTH` bytes
+/// or more, the rule's own `entropy_floor` cleared, bytes near-distinct under
+/// `NEAR_DISTINCT_RATIO`) is never one, whatever its pieces read as.
+fn is_source_expression_value(value: &[u8], entropy_floor: Option<f64>) -> bool {
+    use crate::scanner::wordshape;
+    let value = value
+        .strip_suffix(b",")
+        .or_else(|| value.strip_suffix(b";"))
+        .unwrap_or(value);
+    if value.len() >= entropy::MIN_ENTROPY_LENGTH
+        && entropy_floor.is_none_or(|threshold| entropy::shannon_entropy(value) >= threshold)
+        && folded_distinct_ratio(value) >= NEAR_DISTINCT_RATIO
+    {
+        return false;
+    }
+    let mut letter_words = 0;
+    for piece in value
+        .split(|b| !b.is_ascii_alphanumeric())
+        .filter(|piece| !piece.is_empty())
+    {
+        if piece.iter().all(u8::is_ascii_digit) {
+            continue;
+        }
+        let Some(words) = wordshape::wordlike_piece(piece) else {
+            return false;
+        };
+        letter_words += words.long + words.short + words.vowelless;
+    }
+    // a lone word is a word value only under the api and token rules' 16-byte minimum, where
+    // the secret rule reads a chart's secret name (`existingSecret: postgresql`) or a bullet
+    // (`- secret: required`); a longer lone letter run may be a token.
+    (letter_words >= 2 || (letter_words == 1 && value.len() < LONE_WORD_MAX_LEN))
+        // recall guard: an opaque value cut into short groups reads as words piece by piece
+        && !wordshape::is_chunked_with_digits(value, b"")
+}
+
+/// the length below which one word alone reads as a word value (`is_source_expression_value`).
+const LONE_WORD_MAX_LEN: usize = 16;
+
+/// distinct bytes over length, ascii letters folded to lowercase.
+fn folded_distinct_ratio(value: &[u8]) -> f64 {
+    let mut seen = [false; 256];
+    let mut distinct = 0_usize;
+    for byte in value {
+        let slot = &mut seen[usize::from(byte.to_ascii_lowercase())];
+        if !*slot {
+            *slot = true;
+            distinct += 1;
+        }
+    }
+    distinct as f64 / value.len().max(1) as f64
+}
+
+/// whether the unquoted value ending at `end` ends its word: the input ends there or whitespace
+/// follows. the value class stops at a quote, backtick, `(` or non-ascii byte, and a value cut
+/// there would be a prefix of the word, so the alternative is not read at all.
+fn ends_word(input: &[u8], end: usize) -> bool {
+    input.get(end).is_none_or(u8::is_ascii_whitespace)
+}
 
 /// a detected secret finding
 #[derive(Debug, Clone)]
@@ -39,7 +134,7 @@ pub struct Finding {
 ///      4a. source posture: classify paths only with path filters enabled; known
 ///      literal context gates code independently of exemption_layer. file/testpath
 ///      skips require exemption_layer; effective test-path skipping requires
-///      apply_path_filters && exemption_layer && tier3_skip_test_paths.
+///      apply_path_filters && exemption_layer && heuristic_skip_test_paths.
 ///      regex candidates own exactly matching normalized literal bodies, including
 ///      suppressed candidates; other bodies are evaluated without key context.
 ///      scan uses staged context; audit/check-file use their full file context;
@@ -48,6 +143,9 @@ pub struct Finding {
 ///      4b. entropy value shape gates, switchable exemptions and assignment hex bypass
 ///      with a fixed 2.0-bit hex-symbol entropy floor
 ///      4c. user entropy-key allowlist (independent of the exemption switch)
+///      4d. the unquoted `KEY=value` / `key: value` alternative of the named-key contextual
+///      rules drops a word it read only in part and a path-shaped, reference-rooted, code or
+///      word value (independent of the exemption switch)
 ///   5. per-rule allowlist check (value regex + path match)
 ///   6. variable references (URL passwords skip pure references only, not defaults)
 ///      6.5. template lines skip context-dependent and password/credential rules
@@ -57,7 +155,8 @@ pub struct Finding {
 ///      8.5. password strength veto for generic-password-assignment only
 ///      8.6. credential strength with entropy fallback; 8.7. public key filtering
 ///   9. entropy evaluation (with doc file bonus if applicable), except assignment
-///      passwords and layer-enabled hex bypass values; URL passwords use their
+///      passwords, layer-enabled hex bypass values and exact-length hex values of the
+///      named-key contextual rules; URL passwords use their
 ///      configured threshold, if any, without a password-strength veto
 ///
 /// for diffs with many files, processing is parallelized with rayon.
@@ -137,6 +236,37 @@ fn scan_file_with_path_filters(
     let mut added_lines: Vec<_> = file.added_lines.iter().collect();
     added_lines.sort_by_key(|line| line.line_number);
     let mut literals = std::collections::HashMap::new();
+    // parser posture: proved literal bodies and their kinds, per added line.
+    let mut parsed_lines = std::collections::HashMap::new();
+    let filter_literal_findings =
+        apply_path_filters && crate::scanner::source_literals::supports_path(&file.path);
+    if filter_literal_findings
+        && allowlist.effective_source_posture() == SourcePosture::Literals
+        && let Some(full) = &file.context
+        && let Some(mut parsed) =
+            crate::scanner::source_literals::analyze_with_kinds(&file.path, full)
+    {
+        let full_lines: Vec<_> = full.split(|&byte| byte == b'\n').collect();
+        let exact_context = added_lines.iter().all(|added| {
+            added
+                .line_number
+                .checked_sub(1)
+                .and_then(|index| full_lines.get(index))
+                .is_some_and(|line| {
+                    line.strip_suffix(b"\r").unwrap_or(line)
+                        == added.content.strip_suffix(b"\r").unwrap_or(&added.content)
+                })
+        }) && !added_lines
+            .windows(2)
+            .any(|pair| pair[0].line_number == pair[1].line_number);
+        if exact_context {
+            for added in &added_lines {
+                if let Some(line) = parsed.get_mut(added.line_number - 1).and_then(Option::take) {
+                    parsed_lines.insert(added.line_number, line);
+                }
+            }
+        }
+    }
     if let Some(language) = language
         && allowlist.effective_source_posture() == SourcePosture::Literals
     {
@@ -168,7 +298,8 @@ fn scan_file_with_path_filters(
             }
         } else {
             for line in &added_lines {
-                let line_literals = tracker.feed(&line.content, line.line_number);
+                let content = line.content.strip_suffix(b"\r").unwrap_or(&line.content);
+                let line_literals = tracker.feed(content, line.line_number);
                 known &= line_literals.known && tracker.is_known();
                 if known {
                     literals.insert(line.line_number, line_literals);
@@ -180,6 +311,7 @@ fn scan_file_with_path_filters(
     for pair in added_lines.windows(2) {
         if pair[0].line_number == pair[1].line_number {
             literals.remove(&pair[0].line_number);
+            parsed_lines.remove(&pair[0].line_number);
         }
     }
     let num_rules = scanner.rules.len();
@@ -209,6 +341,7 @@ fn scan_file_with_path_filters(
             is_doc_file: is_doc,
             generic_rule_skip,
             literals: literals.get(&added_line.line_number),
+            parsed: parsed_lines.get(&added_line.line_number),
         };
         scan_line(&ctx, &mut candidate_bits, &mut findings);
     }
@@ -217,7 +350,7 @@ fn scan_file_with_path_filters(
 }
 
 /// check if a rule detects public keys (gated behind detect_public_keys setting)
-fn is_public_key_rule(rule_id: &str) -> bool {
+pub fn is_public_key_rule(rule_id: &str) -> bool {
     rule_id == "pem-public-key"
         || rule_id == "pgp-public-key-block"
         || rule_id == "openssh-public-key"
@@ -254,6 +387,283 @@ fn is_env_style_assignment(input: &[u8], key_start: usize, value: &[u8]) -> bool
     !prefix.is_empty() && prefix.iter().all(|&byte| matches!(byte, b'\t' | b' '))
 }
 
+/// shell script extensions where an unquoted `KEY=value` word is source syntax, not incidental
+/// text; the config family (`config_syntax`), Dockerfiles and Makefiles get the same treatment
+/// below.
+const SHELL_SCRIPT_EXTENSIONS: &[&str] = &["sh", "bash", "zsh", "ksh", "fish"];
+
+/// whether an already-lowercased leaf name is a Dockerfile (`Dockerfile`, `*.dockerfile`) or a
+/// Makefile (`Makefile`, `*.mk`).
+fn is_dockerfile_or_makefile_leaf(leaf_lower: &str) -> bool {
+    leaf_lower == "dockerfile"
+        || leaf_lower.ends_with(".dockerfile")
+        || leaf_lower == "makefile"
+        || leaf_lower.ends_with(".mk")
+}
+
+/// whether an unquoted `KEY=value` shell-word literal, and the stricter double-quoted shell
+/// evaluation check below, apply on this surface: a shell script, the config/dotenv family
+/// `config_syntax` recognizes, a Dockerfile, a Makefile, or the pathless surface
+/// (`scan_text`/`redact_text`, env dumps). every other file -- Python, JS, Rust, Go, Ruby, Java,
+/// ... -- treats `key=value` as a source expression, never a literal.
+fn is_shell_word_literal_surface(file_path: Option<&str>) -> bool {
+    let Some(path) = file_path else {
+        return true;
+    };
+    if config_syntax(path).is_some() {
+        return true;
+    }
+    let leaf = path.rsplit('/').next().unwrap_or(path).to_ascii_lowercase();
+    if is_dockerfile_or_makefile_leaf(&leaf) {
+        return true;
+    }
+    leaf.rsplit_once('.')
+        .is_some_and(|(_, extension)| SHELL_SCRIPT_EXTENSIONS.contains(&extension))
+}
+
+/// whether every `.`-separated segment of `secret` is identifier-shaped
+/// (`[A-Za-z_][A-Za-z0-9_]*`), with at least one dot present: a source-language dotted reference
+/// (`cfg.pw1_x`) rather than a literal value.
+fn is_dotted_identifier_chain(secret: &[u8]) -> bool {
+    if !secret.contains(&b'.') {
+        return false;
+    }
+    secret.split(|&byte| byte == b'.').all(|segment| {
+        matches!(segment.first(), Some(&byte) if byte.is_ascii_alphabetic() || byte == b'_')
+            && segment[1..]
+                .iter()
+                .all(|&byte| byte.is_ascii_alphanumeric() || byte == b'_')
+    })
+}
+
+/// whether an unquoted assignment value is shaped like a source-language expression rather than a
+/// literal: a dotted identifier chain, or a value the capture had to stop right before a call,
+/// index or statement-end token (`(`, `)`, `[`, `]`, `;`) that follows it directly in the source.
+/// a single bare identifier without a dot is never rejected here: whether it counts as a literal
+/// is entirely up to the surface gate above. on a shell-evaluated surface `;` separates commands
+/// (`PW=value;cmd`), so it ends a literal word there instead of marking an expression.
+fn is_expression_shape(
+    input: &[u8],
+    secret: &[u8],
+    value_end: usize,
+    shell_evaluated: bool,
+) -> bool {
+    let terminator = match input.get(value_end) {
+        Some(b'(' | b')' | b'[' | b']') => true,
+        Some(b';') => !shell_evaluated,
+        _ => false,
+    };
+    terminator || is_dotted_identifier_chain(secret)
+}
+
+/// whether a double-quoted value's unescaped `$` or a backtick pair is evaluated on this surface:
+/// a shell script, a dotenv file (`config_syntax` `Env`; sourced by a shell), a Dockerfile, a
+/// Makefile, or the pathless surface. this is narrower than `is_shell_word_literal_surface`
+/// above: YAML, INI and TOML are declarative formats no shell ever parses, so a double-quoted
+/// value there keeps today's quote handling even though the same file admits the unquoted
+/// `KEY=value` shell-word case.
+fn is_shell_evaluated_surface(file_path: Option<&str>) -> bool {
+    let Some(path) = file_path else {
+        return true;
+    };
+    if config_syntax(path) == Some(ConfigSyntax::Env) {
+        return true;
+    }
+    let leaf = path.rsplit('/').next().unwrap_or(path).to_ascii_lowercase();
+    if is_dockerfile_or_makefile_leaf(&leaf) {
+        return true;
+    }
+    leaf.rsplit_once('.')
+        .is_some_and(|(_, extension)| SHELL_SCRIPT_EXTENSIONS.contains(&extension))
+}
+
+/// whether a double-quoted shell-surface value contains an unescaped `$` or any backtick: either
+/// one the shell evaluates before the quotes produce a literal string.
+fn shell_double_quote_requires_evaluation(secret: &[u8]) -> bool {
+    let mut escaped = false;
+    for &byte in secret {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        match byte {
+            b'\\' => escaped = true,
+            b'$' | b'`' => return true,
+            _ => {}
+        }
+    }
+    false
+}
+
+/// whether a password assignment's right-hand side is a concrete literal: a single-quoted value
+/// (the shell never expands it), a double- or backtick-quoted value without interpolation -- on a
+/// shell-evaluated surface (a shell script, a dotenv file, a Dockerfile, a Makefile, or the
+/// pathless one) a double-quoted value additionally rejects an unescaped `$` or a backtick, since
+/// the shell would evaluate it, and a backtick pair is always command substitution there, never a
+/// literal, while YAML/INI/TOML and every other language keep their existing quote handling (a
+/// backtick-quoted value there is a JS template literal or a Go raw string, unaffected) -- or a
+/// shell assignment word (`KEY=value`, nothing around the `=`, at line start or after export) that
+/// is confined to a shell/env/config surface and is not itself shaped like a source expression. an
+/// unquoted source identifier or expression (`password = form.pw1`, `password: cfg.pw1`,
+/// `password=cfg.pw1_x`) is neither; unquoted values in configuration files are decided by
+/// `is_config_value_literal`.
+fn is_concrete_password_literal(
+    input: &[u8],
+    file_path: Option<&str>,
+    key_capture: Option<regex::bytes::Match<'_>>,
+    value: &Range<usize>,
+) -> bool {
+    let secret = &input[value.clone()];
+    let opening = value.start.checked_sub(1).map(|index| input[index]);
+    if let Some(quote) = opening.filter(|byte| matches!(byte, b'"' | b'\'' | b'`')) {
+        let shell_evaluated = is_shell_evaluated_surface(file_path);
+        if quote == b'`' && shell_evaluated {
+            // command substitution: evaluated even without a `$` inside (`` `cat</pw1` ``).
+            return false;
+        }
+        if input.get(value.end) != Some(&quote)
+            || secret
+                .windows(2)
+                .any(|pair| matches!(pair, b"${" | b"$(" | b"#{"))
+        {
+            return false;
+        }
+        return quote != b'"'
+            || !shell_evaluated
+            || !shell_double_quote_requires_evaluation(secret);
+    }
+    key_capture.is_some_and(|key| {
+        input.get(key.end()..value.start) == Some(b"=".as_slice())
+            && is_env_style_assignment(input, key.start(), secret)
+            && is_shell_word_literal_surface(file_path)
+            && !secret.iter().any(|&byte| matches!(byte, b'$' | b'`'))
+            && !is_expression_shape(
+                input,
+                secret,
+                value.end,
+                is_shell_evaluated_surface(file_path),
+            )
+    })
+}
+
+/// configuration and data formats whose unquoted assignment values are data, not source
+/// expressions.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ConfigSyntax {
+    Yaml,
+    Ini,
+    Toml,
+    Env,
+}
+
+/// the configuration format of a path, by extension first so `.env.yaml` stays yaml; a leaf of
+/// `.env` or `.env.<suffix>` is a dotenv file whatever its suffix (`.envrc` is a shell script).
+fn config_syntax(path: &str) -> Option<ConfigSyntax> {
+    let leaf = path.rsplit('/').next().unwrap_or(path).to_ascii_lowercase();
+    let by_extension = leaf
+        .rsplit_once('.')
+        .and_then(|(_, extension)| match extension {
+            "yaml" | "yml" => Some(ConfigSyntax::Yaml),
+            "ini" | "cfg" | "conf" | "properties" => Some(ConfigSyntax::Ini),
+            "toml" => Some(ConfigSyntax::Toml),
+            "env" => Some(ConfigSyntax::Env),
+            _ => None,
+        });
+    by_extension.or_else(|| leaf.starts_with(".env.").then_some(ConfigSyntax::Env))
+}
+
+/// whether an unquoted password value in a configuration file is a concrete literal: the whole
+/// value of a `key: value` yaml mapping entry (key after indentation and list markers), or of a
+/// line-start `key = value` entry (`:` too in ini-style files), up to an end-of-line comment,
+/// without whitespace, expansion or interpolation, and not a yaml alias, anchor or tag.
+fn is_config_value_literal(
+    input: &[u8],
+    syntax: ConfigSyntax,
+    key: Range<usize>,
+    value: &Range<usize>,
+) -> bool {
+    let secret = &input[value.clone()];
+    // a dotted identifier chain or a value cut short before a call/index/statement-end token is a
+    // source expression on every surface, config files included (concern codex-cl-password-001).
+    if is_expression_shape(input, secret, value.end, syntax == ConfigSyntax::Env) {
+        return false;
+    }
+    // `%` and `@` are reserved yaml indicators that cannot start a plain scalar.
+    let reserved_start: &[u8] = if syntax == ConfigSyntax::Yaml {
+        b"*&!%@"
+    } else {
+        b"*&!"
+    };
+    if secret
+        .first()
+        .is_none_or(|byte| reserved_start.contains(byte))
+        || secret
+            .iter()
+            .any(|&byte| byte.is_ascii_whitespace() || matches!(byte, b'$' | b'`'))
+        || secret
+            .windows(2)
+            .any(|pair| matches!(pair, b"#{" | b"{{" | b"%("))
+    {
+        return false;
+    }
+
+    let mut key_start = key.start;
+    let mut separator = &input[key.end..value.start];
+    if let Some(quote) = key
+        .start
+        .checked_sub(1)
+        .map(|index| input[index])
+        .filter(|byte| matches!(byte, b'"' | b'\''))
+    {
+        let Some(rest) = separator.strip_prefix(&[quote]) else {
+            return false;
+        };
+        separator = rest;
+        key_start -= 1;
+    }
+    let separator_ok = match syntax {
+        ConfigSyntax::Yaml => separator
+            .trim_ascii_start()
+            .strip_prefix(b":")
+            .is_some_and(|gap| {
+                !gap.is_empty() && gap.iter().all(|&byte| matches!(byte, b' ' | b'\t'))
+            }),
+        ConfigSyntax::Ini => matches!(separator.trim_ascii(), b"=" | b":"),
+        ConfigSyntax::Toml | ConfigSyntax::Env => separator.trim_ascii() == b"=",
+    };
+    let prefix_ok = match syntax {
+        ConfigSyntax::Yaml => {
+            let line_start = input[..key_start]
+                .iter()
+                .rposition(|&byte| byte == b'\n')
+                .map_or(0, |index| index + 1);
+            let mut prefix = input[line_start..key_start].trim_ascii_start();
+            while let Some(rest) = prefix.strip_prefix(b"-").filter(|rest| {
+                rest.first()
+                    .is_some_and(|&byte| matches!(byte, b' ' | b'\t'))
+            }) {
+                prefix = rest.trim_ascii_start();
+            }
+            prefix.is_empty()
+        }
+        _ => is_env_style_assignment(input, key_start, secret),
+    };
+    if !separator_ok || !prefix_ok {
+        return false;
+    }
+
+    // a value the capture cut short (`abc,def`, `foo bar`) is not the whole plain value.
+    let line_end = input[value.end..]
+        .iter()
+        .position(|&byte| byte == b'\n')
+        .map_or(input.len(), |index| value.end + index);
+    let tail = &input[value.end..line_end];
+    let comment = tail.trim_ascii_start();
+    comment.is_empty()
+        || (comment.len() < tail.len()
+            && (comment[0] == b'#' || (syntax == ConfigSyntax::Ini && comment[0] == b';')))
+}
+
 // find the legacy boundary when the env-style gate declines the full unquoted capture.
 fn first_unescaped_quote(value: &[u8]) -> Option<usize> {
     let mut escaped = false;
@@ -267,6 +677,35 @@ fn first_unescaped_quote(value: &[u8]) -> Option<usize> {
         }
     }
     None
+}
+
+/// a uri scheme name: a letter, then letters, digits, `+`, `-` or `.` (rfc 3986 section 3.1).
+fn is_uri_scheme(key: &[u8]) -> bool {
+    key.first().is_some_and(u8::is_ascii_alphabetic)
+        && key
+            .iter()
+            .all(|&byte| byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'-' | b'.'))
+}
+
+/// the text between a digest key and its value: a bare `:` for an unquoted value, as in a header
+/// or a yaml field, and `:` or `=` before the opening quote, string prefix or raw-string `#`s of a
+/// quoted value, as in json (`"integrity": "sha512-..."`) or an html attribute.
+fn is_digest_separator(between: &[u8], quoted: bool) -> bool {
+    if !quoted {
+        return between.trim_ascii() == b":";
+    }
+    let Some(opening) = between
+        .strip_suffix(b"\"")
+        .or_else(|| between.strip_suffix(b"'"))
+    else {
+        return false;
+    };
+    let prefix = opening
+        .iter()
+        .rev()
+        .take_while(|&&byte| byte.is_ascii_alphanumeric() || byte == b'#')
+        .count();
+    matches!(opening[..opening.len() - prefix].trim_ascii(), b":" | b"=")
 }
 
 /// check if a rule extracts credentials from connection strings/URLs.
@@ -290,6 +729,7 @@ struct ScanLineContext<'a> {
     is_doc_file: bool,
     generic_rule_skip: Option<&'static str>,
     literals: Option<&'a LineLiterals>,
+    parsed: Option<&'a ParsedLine>,
 }
 
 /// scan a single line against all rules using the aho-corasick pre-filter.
@@ -303,16 +743,214 @@ fn scan_line(ctx: &ScanLineContext<'_>, candidate_bits: &mut [bool], findings: &
         allowlist: ctx.allowlist,
         is_doc_file: ctx.is_doc_file,
         generic_rule_skip: ctx.generic_rule_skip,
-        literals: ctx.literals,
+        // parser posture matches in full posture and clips the tier-3 findings afterwards.
+        literals: if ctx.parsed.is_some() {
+            None
+        } else {
+            ctx.literals
+        },
     };
-    scan_matches(&matches, candidate_bits, |rule_id, range| {
-        findings.push(Finding {
-            file: ctx.file_path.to_string(),
-            line: ctx.line_number,
-            rule_id: rule_id.to_string(),
-            matched_value: ctx.line[range].to_vec(),
-        });
+    let clip = ctx.parsed.and_then(|parsed| {
+        ctx.scanner
+            .rules
+            .iter()
+            .find(|rule| rule.id == ENTROPY_RULE)
+            .map(|rule| (parsed, rule))
     });
+    let mut seen = std::collections::HashSet::new();
+    let mut push = |rule_id: &str, range: Range<usize>| {
+        if seen.insert((rule_id.to_owned(), range.start, range.end)) {
+            findings.push(Finding {
+                file: ctx.file_path.to_string(),
+                line: ctx.line_number,
+                rule_id: rule_id.to_string(),
+                matched_value: ctx.line[range].to_vec(),
+            });
+        }
+    };
+    scan_matches(&matches, candidate_bits, |rule_id, range| match clip {
+        Some((parsed, rule)) if rule_id == ENTROPY_RULE => {
+            clip_to_literal_bodies(&matches, rule, parsed, range, &mut push);
+        }
+        _ => push(rule_id, range),
+    });
+}
+
+/// parser posture: a surviving tier-3 finding keeps only the proved literal text it covers. a
+/// finding disjoint from every body is code; one inside a single string body stands as evaluated;
+/// otherwise each body segment it touches is evaluated again as a keyless literal body, so an
+/// interpolation hole, a string prefix or regex delimiters never lend their bytes to a value, and
+/// a regex body reaches the regex step. pieces of which none is reported on its own stand whole
+/// when together they read as one chunked token, and so does a python finding holding a hole whose
+/// expression and format specification read as one (`format_spec_holes`).
+fn clip_to_literal_bodies(
+    ctx: &MatchContext<'_>,
+    rule: &crate::scanner::rules::CompiledRule,
+    parsed: &ParsedLine,
+    range: Range<usize>,
+    emit: &mut impl FnMut(&str, Range<usize>),
+) {
+    let segments: Vec<Range<usize>> = parsed
+        .literals
+        .bodies
+        .iter()
+        .filter(|body| range.start < body.end && body.start < range.end)
+        .map(|body| range.start.max(body.start)..range.end.min(body.end))
+        .collect();
+    match segments.as_slice() {
+        [] => trace_exemption(ctx, emit, "code", range),
+        [segment] if *segment == range && parsed.body_kind(segment) != BodyKind::Regex => {
+            emit(ENTROPY_RULE, range);
+        }
+        // a python format specification is literal text python hands to `__format__` verbatim,
+        // behind an expression the parser reads as code. a token cut into short groups by `:`
+        // puts its first group in that expression and the rest in the specification: when the
+        // specification of a hole is no format mini-language and the hole's text reads as a run
+        // of short groups, nested replacement fields breaking the run, the hole is not proved to
+        // be a name and a specification, and the finding stands whole, as the full posture
+        // evaluated it. a mini-language specification (`:>12`, `:08x`) holds no token, so a run
+        // across it is the expression's attribute chain.
+        _ if is_python_path(ctx.file_path)
+            && format_spec_holes(ctx.input, range.clone(), &parsed.literals.bodies)
+                .iter()
+                .any(|(hole, specification)| {
+                    !is_format_mini_language(specification)
+                        && crate::scanner::wordshape::is_chunked_with_digits(
+                            &ctx.input[hole.clone()],
+                            b"{}",
+                        )
+                }) =>
+        {
+            emit(ENTROPY_RULE, range);
+        }
+        _ => {
+            if segments.len() > 1 || segments[0] != range {
+                trace_exemption(ctx, emit, "clip", range.clone());
+            }
+            let mut reported = false;
+            for segment in &segments {
+                evaluate_candidate(
+                    ctx,
+                    rule,
+                    Candidate::Call(segment.clone()),
+                    &mut |rule_id: &str, found: Range<usize>| {
+                        reported |= rule_id == ENTROPY_RULE;
+                        emit(rule_id, found);
+                    },
+                    &mut unowned,
+                );
+            }
+            // pieces of one value cut apart by holes or by implicit concatenation, none reported
+            // on its own: when the pieces together read as a run of short groups, they are one
+            // chunked token and the finding stands whole, as the full posture evaluated it. the
+            // parser proves a hole's bytes to be code, so the run is read over the literal pieces.
+            if !reported
+                && segments.len() > 1
+                && segments
+                    .iter()
+                    .all(|segment| parsed.body_kind(segment) != BodyKind::Regex)
+            {
+                let mut pieces = Vec::with_capacity(range.len() + segments.len());
+                for segment in &segments {
+                    pieces.extend_from_slice(&ctx.input[segment.clone()]);
+                    pieces.push(b' ');
+                }
+                if crate::scanner::wordshape::is_chunked_with_digits(&pieces, b"") {
+                    emit(ENTROPY_RULE, range);
+                }
+            }
+        }
+    }
+}
+
+/// the f-string holes inside `range` that hold a format specification: the text between each
+/// hole's braces, and the specification's own text with its nested replacement fields left out.
+/// a hole is a `{` outside every literal body, closed by the `}` that matches it, holding a `:`
+/// outside every body at the hole's own nesting level. the parser reads the text before that `:`
+/// as the hole's expression and conversion, and the text after it as the specification, whose
+/// literal pieces are bodies. brackets inside a body are text, not nesting.
+fn format_spec_holes(
+    input: &[u8],
+    range: Range<usize>,
+    bodies: &[Range<usize>],
+) -> Vec<(Range<usize>, Vec<u8>)> {
+    let bodied = |index: usize| {
+        bodies
+            .iter()
+            .any(|body| body.start <= index && index < body.end)
+    };
+    let mut holes = Vec::new();
+    let mut index = range.start;
+    while index < range.end {
+        if input[index] != b'{' || bodied(index) {
+            index += 1;
+            continue;
+        }
+        let mut depth = 0_usize;
+        let mut specification: Option<Vec<u8>> = None;
+        let mut close = None;
+        for (inner, &byte) in input[..range.end].iter().enumerate().skip(index + 1) {
+            if bodied(inner) {
+                if depth == 0
+                    && let Some(text) = specification.as_mut()
+                {
+                    text.push(byte);
+                }
+                continue;
+            }
+            match byte {
+                b'(' | b'[' | b'{' => depth += 1,
+                b'}' if depth == 0 => {
+                    close = Some(inner);
+                    break;
+                }
+                b')' | b']' | b'}' => depth = depth.saturating_sub(1),
+                b':' if depth == 0 && specification.is_none() => specification = Some(Vec::new()),
+                _ => {}
+            }
+        }
+        let Some(close) = close else {
+            break;
+        };
+        if let Some(specification) = specification {
+            holes.push((index + 1..close, specification));
+        }
+        index = close + 1;
+    }
+    holes
+}
+
+/// whether a format specification, its nested replacement fields left out, is python's format
+/// mini-language: `[[fill]align][sign][z][#][0][width][grouping][.[precision][grouping]][type]`,
+/// where a nested field may have supplied any part.
+fn is_format_mini_language(specification: &[u8]) -> bool {
+    let align = |at: usize| matches!(specification.get(at), Some(b'<' | b'>' | b'=' | b'^'));
+    let mut index = if align(1) { 2 } else { usize::from(align(0)) };
+    let optional = |index: &mut usize, accepted: &[u8]| {
+        if specification
+            .get(*index)
+            .is_some_and(|byte| accepted.contains(byte))
+        {
+            *index += 1;
+        }
+    };
+    let digits = |index: &mut usize| {
+        while specification.get(*index).is_some_and(u8::is_ascii_digit) {
+            *index += 1;
+        }
+    };
+    optional(&mut index, b"+- ");
+    optional(&mut index, b"z");
+    optional(&mut index, b"#");
+    digits(&mut index);
+    optional(&mut index, b"_,");
+    if specification.get(index) == Some(&b'.') {
+        index += 1;
+        digits(&mut index);
+        optional(&mut index, b"_,");
+    }
+    optional(&mut index, b"bcdeEfFgGnosxX%");
+    index == specification.len()
 }
 
 /// matching policy shared by line-oriented diffs and complete tool text.
@@ -341,6 +979,10 @@ fn trace_exemption(
 
 impl MatchContext<'_> {
     fn surrounding_lines(&self, range: Range<usize>) -> &[u8] {
+        &self.input[self.surrounding_range(range)]
+    }
+
+    fn surrounding_range(&self, range: Range<usize>) -> Range<usize> {
         let start_index = self
             .line_starts
             .partition_point(|&start| start <= range.start);
@@ -355,7 +997,7 @@ impl MatchContext<'_> {
             .get(end_index)
             .copied()
             .unwrap_or(self.input.len());
-        &self.input[start..end]
+        start..end
     }
 }
 
@@ -414,31 +1056,22 @@ pub(super) fn scan_matches(
         // evaluate all matches for this rule on the line, not just the first.
         // if the first match is filtered (allowlist/stopword/var-ref), a later
         // match on the same line could still be a real secret.
-        let mut ordinary_matches = rule.regex.captures_iter(ctx.input);
-        let mut entropy_offset = 0;
-        let captures_iter = std::iter::from_fn(|| {
-            if !is_entropy_value {
-                return ordinary_matches.next();
-            }
-            if entropy_offset > ctx.input.len() {
-                return None;
-            }
-            let captures = rule.regex.captures_at(ctx.input, entropy_offset)?;
-            let matched = captures.get(0)?;
-            // an unquoted boundary may consume the next assignment's key.
-            // resume after the value so that assignment is still evaluated.
-            entropy_offset = captures
-                .name("entropy_unquoted")
-                .map_or(matched.end(), |value| value.end())
-                .max(matched.start().saturating_add(1));
-            Some(captures)
-        });
+        let candidates: Vec<_> = if is_entropy_value {
+            entropy_captures(&rule.regex, ctx.input, rule.entropy_threshold)
+        } else {
+            rule.regex.captures_iter(ctx.input).collect()
+        };
+        let scopes = if is_entropy_value {
+            assignment_scopes(&candidates, ctx.input.len())
+        } else {
+            vec![0..ctx.input.len(); candidates.len()]
+        };
         let mut owned_ranges = Vec::new();
-        for captures in captures_iter {
+        for (captures, scope) in candidates.into_iter().zip(scopes) {
             evaluate_candidate(
                 ctx,
                 rule,
-                Candidate::Regex(captures),
+                Candidate::Regex(captures, scope),
                 &mut emit,
                 &mut |range| {
                     if is_entropy_value && ctx.literals.is_some() {
@@ -447,8 +1080,10 @@ pub(super) fn scan_matches(
                 },
             );
         }
-        // single-line text uses its first pass with [0]; diff and per-line passes use [].
-        if is_entropy_value && ctx.line_starts.len() <= 1 {
+        // literal bodies exist only on diff lines, where line_starts is []. the call collector
+        // carries paren context across the line breaks of multi-line text; its per-line text
+        // passes collect a subset of the same ranges, which scan_text deduplicates.
+        if is_entropy_value {
             if let Some(literals) = ctx.literals {
                 for range in &literals.bodies {
                     if !owned_ranges.contains(range) {
@@ -470,6 +1105,701 @@ pub(super) fn scan_matches(
     }
 }
 
+/// the value groups of the tier-3 rule, in pattern order.
+const ENTROPY_VALUE_GROUPS: [&str; 9] = [
+    "entropy_reference",
+    "entropy_bare_double",
+    "entropy_bare_single",
+    "entropy_url",
+    "entropy_double",
+    "entropy_single",
+    "entropy_bracket",
+    "entropy_unquoted",
+    "entropy_bare",
+];
+
+/// the tier-3 rule's own capture cursor. an unquoted boundary may consume the next assignment's
+/// key, so the scan resumes after the value. a quoted body holding whitespace is a phrase, not a
+/// value: a stray quote byte can pair with a later one across whole assignments, so the scan
+/// resumes inside the body and evaluates the assignments it contains on their own. a key the
+/// grammar misread (`misread_key_resume`) is no candidate, and the scan resumes after its
+/// separator so the text behind it is still read.
+fn entropy_captures<'h>(
+    regex: &regex::bytes::Regex,
+    input: &'h [u8],
+    entropy_floor: Option<f64>,
+) -> Vec<regex::bytes::Captures<'h>> {
+    let mut found = Vec::new();
+    let mut offset = 0;
+    while offset <= input.len() {
+        let Some(captures) = regex.captures_at(input, offset) else {
+            break;
+        };
+        let Some(matched) = captures.get(0) else {
+            break;
+        };
+        let floor = matched.start().saturating_add(1);
+        if let Some(resume) = misread_key_resume(input, &captures, entropy_floor) {
+            offset = resume.max(floor);
+            continue;
+        }
+        let phrase = ["entropy_double", "entropy_single"]
+            .into_iter()
+            .filter_map(|name| captures.name(name))
+            .find(|body| body.as_bytes().iter().any(u8::is_ascii_whitespace));
+        offset = match phrase {
+            Some(body) => body.start(),
+            None => captures
+                .name("entropy_unquoted")
+                .map_or(matched.end(), |value| value.end()),
+        }
+        .max(floor);
+        found.push(captures);
+    }
+    found
+}
+
+/// a key the value grammar misread, with the offset after its separator: the first `:` of a `::`
+/// scope separator (`std::env`, `Acquire::Check`), the name of a posix bracket class
+/// (`[[:space:]]`), or the letter of a backslash escape standing alone as the key (`\n: `). no
+/// supported format writes a credential as `key::value` or `[:key:]`, and an escape letter is not
+/// a name. the misreading is proved only for a value that is code of words (`is_word_code`): a
+/// value carrying an opaque run (`Type::<token>`, `[[:alnum:]]<token>`, `\n: <token>`) or a run of
+/// short groups keeps the capture, so the text behind the name is judged as it was before the name
+/// was recognized. a run of groups is read up to an `=`, where the resumed scan reads the text
+/// after it as the value of a new assignment (`Acquire::Check-Valid-Until=false`).
+fn misread_key_resume(
+    input: &[u8],
+    captures: &regex::bytes::Captures<'_>,
+    entropy_floor: Option<f64>,
+) -> Option<usize> {
+    let key = captures.name("entropy_key")?;
+    let separator = key.end()
+        + input[key.end()..]
+            .iter()
+            .take_while(|&&byte| matches!(byte, b' ' | b'\t'))
+            .count();
+    let colon = input.get(separator) == Some(&b':');
+    let next = input.get(separator + 1).copied();
+    let before = |back: usize| key.start().checked_sub(back).map(|index| input[index]);
+    let resume = if colon
+        && (next == Some(b':')
+            || (next == Some(b']') && before(1) == Some(b':') && before(2) == Some(b'[')))
+    {
+        separator + 2
+    } else if escaped_key(input, key.range()) {
+        separator + 1
+    } else {
+        return None;
+    };
+    ENTROPY_VALUE_GROUPS
+        .iter()
+        .find_map(|name| captures.name(name))
+        .is_none_or(|value| is_word_code(value.as_bytes(), b"=", entropy_floor))
+        .then_some(resume)
+}
+
+/// whether text reads as code built from words: every run of letters and digits between other
+/// bytes (`_` included) is a word part (`is_word_part`), and no run of short groups crosses the
+/// text between two `run_breaks` bytes (`wordshape::is_chunked_with_digits`). the chunk guard reads
+/// every alphanumeric byte, so a token cut into short pieces by the structure around it (`.`,
+/// `::`, `_`, brackets, holes) is still one token. a run of letters and digits, joined or not by
+/// the `+`, `/`, `_` and `-` of the encoded-token alphabets, is judged whole as well: one that
+/// could be a token standing alone (it reaches the entropy length and clears `entropy_floor`, the
+/// rule's own threshold) must be word structured (`wordshape::is_word_structured`, the wordshape
+/// step that token would face), so neither a token whose joiners cut it into pieces that each
+/// pass as a word nor one whose humps happen to read as words is taken for code.
+fn is_word_code(text: &[u8], run_breaks: &[u8], entropy_floor: Option<f64>) -> bool {
+    use crate::scanner::wordshape;
+    !wordshape::is_chunked_with_digits(text, run_breaks)
+        && text
+            .split(|&byte| !byte.is_ascii_alphanumeric())
+            .filter(|part| !part.is_empty())
+            .all(is_word_part)
+        && text
+            .split(|&byte| {
+                !(byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'/' | b'_' | b'-'))
+            })
+            .filter(|run| {
+                run.len() >= entropy::MIN_ENTROPY_LENGTH
+                    && entropy_floor
+                        .is_none_or(|threshold| entropy::passes_entropy_check(run, threshold))
+            })
+            .all(wordshape::is_word_structured)
+}
+
+/// whether a run of letters and digits reads as words. a part shorter than `MIN_ENTROPY_LENGTH` is
+/// a word piece or a number of at most four digits (`wordshape::wordlike_piece`). a part as long as
+/// a token is its words: each a lowercase or capitalized word of four to nineteen letters that
+/// reads as a word (`wordshape::has_wordlike_vowels`) or a vocabulary short word, with at most one
+/// run of at most four digits (`InvalidParameterValue`, `AllowInsecureRepositories`), or it is
+/// word structured as a value (`wordshape::is_word_structured`). the humps and digit runs of a
+/// random token mostly leave words of one to three letters outside the vocabulary; the rare token
+/// that reads as words here still meets `is_word_code`'s whole-run check, so it is exempted no
+/// more often than the same token standing alone.
+fn is_word_part(part: &[u8]) -> bool {
+    use crate::scanner::wordshape;
+    if part.len() < entropy::MIN_ENTROPY_LENGTH {
+        return wordshape::wordlike_piece(part).is_some();
+    }
+    let mut digit_runs = 0;
+    let words_read = wordshape::identifier_words(part).is_some_and(|words| {
+        words.iter().all(|word| {
+            if word[0].is_ascii_digit() {
+                digit_runs += 1;
+                digit_runs == 1 && word.len() <= 4
+            } else if word.len() < 4 {
+                wordshape::is_short_word(word)
+            } else {
+                word.len() < entropy::MIN_ENTROPY_LENGTH
+                    && word[1..].iter().all(u8::is_ascii_lowercase)
+                    && wordshape::has_wordlike_vowels(word)
+            }
+        })
+    });
+    words_read || wordshape::is_word_structured(part)
+}
+
+/// an identifier key of one letter behind an odd run of backslashes is an escape sequence.
+fn escaped_key(input: &[u8], key: Range<usize>) -> bool {
+    key.len() == 1
+        && input[key.start].is_ascii_alphabetic()
+        && input[..key.start]
+            .iter()
+            .rev()
+            .take_while(|&&byte| byte == b'\\')
+            .count()
+            % 2
+            == 1
+}
+
+/// the text one tier-3 capture spans: from its key, or its value when keyless, to the value end.
+fn assignment_span(captures: &regex::bytes::Captures<'_>) -> Range<usize> {
+    let value = ENTROPY_VALUE_GROUPS
+        .iter()
+        .find_map(|name| captures.name(name))
+        .or_else(|| captures.get(0))
+        .map_or(0..0, |value| value.range());
+    let start = captures
+        .name("entropy_key")
+        .map_or(value.start, |key| key.start());
+    start..value.end
+}
+
+/// the stretch of input each tier-3 candidate owns for its hash-context check: from the end of the
+/// nearest earlier candidate's value to the start of the nearest later candidate's key (or value,
+/// when it has no key). a context word such as `sha256` before one assignment says nothing about
+/// the next one on the same line, while words around the assignment itself (`checksum secret =
+/// ...`, a trailing `# sha256` comment) still belong to it.
+fn assignment_scopes(candidates: &[regex::bytes::Captures<'_>], len: usize) -> Vec<Range<usize>> {
+    // a lone candidate owns the whole input. the general case below gives an empty span only its
+    // own point, but an empty span holds an empty value, which never reaches the hash check, so
+    // the span is not worth its capture-name lookups on the common single-assignment line.
+    if candidates.len() < 2 {
+        return vec![0..len; candidates.len()];
+    }
+    let spans: Vec<Range<usize>> = candidates.iter().map(assignment_span).collect();
+    let mut ends: Vec<usize> = spans.iter().map(|span| span.end).collect();
+    let mut starts: Vec<usize> = spans.iter().map(|span| span.start).collect();
+    ends.sort_unstable();
+    starts.sort_unstable();
+    spans
+        .iter()
+        .map(|span| {
+            let before = ends.partition_point(|&end| end <= span.start);
+            let left = before.checked_sub(1).map_or(0, |index| ends[index]);
+            let after = starts.partition_point(|&start| start < span.end);
+            let right = starts.get(after).copied().unwrap_or(len);
+            left..right.max(left)
+        })
+        .collect()
+}
+
+/// the body of a delimited regex literal, `/body/flags`, when an unquoted or bare capture is one:
+/// flags are ascii letters, trailing `,` `;` `)` close the surrounding syntax, and the body holds
+/// no unescaped `/` outside a bracket class, which a path or a base64 run between slashes does.
+fn regex_literal_body(value: &[u8]) -> Option<Range<usize>> {
+    let trimmed = value.len()
+        - value
+            .iter()
+            .rev()
+            .take_while(|&&byte| matches!(byte, b',' | b';' | b')'))
+            .count();
+    let value = &value[..trimmed];
+    let flags = value
+        .iter()
+        .rev()
+        .take_while(|byte| byte.is_ascii_alphabetic())
+        .count();
+    let close = value.len().checked_sub(flags + 1)?;
+    if value.first() != Some(&b'/')
+        || value[close] != b'/'
+        || close < 2
+        || matches!(value[1], b'/' | b'*')
+    {
+        return None;
+    }
+    let body = &value[1..close];
+    let mut escaped = false;
+    let mut class = false;
+    for &byte in body {
+        match byte {
+            _ if escaped => escaped = false,
+            b'\\' => escaped = true,
+            b'[' => class = true,
+            b']' => class = false,
+            b'/' if !class => return None,
+            _ => {}
+        }
+    }
+    (!escaped).then_some(1..close)
+}
+
+/// whether a regex-shaped value carries a token its pattern syntax would hide: a run of
+/// `MIN_ENTROPY_LENGTH` or more base64 bytes (letters, digits, `+`, `/`, `-`, `_`; a pattern reads
+/// `+` as a quantifier and `/` as a delimiter, a token as its own bytes), or a run of short groups
+/// across literal text and bracket-class contents, with counted repetitions and escaped
+/// punctuation read as separators (`is_chunked_with_digits`), as in a token cut by `\.` or `|` into
+/// short pieces. an escape of any byte but a class letter (`is_class_escape`) writes that byte, so
+/// the byte belongs to the value in both checks: an escaped base64 byte continues the run, and an
+/// escaped letter or digit is a piece of its own, as an unescaped one-letter piece would be. a
+/// token escaped before every other byte keeps its run and its groups.
+fn pattern_carries_token(pattern: &[u8]) -> bool {
+    let mut run = 0;
+    let mut index = 0;
+    while index < pattern.len() {
+        // a class escape ends the run before it, and its letter opens the next one.
+        let (byte, width, joins) = match (pattern[index], pattern.get(index + 1)) {
+            (b'\\', Some(&escaped)) => (escaped, 2, !is_class_escape(escaped)),
+            (b'\\', None) => (b'\\', 1, false),
+            (byte, _) => (byte, 1, true),
+        };
+        run = match (is_run_byte(byte), joins) {
+            (false, _) => 0,
+            (true, true) => run + 1,
+            (true, false) => 1,
+        };
+        if run >= entropy::MIN_ENTROPY_LENGTH {
+            return true;
+        }
+        index += width;
+    }
+    let mut literal = Vec::with_capacity(pattern.len());
+    let mut index = 0;
+    while index < pattern.len() {
+        let skip = match pattern[index] {
+            b'\\' => {
+                if let Some(&escaped) = pattern.get(index + 1)
+                    && escaped.is_ascii_alphanumeric()
+                    && !is_class_escape(escaped)
+                {
+                    literal.extend_from_slice(&[b' ', escaped]);
+                }
+                2
+            }
+            b'[' => {
+                // a bracket class, its leading `]` and escaped bytes included.
+                let mut end = index + 1;
+                if pattern.get(end) == Some(&b'^') {
+                    end += 1;
+                }
+                if pattern.get(end) == Some(&b']') {
+                    end += 1;
+                }
+                while end < pattern.len() && pattern[end] != b']' {
+                    end += if pattern[end] == b'\\' { 2 } else { 1 };
+                }
+                literal.extend_from_slice(&pattern[index..end.min(pattern.len())]);
+                end + 1 - index
+            }
+            b'{' => pattern[index + 1..]
+                .iter()
+                .position(|&byte| byte == b'}')
+                .filter(|&close| {
+                    close > 0
+                        && pattern[index + 1..index + 1 + close]
+                            .iter()
+                            .all(|byte| byte.is_ascii_digit() || *byte == b',')
+                })
+                .map_or(1, |close| close + 2),
+            _ => 0,
+        };
+        if skip == 0 {
+            literal.push(pattern[index]);
+            index += 1;
+        } else {
+            literal.push(b' ');
+            index += skip;
+        }
+    }
+    crate::scanner::wordshape::is_chunked_with_digits(&literal, b"")
+}
+
+/// a byte of a token run in `pattern_carries_token`: a letter, a digit, `+`, `/`, `-` or `_`.
+fn is_run_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'/' | b'-' | b'_')
+}
+
+/// the letters whose escape names a class or a boundary rather than the letter itself (`\d`, `\w`,
+/// `\s`, `\b` and their negations), the letter escapes `regexshape::is_regex_shaped` reads as
+/// regex syntax. eight letters carry three bits a byte, under the tier-3 entropy gate.
+fn is_class_escape(byte: u8) -> bool {
+    matches!(byte, b'b' | b'B' | b'd' | b'D' | b'w' | b'W' | b's' | b'S')
+}
+
+/// whether an unquoted capture is the pattern argument of a command or option that takes a
+/// regular expression: the word before its key, past one opening quote, is `grep`, `egrep`, `rg`,
+/// `sed` or `awk`, a `--regexp`, `--extended-regexp` or `--perl-regexp` option, or a short-option
+/// cluster carrying `E` or `P` (`-E`, `-Eqi`, `-oP`).
+fn follows_regex_command(input: &[u8], start: usize) -> bool {
+    let line_start = input[..start]
+        .iter()
+        .rposition(|&byte| matches!(byte, b'\n' | b'\r'))
+        .map_or(0, |index| index + 1);
+    let before = input[line_start..start].trim_ascii_end();
+    let before = before
+        .strip_suffix(b"'")
+        .or_else(|| before.strip_suffix(b"\""))
+        .unwrap_or(before)
+        .trim_ascii_end();
+    let word = &before[before
+        .iter()
+        .rposition(|byte| byte.is_ascii_whitespace())
+        .map_or(0, |index| index + 1)..];
+    matches!(
+        word,
+        b"grep"
+            | b"egrep"
+            | b"rg"
+            | b"sed"
+            | b"awk"
+            | b"--regexp"
+            | b"--extended-regexp"
+            | b"--perl-regexp"
+    ) || word.strip_prefix(b"-").is_some_and(|cluster| {
+        !cluster.is_empty()
+            && cluster.iter().all(u8::is_ascii_alphabetic)
+            && cluster.iter().any(|byte| matches!(byte, b'E' | b'P'))
+    })
+}
+
+/// the ownership sink of a candidate that owns no literal body. a named function rather than a
+/// closure, so the recursive evaluation of literal segments instantiates no new closure type.
+fn unowned(_: Range<usize>) {}
+
+/// the string prefix letters written before the opening quote of a quoted body starting at
+/// `body_start`: at most two letters, not the tail of a longer word.
+fn string_prefix(input: &[u8], body_start: usize) -> &[u8] {
+    let quote = body_start.saturating_sub(1);
+    let letters = input[..quote]
+        .iter()
+        .rev()
+        .take(2)
+        .take_while(|byte| byte.is_ascii_alphabetic())
+        .count();
+    let start = quote - letters;
+    if input[..start]
+        .last()
+        .is_some_and(|&byte| byte.is_ascii_alphanumeric() || byte == b'_')
+    {
+        return &[];
+    }
+    &input[start..quote]
+}
+
+/// a python string prefix that makes `{...}` an interpolation hole: `f` or `t` (template
+/// strings), alone or combined with `r`.
+fn is_interpolating_prefix(prefix: &[u8]) -> bool {
+    prefix
+        .iter()
+        .any(|byte| matches!(byte.to_ascii_lowercase(), b'f' | b't'))
+        && prefix
+            .iter()
+            .all(|byte| matches!(byte.to_ascii_lowercase(), b'f' | b't' | b'r'))
+}
+
+/// whether a path names python source (`.py`, `.pyi`), the one surface where `f"..."` and
+/// `t"..."` are interpolating strings. the pathless text of the redact hook, shell, dotenv and
+/// configuration files, and every other language read them as literal data.
+fn is_python_path(file_path: Option<&str>) -> bool {
+    file_path.is_some_and(|path| {
+        let leaf = path.rsplit('/').next().unwrap_or(path);
+        leaf.rsplit_once('.').is_some_and(|(_, extension)| {
+            extension.eq_ignore_ascii_case("py") || extension.eq_ignore_ascii_case("pyi")
+        })
+    })
+}
+
+/// the literal segments of the f-string or t-string body at `body` (`interpolated_literal_segments`),
+/// read only where its holes are proved to be code: on a python file outside the rust and go
+/// tracker, for a body of graphic bytes that clears the entropy length behind an interpolating
+/// prefix.
+fn python_hole_segments(
+    ctx: &MatchContext<'_>,
+    body: Range<usize>,
+    entropy_floor: Option<f64>,
+) -> Option<Vec<Range<usize>>> {
+    let text = &ctx.input[body.clone()];
+    if ctx.literals.is_some()
+        || !is_python_path(ctx.file_path)
+        || text.len() < entropy::MIN_ENTROPY_LENGTH
+        || !text.iter().all(u8::is_ascii_graphic)
+        || !is_interpolating_prefix(string_prefix(ctx.input, body.start))
+    {
+        return None;
+    }
+    interpolated_literal_segments(text, entropy_floor)
+}
+
+/// the literal text of an f-string or t-string body, as ranges of the body: the runs outside its
+/// `{...}` holes. `{{` and `}}` are literal braces and a backslash escape is literal text. the
+/// reading is taken only when every hole is code of words (`word_hole_end`) and no run of short
+/// groups crosses the whole body, holes and literal text together (`is_chunked_with_digits`), so a
+/// token cut into short pieces by holes stays one candidate. `None` when the body holds no hole,
+/// a hole is anything else, or a lone `}` stands outside a hole: such a body is judged whole.
+fn interpolated_literal_segments(
+    body: &[u8],
+    entropy_floor: Option<f64>,
+) -> Option<Vec<Range<usize>>> {
+    let mut segments = Vec::new();
+    let mut start = 0;
+    let mut index = 0;
+    let mut holes = 0_usize;
+    while index < body.len() {
+        match (body[index], body.get(index + 1)) {
+            (b'\\', _) | (b'{', Some(b'{')) | (b'}', Some(b'}')) => index += 2,
+            (b'}', _) => return None,
+            (b'{', _) => {
+                let end = word_hole_end(body, index)?;
+                if !is_word_code(&body[index + 1..end - 1], b"", entropy_floor) {
+                    return None;
+                }
+                segments.push(start..index);
+                index = end;
+                start = end;
+                holes += 1;
+            }
+            _ => index += 1,
+        }
+    }
+    segments.push(start.min(body.len())..body.len());
+    segments.retain(|segment| !segment.is_empty());
+    (holes > 0 && !crate::scanner::wordshape::is_chunked_with_digits(body, b"")).then_some(segments)
+}
+
+/// the deepest call or subscript nesting an f-string hole may hold.
+const MAX_HOLE_DEPTH: usize = 4;
+
+/// the end of the f-string hole whose `{` is at `open`, past its `}`, when the hole holds one
+/// expression built from names (`hole_expression_end`) and at most an `!r`, `!s` or `!a`
+/// conversion. a quoted string, a backslash, a format spec after `:`, an operator, a space or a
+/// nested brace is no such hole, and the body holding it is judged whole.
+fn word_hole_end(body: &[u8], open: usize) -> Option<usize> {
+    let mut index = hole_expression_end(body, open + 1, 0)?;
+    if body.get(index) == Some(&b'!') {
+        if !matches!(body.get(index + 1), Some(b'r' | b's' | b'a')) {
+            return None;
+        }
+        index += 2;
+    }
+    (body.get(index) == Some(&b'}')).then_some(index + 1)
+}
+
+/// the end of an expression in an f-string hole: a name followed by any number of member accesses
+/// (`.name`), calls (`(args)`) and subscripts (`[index]`).
+fn hole_expression_end(body: &[u8], start: usize, depth: usize) -> Option<usize> {
+    if depth > MAX_HOLE_DEPTH {
+        return None;
+    }
+    let mut index = hole_name_end(body, start)?;
+    loop {
+        index = match body.get(index) {
+            Some(b'.') => hole_name_end(body, index + 1)?,
+            Some(b'(') => hole_arguments_end(body, index + 1, b')', depth + 1)?,
+            Some(b'[') => hole_arguments_end(body, index + 1, b']', depth + 1)?,
+            _ => return Some(index),
+        };
+    }
+}
+
+/// the end of a call's argument list or a subscript, entered after its opener: expressions or
+/// numbers of at most four digits, a call's optionally behind a keyword `name=` and separated by
+/// `,`, closed by `close`. a call may be empty; a subscript holds one item.
+fn hole_arguments_end(body: &[u8], start: usize, close: u8, depth: usize) -> Option<usize> {
+    let call = close == b')';
+    if call && body.get(start) == Some(&b')') {
+        return Some(start + 1);
+    }
+    let mut index = start;
+    loop {
+        if call
+            && let Some(end) = hole_name_end(body, index)
+            && body.get(end) == Some(&b'=')
+            && body.get(end + 1) != Some(&b'=')
+        {
+            index = end + 1;
+        }
+        let digits = body
+            .get(index..)?
+            .iter()
+            .take_while(|byte| byte.is_ascii_digit())
+            .count();
+        index = if (1..=4).contains(&digits) {
+            index + digits
+        } else {
+            hole_expression_end(body, index, depth)?
+        };
+        match body.get(index) {
+            Some(b',') if call => index += 1,
+            Some(&byte) if byte == close => return Some(index + 1),
+            _ => return None,
+        }
+    }
+}
+
+/// the end of a name in an f-string hole: a letter or `_`, then letters, digits and `_`.
+fn hole_name_end(body: &[u8], start: usize) -> Option<usize> {
+    let tail = body.get(start..)?;
+    tail.first()
+        .is_some_and(|byte| byte.is_ascii_alphabetic() || *byte == b'_')
+        .then(|| {
+            start
+                + tail
+                    .iter()
+                    .take_while(|byte| byte.is_ascii_alphanumeric() || **byte == b'_')
+                    .count()
+        })
+}
+
+/// the reading of an unquoted assignment value, which the grammar captures as a shell word: a
+/// string prefix and its quotes, a `&&` and the word after it all stay inside it. the value is
+/// narrowed only where that is proved:
+///
+/// - a shell `&&` list operator followed by a command word that is code of words ends the value
+///   before it (`list_operator_end`); an opaque word stays part of the value;
+/// - a quoted string behind a language string prefix or the `#`s of a swift raw string
+///   (`prefixed_quoted_body`) is read as its body, as a double- or single-quoted value, when the
+///   assignment is not env-style, where the legacy boundary below left only the prefix. an
+///   env-style value stays the whole word a shell reads (`VALUE=b"x"<word>` is one word, and on
+///   the pathless surface, a shell script or a file of unknown language `f"{...}"` is literal
+///   data), and is read as its body only when the string closes the value on a source file whose
+///   language has string prefixes (the rust and go tracker, or a file the parser posture reads)
+///   and the body opens no `{`, unless each such brace is a python f-string hole of code
+///   (`python_hole_segments`): a brace the grammar cannot prove to be a hole would hand the body
+///   to the template step the whole word never met;
+/// - any other value of a non-env-style assignment ends at its first unescaped quote, the legacy
+///   boundary.
+fn read_unquoted_value(
+    ctx: &MatchContext<'_>,
+    key_start: usize,
+    mut value: Range<usize>,
+    entropy_floor: Option<f64>,
+) -> (CaptureKind, Range<usize>) {
+    if let Some(end) = list_operator_end(&ctx.input[value.clone()], entropy_floor) {
+        value.end = value.start + end;
+    }
+    let secret = &ctx.input[value.clone()];
+    let env_style = is_env_style_assignment(ctx.input, key_start, secret);
+    if let Some((kind, body, end)) = prefixed_quoted_body(secret) {
+        let body = value.start + body.start..value.start + body.end;
+        let source_file = ctx.literals.is_some()
+            || ctx
+                .file_path
+                .is_some_and(crate::scanner::source_literals::supports_path);
+        if !env_style
+            || (end == secret.len()
+                && source_file
+                && (!ctx.input[body.clone()].contains(&b'{')
+                    || python_hole_segments(ctx, body.clone(), entropy_floor).is_some()))
+        {
+            return (kind, body);
+        }
+    } else if !env_style && let Some(end) = first_unescaped_quote(secret) {
+        value.end = value.start + end;
+    }
+    (CaptureKind::Unquoted, value)
+}
+
+/// a quoted string opening an unquoted value behind a string prefix -- python `r b u f t`, c and
+/// c++ `L u U u8` and their `R` raw forms, one or two letters -- or behind the `#`s of a swift raw
+/// string: the quote kind, the body and the end of the closing delimiter, as offsets into the
+/// value. the body follows the grammar's quoted values (a backslash escapes the next byte, `''`
+/// continues a single-quoted body, a raw body has no escapes and closes on `"` and a run of `#`).
+/// `None` when the value opens otherwise or its body does not close inside the value.
+fn prefixed_quoted_body(value: &[u8]) -> Option<(CaptureKind, Range<usize>, usize)> {
+    let hashes = value.iter().take_while(|&&byte| byte == b'#').count();
+    let open = if hashes > 0 {
+        hashes
+    } else if value.starts_with(b"u8R") {
+        3
+    } else if value.starts_with(b"u8") {
+        2
+    } else {
+        value
+            .iter()
+            .take(2)
+            .take_while(|byte| b"rRbBuUfFtTL".contains(byte))
+            .count()
+    };
+    let quote = *value.get(open)?;
+    if open == 0 || !(quote == b'"' || (quote == b'\'' && hashes == 0)) {
+        return None;
+    }
+    let start = open + 1;
+    let mut index = start;
+    let close = loop {
+        let byte = *value.get(index)?;
+        match byte {
+            b'\\' if hashes == 0 => index += 2,
+            b'\'' if quote == b'\'' && value.get(index + 1) == Some(&b'\'') => index += 2,
+            _ if byte == quote => break index,
+            _ => index += 1,
+        }
+    };
+    let mut end = close + 1;
+    if hashes > 0 {
+        let closing = value[end..]
+            .iter()
+            .take_while(|&&byte| byte == b'#')
+            .count();
+        if closing == 0 {
+            return None;
+        }
+        end += closing;
+    }
+    let kind = if quote == b'"' {
+        CaptureKind::Double
+    } else {
+        CaptureKind::Single
+    };
+    Some((kind, start..close, end))
+}
+
+/// where a shell `&&` list operator ends an unquoted value: before the first `&&` whose command
+/// word (a letter or `_`, then letters, digits, `_` and `-`) ends the value or is followed by `;`,
+/// when that word is code of words (`is_word_code`), so `KEY=<value>&&make` reports the value
+/// alone. an opaque word (`KEY=<value>&&<token>`) leaves the whole value, as the shell word it is.
+fn list_operator_end(value: &[u8], entropy_floor: Option<f64>) -> Option<usize> {
+    let mut from = 1;
+    while let Some(offset) = value.get(from..)?.windows(2).position(|pair| pair == b"&&") {
+        let operator = from + offset;
+        let word = &value[operator + 2..];
+        let length = word
+            .iter()
+            .take_while(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+            .count();
+        if word
+            .first()
+            .is_some_and(|byte| byte.is_ascii_alphabetic() || *byte == b'_')
+            && matches!(word.get(length), None | Some(b';'))
+        {
+            return is_word_code(&word[..length], b"", entropy_floor).then_some(operator);
+        }
+        from = operator + 1;
+    }
+    None
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum CaptureKind {
     Unquoted,
@@ -481,30 +1811,38 @@ enum CaptureKind {
     Other,
 }
 
+/// a regex candidate carries the stretch of input its assignment owns (`assignment_scopes`).
 enum Candidate<'a> {
-    Regex(regex::bytes::Captures<'a>),
+    Regex(regex::bytes::Captures<'a>, Range<usize>),
     Call(Range<usize>),
 }
 
 impl<'a> Candidate<'a> {
     fn get(&self, index: usize) -> Option<regex::bytes::Match<'a>> {
         match self {
-            Self::Regex(captures) => captures.get(index),
+            Self::Regex(captures, _) => captures.get(index),
             Self::Call(_) => None,
         }
     }
 
     fn name(&self, name: &str) -> Option<regex::bytes::Match<'a>> {
         match self {
-            Self::Regex(captures) => captures.name(name),
+            Self::Regex(captures, _) => captures.name(name),
             Self::Call(_) => None,
         }
     }
 
     fn call_range(&self) -> Option<Range<usize>> {
         match self {
-            Self::Regex(_) => None,
+            Self::Regex(..) => None,
             Self::Call(range) => Some(range.clone()),
+        }
+    }
+
+    fn scope(&self) -> Option<Range<usize>> {
+        match self {
+            Self::Regex(_, scope) => Some(scope.clone()),
+            Self::Call(_) => None,
         }
     }
 
@@ -554,22 +1892,80 @@ fn evaluate_candidate(
     else {
         return;
     };
-    let kind = captures.kind(&original_range);
+    let mut kind = captures.kind(&original_range);
     let mut secret_range = original_range.clone();
     let mut secret = &ctx.input[secret_range.clone()];
 
-    // non-env-style unquoted matches use their first unescaped quote as the legacy boundary.
+    // the unquoted alternative of a named-key contextual rule: its value is judged on its own.
+    // one trailing `,`/`;` is a shell or call separator, never part of the credential, so it is
+    // neither reported nor masked; the word-end check still reads the untrimmed word.
+    let unquoted_arm = !is_entropy_value
+        && captures
+            .name(CONTEXT_UNQUOTED_GROUP)
+            .is_some_and(|value| value.range() == original_range);
+    let unquoted_word_ends = unquoted_arm && ends_word(ctx.input, original_range.end);
+    if unquoted_arm && matches!(secret.last(), Some(b',' | b';')) && secret.len() > 1 {
+        secret_range.end -= 1;
+        secret = &ctx.input[secret_range.clone()];
+    }
+
     if is_entropy_value
-        && let (Some(unquoted), Some(key)) = (
-            captures.name("entropy_unquoted"),
-            captures.name("entropy_key"),
-        )
-        && unquoted.range() == secret_range
-        && !is_env_style_assignment(ctx.input, key.start(), secret)
-        && let Some(end) = first_unescaped_quote(secret)
+        && kind == CaptureKind::Unquoted
+        && let Some(key) = captures.name("entropy_key")
     {
-        secret = &secret[..end];
-        secret_range.end = secret_range.start + end;
+        (kind, secret_range) =
+            read_unquoted_value(ctx, key.start(), secret_range, rule.entropy_threshold);
+        secret = &ctx.input[secret_range.clone()];
+    }
+
+    // a python f-string or t-string body is literal text around `{...}` holes of code. on a python
+    // file, when every hole is code of words (`interpolated_literal_segments`), each literal run is
+    // judged on its own as a keyless literal body, so a hole never lends its bytes to a value; the
+    // parser posture's clip then finds each segment inside a literal body. any other body is judged
+    // whole: on every other surface `f"{...}"` is literal data, and a hole holding a quoted string,
+    // an escape, a format spec or an opaque run is not proved to be code. a phrase body keeps its
+    // whole-value outcome, and the rust and go tracker, whose languages have no such string, keeps
+    // its own body check.
+    if is_entropy_value
+        && matches!(kind, CaptureKind::Double | CaptureKind::Single)
+        && let Some(segments) =
+            python_hole_segments(ctx, secret_range.clone(), rule.entropy_threshold)
+    {
+        normalized(secret_range.clone());
+        trace_exemption(ctx, emit, "hole", secret_range.clone());
+        for segment in segments {
+            let segment = secret_range.start + segment.start..secret_range.start + segment.end;
+            evaluate_candidate(ctx, rule, Candidate::Call(segment), emit, &mut unowned);
+        }
+        return;
+    }
+
+    // a uri scheme read as a key splits `https://host/...` into the key `https` and the value
+    // `//host/...`. a split value that would be reported becomes the whole url again, from its
+    // scheme and without a key, so the url steps judge the complete url. the split value has
+    // already met the entropy gate, which the url is not measured against again; a split value
+    // the path check, the reference path step or the entropy gate would drop keeps that outcome,
+    // so re-anchoring only ever narrows what is reported.
+    let mut key_match = captures.name("entropy_key");
+    let mut reanchored = false;
+    if is_entropy_value
+        && kind == CaptureKind::Unquoted
+        && let Some(key) = key_match
+        && key.end() + 1 == secret_range.start
+        && ctx.input[key.end()] == b':'
+        && secret.starts_with(b"//")
+        && is_uri_scheme(key.as_bytes())
+        && secret.len() >= entropy::MIN_ENTROPY_LENGTH
+        && secret.iter().all(u8::is_ascii_graphic)
+        && !entropy::is_path_shaped(secret)
+        && !(ctx.allowlist.exemption_layer && entropy::is_reference_rooted(secret))
+        && effective_threshold(ctx, rule)
+            .is_none_or(|threshold| entropy::passes_entropy_check(secret, threshold))
+    {
+        secret_range.start = key.start();
+        secret = &ctx.input[secret_range.clone()];
+        key_match = None;
+        reanchored = true;
     }
 
     // ownership precedes all dispositions, including key allowlisting.
@@ -587,6 +1983,14 @@ fn evaluate_candidate(
     }
 
     if secret.is_empty() {
+        return;
+    }
+    // the fixed provider prefix is not randomness in the credential payload. keep this guard
+    // separate from rule thresholds so it does not add stopwords or a documentation bonus.
+    if rule.id == "openai-api-key"
+        && let Some(payload) = secret.strip_prefix(b"sk-proj-")
+        && entropy::shannon_entropy(payload) < 3.0
+    {
         return;
     }
     if rule.id == "facebook-access-token"
@@ -613,6 +2017,19 @@ fn evaluate_candidate(
             return;
         }
     }
+    // the unquoted alternative of a named-key contextual rule reads a whole shell or yaml word,
+    // which may be a filesystem path (`SECRET_KEY=/run/secrets/key`), a path rooted at a
+    // variable reference or a source expression rather than a credential. a run that stops
+    // before its word ends is no reading at all. this is part of that alternative's own
+    // reading, independent of the heuristic rule's exemption layer and its switch.
+    if unquoted_arm
+        && (!unquoted_word_ends
+            || entropy::is_path_shaped(secret)
+            || entropy::is_reference_rooted(secret)
+            || is_source_expression_value(secret, effective_threshold(ctx, rule)))
+    {
+        return;
+    }
     if is_entropy_value
         && (secret.len() < entropy::MIN_ENTROPY_LENGTH || !secret.iter().all(u8::is_ascii_graphic))
     {
@@ -628,7 +2045,7 @@ fn evaluate_candidate(
             .map(|m| m.range())
             .unwrap_or_else(|| original_range.clone()),
     );
-    let key_bytes = captures.name("entropy_key").map(|key_match| {
+    let key_bytes = key_match.map(|key_match| {
         let key = key_match.as_bytes();
         if key.len() >= 2 && matches!(key[0], b'\'' | b'"') && key[0] == key[key.len() - 1] {
             &key[1..key.len() - 1]
@@ -639,7 +2056,7 @@ fn evaluate_candidate(
     let mut hex_bypass = false;
     if is_entropy_value && ctx.allowlist.exemption_layer {
         if let Some(label) = ctx.generic_rule_skip.or_else(|| {
-            (ctx.allowlist.tier3_skip_test_paths
+            (ctx.allowlist.heuristic_skip_test_paths
                 && ctx.literals.is_some_and(|literals| {
                     literals.known
                         && literals.test_span.as_ref().is_some_and(|span| {
@@ -655,9 +2072,7 @@ fn evaluate_candidate(
             trace_exemption(ctx, emit, "import", secret_range.clone());
             return;
         }
-        if kind != CaptureKind::Call
-            && let Some(inner) = crate::scanner::urlshape::unwrap_markdown_target(secret)
-        {
+        if let Some(inner) = crate::scanner::urlshape::unwrap_markdown_target(secret) {
             secret = &secret[inner.clone()];
             secret_range = secret_range.start + inner.start..secret_range.start + inner.end;
             if secret.len() < entropy::MIN_ENTROPY_LENGTH {
@@ -665,14 +2080,21 @@ fn evaluate_candidate(
                 return;
             }
         }
-        if entropy::is_path_shaped(secret) {
+        // a variable reference counts as a word of the path it roots or carries; only this
+        // in-layer step applies it, so the layer switch restores the plain entropy gate.
+        if entropy::is_path_shaped(secret) || entropy::is_reference_rooted(secret) {
             trace_exemption(ctx, emit, "path", secret_range.clone());
             return;
         }
-        if kind == CaptureKind::Bare
+        if (kind == CaptureKind::Bare
             && key_bytes.is_none()
             && ctx.surrounding_lines(secret_range.clone()).trim_ascii() == secret
-            && entropy::is_relative_id_path(secret)
+            && entropy::is_relative_id_path(secret))
+            || (matches!(
+                kind,
+                CaptureKind::Unquoted | CaptureKind::Double | CaptureKind::Single
+            ) && key_bytes.is_some_and(|key| !key.is_empty())
+                && entropy::is_keyed_relative_path(secret))
         {
             trace_exemption(ctx, emit, "relpath", secret_range.clone());
             return;
@@ -683,15 +2105,6 @@ fn evaluate_candidate(
             && entropy::is_mktemp_path(secret)
         {
             trace_exemption(ctx, emit, "mktemp", secret_range.clone());
-            return;
-        }
-        if key_bytes.is_none()
-            && captures
-                .name("entropy_bare_double")
-                .is_some_and(|value| value.range() == secret_range)
-            && entropy::is_shell_directory_path(secret)
-        {
-            trace_exemption(ctx, emit, "shell-path", secret_range.clone());
             return;
         }
         if crate::scanner::urlshape::is_pinned_action_ref(key_bytes, secret) {
@@ -705,12 +2118,32 @@ fn evaluate_candidate(
         // a url is exempt only through the url predicate, never through regex, word, or
         // expression shape.
         let url_shaped = crate::scanner::urlshape::is_url_shaped(secret);
-        if matches!(
-            kind,
-            CaptureKind::Double | CaptureKind::Single | CaptureKind::Bracket | CaptureKind::Call
-        ) && ctx.file_path.is_some()
-            && !url_shaped
-            && crate::scanner::regexshape::is_regex_shaped(secret)
+        // the regex step reads the whole value of a quoted, bracketed or literal-body capture, and
+        // the body of an unquoted or bare capture that is delimited as a regex literal
+        // (`/body/flags`) or is the pattern argument of a regex-taking command or option. it runs
+        // on every surface, the pathless text of the redact hook included. on the pathless surface
+        // and for an unquoted or bare capture, the readings this step did not have before, a
+        // pattern that carries a token (`pattern_carries_token`) is not exempted.
+        let regex_body = match kind {
+            CaptureKind::Double
+            | CaptureKind::Single
+            | CaptureKind::Bracket
+            | CaptureKind::Call => Some(0..secret.len()),
+            CaptureKind::Unquoted | CaptureKind::Bare => regex_literal_body(secret).or_else(|| {
+                key_match
+                    .is_some_and(|key| follows_regex_command(ctx.input, key.start()))
+                    .then_some(0..secret.len())
+            }),
+            CaptureKind::Other => None,
+        };
+        let widened_reading =
+            ctx.file_path.is_none() || matches!(kind, CaptureKind::Unquoted | CaptureKind::Bare);
+        if !url_shaped
+            && regex_body.is_some_and(|body| {
+                let pattern = &secret[body];
+                crate::scanner::regexshape::is_regex_shaped(pattern)
+                    && !(widened_reading && pattern_carries_token(pattern))
+            })
         {
             trace_exemption(ctx, emit, "regex", secret_range.clone());
             return;
@@ -735,41 +2168,20 @@ fn evaluate_candidate(
             trace_exemption(ctx, emit, "wordshape", secret_range.clone());
             return;
         }
-        // a uniformly random 32-hex value has expected entropy about 3.6 bits (observed minimum
-        // 2.65 in 1e6 samples); the 2.0-bit floor excludes only repeated-pattern / low-diversity
-        // values while admitting real random hex secrets. 3.0 was rejected: 112 of 1e6 random
-        // 32-hex samples fell below it.
-        const HEX_BYPASS_MIN_ENTROPY: f64 = 2.0;
-
-        // called only after hex policy validation; prefix and case add no symbol diversity.
-        fn hex_symbol_entropy(value: &[u8]) -> f64 {
-            let payload = value
-                .strip_prefix(b"0x")
-                .or_else(|| value.strip_prefix(b"0X"))
-                .unwrap_or(value);
-            let mut counts = [0_u32; 16];
-            for byte in payload {
-                let symbol = match byte.to_ascii_lowercase() {
-                    b'0'..=b'9' => byte - b'0',
-                    b'a'..=b'f' => byte.to_ascii_lowercase() - b'a' + 10,
-                    _ => unreachable!("hex policy validated the payload"),
-                };
-                counts[usize::from(symbol)] += 1;
-            }
-            counts
-                .iter()
-                .filter(|&&count| count > 0)
-                .map(|&count| {
-                    let probability = f64::from(count) / payload.len() as f64;
-                    -probability * probability.log2()
-                })
-                .sum()
+        if crate::scanner::litshape::is_symbol_table(secret) && !url_shaped {
+            trace_exemption(ctx, emit, "symbols", secret_range.clone());
+            return;
         }
-
-        if captures
-            .name("entropy_key")
-            .is_some_and(|key| ctx.input[key.end()..secret_range.start].trim_ascii() == b":")
-            && hash_detect::is_digest_record(key_bytes, secret)
+        if crate::scanner::litshape::is_format_template(secret) && !url_shaped {
+            trace_exemption(ctx, emit, "template", secret_range.clone());
+            return;
+        }
+        if key_match.is_some_and(|key| {
+            is_digest_separator(
+                &ctx.input[key.end()..secret_range.start],
+                matches!(kind, CaptureKind::Double | CaptureKind::Single),
+            )
+        }) && hash_detect::is_digest_record(key_bytes, secret)
         {
             trace_exemption(ctx, emit, "digest", secret_range.clone());
             return;
@@ -779,8 +2191,20 @@ fn evaluate_candidate(
         // are emitted if they clear every other gate; this is the one place the layer
         // makes the rule stricter (it admits exact-length hex assignment values that
         // would otherwise fail the shannon gate).
-        // the 0.6.x line-level hash context exemption keeps precedence over the hex policy:
-        // a hex value on a line carrying a hash context word is a hash, not a secret.
+        // the 0.6.x hash context exemption keeps precedence over the hex policy: a hex value whose
+        // own assignment carries a hash context word is a hash, not a secret. the word is looked
+        // for in the stretch of the line the assignment owns, so a digest assigned before it on
+        // the same line does not turn a later hex value into a hash.
+        let line_range = ctx.surrounding_range(
+            captures
+                .get(0)
+                .map(|m| m.range())
+                .unwrap_or_else(|| original_range.clone()),
+        );
+        let hash_scope = captures.scope().map_or(line, |scope| {
+            let start = scope.start.clamp(line_range.start, line_range.end);
+            &ctx.input[start..scope.end.clamp(start, line_range.end)]
+        });
         hex_bypass = matches!(
             kind,
             CaptureKind::Double
@@ -793,7 +2217,7 @@ fn evaluate_candidate(
                     .strip_prefix(b"0x")
                     .or_else(|| secret.strip_prefix(b"0X"))
                     .unwrap_or(secret),
-                line,
+                hash_scope,
             )
             && hex_symbol_entropy(secret) >= HEX_BYPASS_MIN_ENTROPY;
     }
@@ -866,15 +2290,39 @@ fn evaluate_candidate(
     }
 
     // step 8: hash detection - skip hashes
-    if !is_entropy_value && hash_detect::is_hash_in_context(secret, line) {
+    // a named-key unquoted value reads hash context from its own assignment only, so a digest
+    // elsewhere on the line (`CHECKSUM=<hex> API_KEY=<hex>`) cannot veto it.
+    let hash_scope = if unquoted_arm {
+        captures
+            .get(0)
+            .map_or(secret, |m| &ctx.input[m.start()..secret_range.end])
+    } else {
+        line
+    };
+    if !is_entropy_value && hash_detect::is_hash_in_context(secret, hash_scope) {
         return;
     }
 
     // step 8.5: password strength heuristic for assignment passwords only.
     // weak/placeholder passwords are allowed through; only strong
-    // passwords are flagged as real secrets.
-    if rule.id == "generic-password-assignment" && !password::is_strong_password(secret) {
-        return;
+    // passwords are flagged as real secrets. the short and lowercase
+    // branches of the heuristic apply to concrete literals only; an
+    // unquoted value other than a shell assignment word counts as one
+    // only in a configuration file.
+    if rule.id == "generic-password-assignment" {
+        let key = captures.name("password_key");
+        let concrete_literal =
+            is_concrete_password_literal(ctx.input, ctx.file_path, key, &secret_range)
+                || ctx
+                    .file_path
+                    .and_then(config_syntax)
+                    .zip(key)
+                    .is_some_and(|(syntax, key)| {
+                        is_config_value_literal(ctx.input, syntax, key.range(), &secret_range)
+                    });
+        if !password::is_strong_assignment_password(secret, concrete_literal) {
+            return;
+        }
     }
 
     // step 8.6: for credential rules, filter weak passwords but
@@ -896,6 +2344,25 @@ fn evaluate_candidate(
         return;
     }
 
+    // an exact-length hex value under a credential name (32, 40 or 64 digits, optionally `0x`,
+    // one trailing `,`/`;` aside): sixteen symbols cap its shannon entropy at 4.0 bits, so the
+    // named-key rules' 4.0-bit gate would drop nearly every random hex key. it is measured by its
+    // hex symbols instead, as the heuristic rule's hex policy does; a digest with hash context on
+    // its line has already been dropped at step 8.
+    let named_key_hex = NAMED_KEY_RULES.contains(&rule.id.as_str()) && {
+        let value = secret
+            .strip_suffix(b",")
+            .or_else(|| secret.strip_suffix(b";"))
+            .unwrap_or(secret);
+        let payload = value
+            .strip_prefix(b"0x")
+            .or_else(|| value.strip_prefix(b"0X"))
+            .unwrap_or(value);
+        matches!(payload.len(), 32 | 40 | 64)
+            && payload.iter().all(u8::is_ascii_hexdigit)
+            && hex_symbol_entropy(payload) >= HEX_BYPASS_MIN_ENTROPY
+    };
+
     // step 9: entropy evaluation (if rule requires it).
     // assignment passwords skip entropy check -- the password strength
     // heuristic (step 8.5) already validates these. the entropy
@@ -903,12 +2370,10 @@ fn evaluate_candidate(
     // shorter than MIN_ENTROPY_LENGTH (e.g. 12-char passwords).
     if rule.id != "generic-password-assignment"
         && !hex_bypass
-        && let Some(mut threshold) = rule.entropy_threshold
+        && !named_key_hex
+        && !reanchored
+        && let Some(mut threshold) = effective_threshold(ctx, rule)
     {
-        // apply global override as a floor (never lower a rule's threshold)
-        if let Some(override_val) = ctx.allowlist.entropy_threshold_override {
-            threshold = threshold.max(override_val);
-        }
         // apply doc file bonus (raise threshold = less likely to flag)
         if ctx.is_doc_file && !is_entropy_value {
             threshold += ctx.allowlist.doc_entropy_bonus();
@@ -919,6 +2384,49 @@ fn evaluate_candidate(
     }
 
     emit(&rule.id, secret_range);
+}
+
+/// a uniformly random 32-hex value has expected entropy about 3.6 bits (observed minimum 2.65 in
+/// 1e6 samples); the 2.0-bit floor excludes only repeated-pattern / low-diversity values while
+/// admitting real random hex secrets. 3.0 was rejected: 112 of 1e6 random 32-hex samples fell
+/// below it.
+const HEX_BYPASS_MIN_ENTROPY: f64 = 2.0;
+
+/// called only after hex policy validation; prefix and case add no symbol diversity.
+fn hex_symbol_entropy(value: &[u8]) -> f64 {
+    let payload = value
+        .strip_prefix(b"0x")
+        .or_else(|| value.strip_prefix(b"0X"))
+        .unwrap_or(value);
+    let mut counts = [0_u32; 16];
+    for byte in payload {
+        let symbol = match byte.to_ascii_lowercase() {
+            b'0'..=b'9' => byte - b'0',
+            b'a'..=b'f' => byte.to_ascii_lowercase() - b'a' + 10,
+            _ => unreachable!("hex policy validated the payload"),
+        };
+        counts[usize::from(symbol)] += 1;
+    }
+    counts
+        .iter()
+        .filter(|&&count| count > 0)
+        .map(|&count| {
+            let probability = f64::from(count) / payload.len() as f64;
+            -probability * probability.log2()
+        })
+        .sum()
+}
+
+/// a rule's entropy threshold with the global override applied as a floor (never lowered).
+fn effective_threshold(
+    ctx: &MatchContext<'_>,
+    rule: &crate::scanner::rules::CompiledRule,
+) -> Option<f64> {
+    rule.entropy_threshold.map(|threshold| {
+        ctx.allowlist
+            .entropy_threshold_override
+            .map_or(threshold, |floor| threshold.max(floor))
+    })
 }
 
 #[cfg(test)]
@@ -1102,6 +2610,7 @@ mod tests {
             keywords: keywords.into_iter().map(String::from).collect(),
             entropy_threshold: threshold,
             allowlist: RuleAllowlist::default(),
+            class: None,
         }
     }
 
@@ -1138,6 +2647,11 @@ mod tests {
                 char::from(base + (index * 7 % 26))
             })
             .collect()
+    }
+
+    fn github_token() -> String {
+        let body: String = generated_token().chars().cycle().take(36).collect();
+        format!("ghp_{body}")
     }
 
     #[test]
@@ -1462,10 +2976,8 @@ mod tests {
         ]);
         let al = default_al();
         let file1 = make_file("aws.rs", vec![(10, b"key = \"AKIAIOSFODNN7ABCDEFGH\"")]);
-        let file2 = make_file(
-            "github.rs",
-            vec![(20, b"token = \"ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij\"")],
-        );
+        let github_line = format!("token = \"{}\"", github_token());
+        let file2 = make_file("github.rs", vec![(20, github_line.as_bytes())]);
         let findings = scan(&[file1, file2], &scanner, &al);
         assert_eq!(findings.len(), 2);
         // with parallel processing, order may vary, so check both exist
@@ -1491,16 +3003,11 @@ mod tests {
             None,
         )]);
         let al = default_al();
-        let file = make_file(
-            "test.rs",
-            vec![(1, b"ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij")],
-        );
+        let token = github_token();
+        let file = make_file("test.rs", vec![(1, token.as_bytes())]);
         let findings = scan(&[file], &scanner, &al);
         assert_eq!(findings.len(), 1);
-        assert_eq!(
-            findings[0].matched_value,
-            b"ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij"
-        );
+        assert_eq!(findings[0].matched_value, token.as_bytes());
     }
 
     #[test]
@@ -1525,10 +3032,8 @@ mod tests {
         let rules = crate::scanner::rules::load_default_rules().unwrap();
         let scanner = compile_rules(&rules).unwrap();
         let al = default_al();
-        let file = make_file(
-            "config.py",
-            vec![(5, b"TOKEN = \"ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij\"")],
-        );
+        let line = format!("TOKEN = \"{}\"", github_token());
+        let file = make_file("config.py", vec![(5, line.as_bytes())]);
         let findings = scan(&[file], &scanner, &al);
         assert!(
             findings
@@ -1673,6 +3178,7 @@ mod tests {
                 regexes: vec!["AKIAIOSFODNN7EXAMPLE".to_string()],
                 paths: vec![],
             },
+            class: None,
         }];
         let scanner = compile_rules(&rules).unwrap();
         let al = crate::config::build_allowlist(&crate::config::ProjectConfig::default(), &rules)
@@ -1744,6 +3250,7 @@ mod tests {
                 regexes: vec!["AKIAIOSFODNN7EXAMPLE".to_string()],
                 paths: vec![],
             },
+            class: None,
         }];
         let al = crate::config::build_allowlist(&crate::config::ProjectConfig::default(), &rules)
             .unwrap();
@@ -1809,5 +3316,59 @@ mod tests {
             .collect();
         let findings = scan(&files, &scanner, &al);
         assert_eq!(findings.len(), 10);
+    }
+
+    #[test]
+    fn source_expression_values_and_the_recall_guard() {
+        // code and word values under a credential-named key
+        for (value, floor) in [
+            (&b"self.data.api_key"[..], 4.0),
+            (b"endpoint.api_key,", 4.0),
+            (b"text[token_start", 4.0),
+            (b"self.config.api_key", 4.0),
+            (b"app.config.SECRET_KEY", 3.5),
+            (b"settings.DJANGO_SECRET_KEY", 3.5),
+            (b"config.providers.anthropic.api_key", 4.0),
+            (b"SecretStr", 3.5),
+            (b"ingress-tls-secret", 3.5),
+        ] {
+            assert!(
+                is_source_expression_value(value, Some(floor)),
+                "{}",
+                String::from_utf8_lossy(value)
+            );
+        }
+        // the guard: token length, the rule's threshold cleared, near-distinct bytes
+        assert!(folded_distinct_ratio(b"plmoknijuh.bqygtverfc") >= NEAR_DISTINCT_RATIO);
+        assert!(!is_source_expression_value(
+            b"plmoknijuh.bqygtverfc",
+            Some(4.0)
+        ));
+        assert!(!is_source_expression_value(
+            b"plmoknijuh.bqygtverfc;",
+            Some(4.0)
+        ));
+        // the case fold: a mixed-case chain is judged by its letters, not their case
+        assert!(folded_distinct_ratio(b"settings.DJANGO_SECRET_KEY") < NEAR_DISTINCT_RATIO);
+        // a lone word is a word value only below 16 bytes
+        assert!(is_source_expression_value(b"postgresql", Some(3.5)));
+        assert!(is_source_expression_value(b"required", Some(3.5)));
+        // a lone letter run of token length or an opaque piece is never a word value
+        assert!(!is_source_expression_value(b"plmoknijuhbqygtv", Some(4.0)));
+        assert!(!is_source_expression_value(b"kx7mq2pl", Some(3.5)));
+        assert!(!is_source_expression_value(b"q8Vn3sY6.Kp4Zr9Tw", Some(4.0)));
+        assert!(!is_source_expression_value(
+            b"abcd-efgh-ijkl-mnop",
+            Some(4.0)
+        ));
+    }
+
+    #[test]
+    fn a_context_value_must_end_its_word() {
+        assert!(ends_word(b"API_KEY=value", 13));
+        assert!(ends_word(b"API_KEY=value rest", 13));
+        assert!(ends_word(b"API_KEY=value\r\n", 13));
+        assert!(!ends_word(b"API_KEY=value\"x\"", 13));
+        assert!(!ends_word(b"API_KEY=value(x)", 13));
     }
 }

@@ -541,7 +541,7 @@ mod high_entropy_values {
 
         #[test]
         fn audit_stopword_in_key_keeps_exactly_one_entropy_finding() {
-            let environment = common::IsolatedEnv::new();
+            let environment = common::IsolatedEnv::with_heuristic();
             let repo = environment.git_repo();
             let value = distinct_token(28);
             assert!(!value.to_lowercase().contains("test"));
@@ -901,7 +901,7 @@ mod high_entropy_values {
 
     #[test]
     fn cli_and_config_stopwords_suppress_embedded_text_but_defaults_do_not() {
-        let environment = common::IsolatedEnv::new();
+        let environment = common::IsolatedEnv::with_heuristic();
         let repo = environment.git_repo();
         let token = distinct_token(16);
         let value = format!("example_{token}mystopword{}", token.to_lowercase());
@@ -1076,7 +1076,7 @@ mod high_entropy_values {
         let test_path = "tests/scanner_test.rs";
         let test_file = || make_file(test_path, vec![(1, assertion_source.as_bytes())]);
         // "tests/scanner_test.rs" matches both the `tests` directory segment and the
-        // `_test.` filename pattern, so tier3_skip_test_paths (decision C, default true)
+        // `_test.` filename pattern, so heuristic_skip_test_paths (decision C, default true)
         // drops the keywordless entropy rule on the diff surface here; the path-blind
         // agent surface (scan_text) carries no path and keeps finding the call literal.
         let diff_findings = scan(&[test_file()], &scanner, &al);
@@ -1108,7 +1108,7 @@ mod high_entropy_values {
         // the original intent, still detected on the diff surface when the skip is off:
         // opaque call-argument literals are tier-3 candidates (s19b).
         let (_, mut al_no_skip) = default_scanner_and_allowlist();
-        al_no_skip.tier3_skip_test_paths = false;
+        al_no_skip.heuristic_skip_test_paths = false;
         let no_skip_findings = scan(&[test_file()], &scanner, &al_no_skip);
         let no_skip_values: Vec<_> = no_skip_findings
             .iter()
@@ -2197,9 +2197,13 @@ fn tier1_grafana_service_account_token() {
 
 #[test]
 fn tier1_age_secret_key() {
+    // age writes the bech32 body upper-case; a stride over that alphabet stands in for a key.
+    let body: String = (0..58)
+        .map(|index| char::from(b"023456789ACDEFGHJKLMNPQRSTUVWXYZ"[index * 13 % 32]))
+        .collect();
     assert_detected(
         "src/config.rs",
-        b"key = \"AGE-SECRET-KEY-1abcdefghijklmnopqrstuvwxyz0123456789abcdefghijklmnopqrstuv\";",
+        format!("key = \"AGE-SECRET-KEY-1{body}\";").as_bytes(),
         "age-secret-key",
     );
 }

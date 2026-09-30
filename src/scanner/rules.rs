@@ -19,6 +19,51 @@ pub struct Rule {
     pub entropy_threshold: Option<f64>,
     #[serde(default)]
     pub allowlist: RuleAllowlist,
+    /// rule class: what evidence the rule keys on. omitted on a user rule, it
+    /// inherits the embedded rule of the same id, or `contextual` for a new id.
+    #[serde(default)]
+    pub class: Option<RuleClass>,
+}
+
+/// the evidence a rule keys on; classes are switched on and off as groups
+/// through `[settings.rule_classes]`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RuleClass {
+    /// a recognizable credential format, marker or provider-specific structure
+    Signature,
+    /// a credential-naming key, auth header or credential-bearing url
+    Contextual,
+    /// value shape and entropy alone, without a signature or named context
+    Heuristic,
+}
+
+impl RuleClass {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            RuleClass::Signature => "signature",
+            RuleClass::Contextual => "contextual",
+            RuleClass::Heuristic => "heuristic",
+        }
+    }
+
+    /// built-in on/off state when no config layer sets the class.
+    pub fn enabled_by_default(self) -> bool {
+        !matches!(self, RuleClass::Heuristic)
+    }
+}
+
+impl std::fmt::Display for RuleClass {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl Rule {
+    /// the resolved class; a rule without one counts as `contextual`.
+    pub fn resolved_class(&self) -> RuleClass {
+        self.class.unwrap_or(RuleClass::Contextual)
+    }
 }
 
 /// per-rule allowlist configuration
@@ -97,8 +142,11 @@ pub fn load_rules_from_str(toml_content: &str) -> Result<Vec<Rule>, String> {
 /// user rules with the same id override defaults; new ids are appended.
 pub fn merge_rules(defaults: Vec<Rule>, user_rules: Vec<Rule>) -> Vec<Rule> {
     let mut merged = defaults;
-    for user_rule in user_rules {
+    for mut user_rule in user_rules {
         if let Some(pos) = merged.iter().position(|r| r.id == user_rule.id) {
+            if user_rule.class.is_none() {
+                user_rule.class = merged[pos].class;
+            }
             merged[pos] = user_rule;
         } else {
             merged.push(user_rule);
@@ -114,7 +162,13 @@ pub fn compile_rules(rules: &[Rule]) -> Result<CompiledScanner, String> {
         let regex = RegexBuilder::new(&rule.regex_pattern)
             .size_limit(1 << 20)
             .build()
-            .map_err(|e| format!("failed to compile regex for rule '{}': {}", rule.id, e))?;
+            .map_err(|_| {
+                // the regex error text quotes the pattern; name the rule only
+                format!(
+                    "invalid regex in rule '{}'",
+                    crate::audit::history::sanitize_display(&rule.id)
+                )
+            })?;
         // tier 2/3 rules use (?i) case-insensitive flag with assignment patterns.
         // tier 1 rules with entropy match distinctive token prefixes directly.
         let context_dependent = rule.regex_pattern.starts_with("(?i)");
@@ -172,7 +226,40 @@ mod tests {
             keywords: keywords.into_iter().map(String::from).collect(),
             entropy_threshold: None,
             allowlist: RuleAllowlist::default(),
+            class: None,
         }
+    }
+
+    #[test]
+    fn every_default_rule_declares_a_class() {
+        let rules = load_default_rules().unwrap();
+        let missing: Vec<&str> = rules
+            .iter()
+            .filter(|r| r.class.is_none())
+            .map(|r| r.id.as_str())
+            .collect();
+        assert!(missing.is_empty(), "rules without class: {missing:?}");
+        let heuristic: Vec<&str> = rules
+            .iter()
+            .filter(|r| r.class == Some(RuleClass::Heuristic))
+            .map(|r| r.id.as_str())
+            .collect();
+        assert_eq!(heuristic, vec!["generic-high-entropy-value"]);
+    }
+
+    #[test]
+    fn merge_rules_user_override_inherits_class() {
+        let mut default = make_rule("x", "x", vec!["x"]);
+        default.class = Some(RuleClass::Heuristic);
+        let merged = merge_rules(vec![default], vec![make_rule("x", "y", vec!["y"])]);
+        assert_eq!(merged[0].class, Some(RuleClass::Heuristic));
+        assert_eq!(merged[0].regex_pattern, "y");
+    }
+
+    #[test]
+    fn new_user_rule_without_class_is_contextual() {
+        let merged = merge_rules(Vec::new(), vec![make_rule("n", "n", vec!["n"])]);
+        assert_eq!(merged[0].resolved_class(), RuleClass::Contextual);
     }
 
     #[test]

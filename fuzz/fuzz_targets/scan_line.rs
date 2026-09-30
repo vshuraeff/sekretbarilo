@@ -8,7 +8,8 @@ use sekretbarilo::diff::parser::{AddedLine, DiffFile};
 use sekretbarilo::scanner::engine::scan;
 use sekretbarilo::scanner::rules::{CompiledScanner, compile_rules, load_default_rules};
 
-static DEFAULTS: OnceLock<(CompiledScanner, config::allowlist::CompiledAllowlist)> = OnceLock::new();
+static DEFAULTS: OnceLock<(CompiledScanner, config::allowlist::CompiledAllowlist)> =
+    OnceLock::new();
 
 fn defaults() -> &'static (CompiledScanner, config::allowlist::CompiledAllowlist) {
     DEFAULTS.get_or_init(|| {
@@ -35,5 +36,9 @@ fuzz_target!(|data: &[u8]| {
         }],
     };
     let findings = scan(&[file], scanner, allowlist);
-    assert!(findings.iter().all(|finding| !finding.matched_value.is_empty()));
+    assert!(
+        findings
+            .iter()
+            .all(|finding| !finding.matched_value.is_empty())
+    );
 });

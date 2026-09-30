@@ -1,0 +1,29 @@
+# syntax-chain-payloads: an opaque value inside each position a widened syntax reading takes for
+# structure: a macro or attribute name, an attribute item, a member after a closure parameter or a
+# tuple field, a go type assertion, map key or package-qualified element type, a generic
+# argument of an open call, a labelled argument read from its enclosing call, a call ended by a
+# quote and a lone type name marked optional. the reading must judge the value it claims, so each
+# line stays reported. chunked and sub-20-byte values, which the placeholder grammar cannot
+# express, are generated at run time in tests/syntax_montecarlo_tests.rs.
+generic-high-entropy-value	VALUE=#{S32}(value)
+generic-high-entropy-value	VALUE=@{S36}(value)
+generic-high-entropy-value	VALUE={S32}!(value)
+generic-high-entropy-value	VALUE=#![{S32}]
+generic-high-entropy-value	VALUE=#[derive({S32})]
+generic-high-entropy-value	        #expect({S32}.{S36})
+generic-high-entropy-value	        #expect(0x{HEX32})
+generic-high-entropy-value	VALUE=@AppStorage({B64_44})
+generic-high-entropy-value	VALUE=$0.{S32}.count
+generic-high-entropy-value	VALUE=self.0.{S36}
+generic-high-entropy-value	VALUE=value.(*{S32})
+generic-high-entropy-value	VALUE=map[{S32}]int{}
+generic-high-entropy-value	VALUE=[]pkg.{S40}{value}
+generic-high-entropy-value	VALUE=std::make_unique<{S32}>(
+generic-high-entropy-value	setting="make(for: {S32})"
+generic-high-entropy-value	setting="make(for: {S32}.{S36})"
+generic-high-entropy-value	setting="x (for: {S40})"
+generic-high-entropy-value	make(for: {S32})
+generic-high-entropy-value	update(key: {S36}).configuration
+generic-high-entropy-value	VALUE=foo({S32})"rest"
+generic-high-entropy-value	License: {S32}.{S36}
+generic-high-entropy-value	let value: {S40}?

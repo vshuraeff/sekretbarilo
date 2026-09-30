@@ -1,6 +1,6 @@
 [package]
 name = "sekretbarilo"
-version = "0.8.0"
+version = "0.9.0"
 edition = "2024"
 description = "High-performance secret scanner for git workflows and AI coding agents"
 license = "MIT"
@@ -16,6 +16,13 @@ rayon = "1.12"
 serde_json = "1.0"
 getargs = "0.5"
 mimalloc = { version = "0.1", default-features = false }
+tree-sitter = "=0.27.0"
+tree-sitter-c = "=0.24.2"
+tree-sitter-cpp = "=0.23.4"
+tree-sitter-python = "=0.25.0"
+tree-sitter-javascript = "=0.25.0"
+tree-sitter-typescript = "=0.23.2"
+tree-sitter-swift = "=0.7.3"
 
 [dev-dependencies]
 criterion = { version = "0.8", features = ["html_reports"] }
@@ -33,6 +40,10 @@ lto = "fat"
 codegen-units = 1
 strip = true
 panic = "abort"
+
+# the monte-carlo recall grids scan millions of generated lines; debug assertions stay on
+[profile.test]
+opt-level = 2
 
 [package.metadata.deb]
 maintainer = "Valentin Shuraeff <vshuraeff@users.noreply.github.com>"

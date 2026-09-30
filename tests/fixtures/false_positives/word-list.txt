@@ -1,0 +1,21 @@
+# word-list: an environment entry whose value is a flag or a small number, and a key chord whose
+# action is a snake name, as source literals and config lines carry them. the head of each entry,
+# an upper-snake name or modifier keys joined by `+`, is a form random tokens do not produce, and
+# every other position is too short to hold a token or is a name the identifier rule reads.
+# known gap: a comma list of single words (`status,pipeline,branch,event`), a flag with a list
+# value (`--query-gpu=memory.used,memory.total`) and a chord with no modifier head (`a+b=c_d`) are
+# reported: random lowercase letters cut by `,`, `+` and `=` read as the same words.
+# known gap: a bare word after an environment name (`CARGO_TERM_COLOR=always`) is reported: a string
+# literal holding `NAME=<eight letters>` would otherwise hide a short credential.
+# known gap: a chord action of two words (`toggle_fullscreen`, `move_tab_forward`) is reported, as a
+# two-word identifier is.
+keybind = super+shift+t=toggle_quick_terminal
+keybind = cmd+grave_accent=toggle_quick_terminal
+keybind = ctrl+shift+backslash=toggle_window_decorations
+bind = super+ctrl+left=goto_previous_workspace
+keybind = cmd+shift+enter=toggle_split_zoom
+keybind = alt+shift+page_up=scroll_page_fractional
+cmd.Env = append(os.Environ(), "GOFLAGS=-mod=readonly")
+cmd.Env = append(cmd.Env, "NODE_EXTRA_MEMORY_LIMIT_MB=4096")
+extra_env = "GRADLE_DAEMON_HEAP=-server"
+.env("RUNNER", "TERRAFORM_PLUGIN_CACHE_WARMUP=--quiet")

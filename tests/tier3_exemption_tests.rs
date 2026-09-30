@@ -112,10 +112,13 @@ fn mktemp_output_record_preserves_whitespace_and_nearby_secrets() {
         let opaque = token(3);
         let text = format!("before{eol}{line}SECRET={opaque}{eol}after{eol}");
         let matches = scan_text(&text, &SCANNER, &al);
-        assert_eq!(matches.len(), 1);
-        assert_eq!(matches[0].rule_id, ENTROPY);
+        // the named `SECRET` key also draws in the contextual secret rule, on the same value.
+        let rules: Vec<&str> = matches.iter().map(|m| m.rule_id.as_str()).collect();
+        assert_eq!(rules, [ENTROPY, "generic-secret-assignment"]);
         let start = text.find(&opaque).unwrap();
-        assert_eq!(matches[0].range, start..start + opaque.len());
+        for matched in &matches {
+            assert_eq!(matched.range, start..start + opaque.len());
+        }
         assert_eq!(
             redact_text(&text, &SCANNER, &al),
             text.replace(&opaque, "[REDACTED]")
@@ -192,7 +195,7 @@ fn shell_directory_expression_preserves_quotes_and_neighbours() {
 }
 
 #[test]
-fn shell_directory_expression_keeps_opaque_components_and_assignments() {
+fn shell_directory_expression_keeps_opaque_components() {
     let al = allowlist();
     let opaque = token(3);
     for eol in ["\n", "\r\n"] {
@@ -206,15 +209,19 @@ fn shell_directory_expression_keeps_opaque_components_and_assignments() {
             check(&format!("\"{value}\"{eol}"), &[(ENTROPY, &value)], &al);
         }
         let value = "$STATE_DIR/diagnostic.log";
+        // the path step judges a reference path by its value alone, so a quoted or keyed wordy
+        // reference path is exempt from tier 3 like the standalone one; the opaque controls above
+        // stay reported. a `secret` or `password` key keeps its tier-2 assignment finding.
+        check(&format!("'{value}'{eol}"), &[], &al);
         for line in [
-            format!("'{value}'"),
             format!("secret=\"{value}\""),
             format!("password=\"{value}\""),
         ] {
-            check_rule(&format!("{line}{eol}"), ENTROPY, Some(value), false, &al);
+            check_rule(&format!("{line}{eol}"), ENTROPY, None, false, &al);
         }
         let partial = "hashlib.sha256(x.encode()";
-        check(&format!("{partial}{eol}"), &[(ENTROPY, partial)], &al);
+        // an open call at the line end is source syntax, not a value
+        check(&format!("{partial}{eol}"), &[], &al);
         check(&format!("{{{{ some_var | default('x') }}}}{eol}"), &[], &al);
     }
 }
@@ -266,6 +273,123 @@ fn shell_directory_separator_attacks_are_redacted() {
         failures.is_empty(),
         "opaque paths escaped redaction: {failures:?}"
     );
+}
+
+#[test]
+fn structural_path_shapes_keep_opaque_components_reported() {
+    let al = allowlist();
+    let opaque = token(11);
+    let short = &token(12)[..19];
+    let id = &token(13)[..12];
+    let chunk = &token(14)[..16];
+    for eol in ["\n", "\r\n"] {
+        for (line, value) in [
+            // a reference root with an opaque component
+            (
+                format!("KEY=\"$STATE_DIR/{opaque}\""),
+                format!("$STATE_DIR/{opaque}"),
+            ),
+            (
+                format!("KEY=\"${{WORKSPACE}}/{short}/notes.md\""),
+                format!("${{WORKSPACE}}/{short}/notes.md"),
+            ),
+            (
+                format!("LOG=\"${{TMPDIR:-{opaque}}}/run.log\""),
+                format!("${{TMPDIR:-{opaque}}}/run.log"),
+            ),
+            // a json schema keyword segment before an opaque leaf
+            (
+                format!("\"$ref\": \"#/$defs/{opaque}\""),
+                format!("#/$defs/{opaque}"),
+            ),
+            (
+                format!("\"$ref\": \"#/$defs/{short}\""),
+                format!("#/$defs/{short}"),
+            ),
+            // a keyed relative path with an opaque part longer than a short id
+            (
+                format!("path: docs/{id}/review-notes.md"),
+                format!("docs/{id}/review-notes.md"),
+            ),
+            (
+                format!("path: \"docs/plans/{opaque}.md\""),
+                format!("docs/plans/{opaque}.md"),
+            ),
+            // a dotted camel-case field path with an opaque segment
+            (
+                format!("field = \"hookSpecificOutput.{chunk}\""),
+                format!("hookSpecificOutput.{chunk}"),
+            ),
+            // an alphabetic extension supplies no wordiness to an opaque stem
+            (
+                format!("/var/lib/{short}.credentials"),
+                format!("/var/lib/{short}.credentials"),
+            ),
+            (
+                format!("/srv/app/{short}.production"),
+                format!("/srv/app/{short}.production"),
+            ),
+        ] {
+            check(&format!("{line}{eol}"), &[(ENTROPY, &value)], &al);
+        }
+    }
+}
+
+#[test]
+fn structural_path_shapes_are_exempt_and_traced() {
+    let al = allowlist();
+    let mut off = allowlist();
+    off.exemption_layer = false;
+    let mut traced = allowlist();
+    traced.trace_exemptions = true;
+    for (line, value, step) in [
+        (
+            "cache_dir=\"$HOME/Library/Caches/example-tool\"",
+            "$HOME/Library/Caches/example-tool",
+            Some("exempt:path"),
+        ),
+        (
+            "\"${XDG_CONFIG_HOME:-$HOME/.config}/example/settings.toml\"",
+            "${XDG_CONFIG_HOME:-$HOME/.config}/example/settings.toml",
+            Some("exempt:path"),
+        ),
+        (
+            "model: provider/abc-5-large:medium",
+            "provider/abc-5-large:medium",
+            Some("exempt:relpath"),
+        ),
+        (
+            "where: \"Sources/AppKit/WindowStore+Layout.swift:restoreFrame\"",
+            "Sources/AppKit/WindowStore+Layout.swift:restoreFrame",
+            Some("exempt:relpath"),
+        ),
+        (
+            "event_path: hookSpecificOutput.hookEventName",
+            "hookSpecificOutput.hookEventName",
+            Some("exempt:syntax"),
+        ),
+        // the path check ahead of the layer claims a json pointer before any trace
+        (
+            "\"$ref\": \"#/$defs/WebhookRetryPayloadEnvelope\"",
+            "#/$defs/WebhookRetryPayloadEnvelope",
+            None,
+        ),
+    ] {
+        check(line, &[], &al);
+        let findings = scan_text(line, &SCANNER, &traced);
+        let steps: Vec<_> = findings
+            .iter()
+            .map(|finding| finding.rule_id.as_str())
+            .collect();
+        assert_eq!(steps, step.into_iter().collect::<Vec<_>>(), "{line}");
+        // the layer switch restores the plain entropy gate for every in-layer step.
+        let expected: &[(&str, &str)] = if step.is_some() {
+            &[(ENTROPY, value)]
+        } else {
+            &[]
+        };
+        check(line, expected, &off);
+    }
 }
 
 #[test]
@@ -668,9 +792,10 @@ fn syntax_forms_and_adjacent_secrets() {
         check(form, &[], &al);
         check(&format!("value = {form}"), &[], &al);
         let secret = token(index);
+        // a `;` starts an assignment for the contextual token rule as well
         check(
             &format!("{form} ;TOKEN={secret}"),
-            &[(ENTROPY, &secret)],
+            &[(ENTROPY, &secret), ("generic-token-assignment", &secret)],
             &al,
         );
         check(
@@ -754,25 +879,31 @@ fn exact_length_hex_assignments() {
         ],
         &al,
     );
-    for (key, length, seed, quote, prefix) in [
-        ("API_KEY=", 32, 71, "", ""),
-        ("api_key: ", 40, 72, "\"", ""),
-        ("PRIVATE_KEY=", 32, 73, "", "0x"),
-        ("PRIVATE_KEY=", 40, 74, "", "0x"),
-        ("PRIVATE_KEY=", 64, 75, "", "0x"),
+    // an api key name is also read by generic-api-key, which measures an exact-length hex value
+    // by its hex symbols as this rule does; a private key name belongs to no contextual rule.
+    for (key, length, seed, quote, prefix, api_key) in [
+        ("API_KEY=", 32, 71, "", "", true),
+        ("api_key: ", 40, 72, "\"", "", true),
+        ("PRIVATE_KEY=", 32, 73, "", "0x", false),
+        ("PRIVATE_KEY=", 40, 74, "", "0x", false),
+        ("PRIVATE_KEY=", 64, 75, "", "0x", false),
     ] {
         let value = format!("{prefix}{}", hex(length, seed));
         if prefix == "0x" && matches!(length, 32 | 40) {
             assert!(hex_symbol_entropy(value.as_bytes()) < 4.0);
         }
-        check(
-            &format!("{key}{quote}{value}{quote}"),
-            &[(ENTROPY, &value)],
-            &al,
-        );
+        let mut expected = vec![(ENTROPY, value.as_str())];
+        if api_key {
+            expected.push(("generic-api-key", value.as_str()));
+        }
+        check(&format!("{key}{quote}{value}{quote}"), &expected, &al);
     }
     let upper = hex(32, 76).to_ascii_uppercase();
-    check(&format!("API_KEY={upper}"), &[(ENTROPY, &upper)], &al);
+    check(
+        &format!("API_KEY={upper}"),
+        &[(ENTROPY, &upper), ("generic-api-key", &upper)],
+        &al,
+    );
     for (key, length, seed, quote) in [
         ("commit = ", 40, 77, "\""),
         ("sha256: ", 64, 78, ""),
@@ -916,7 +1047,7 @@ fn word_structured_targets() {
 }
 
 #[test]
-fn regex_literals_are_path_scoped_and_traceable() {
+fn regex_literals_are_exempt_on_every_surface_and_traceable() {
     let literal = r"(?i)^(?:[A-Za-z0-9_-]{20,64}\.){2}[A-Za-z0-9_-]{20,64}$";
     let line = format!("let pattern = \"{literal}\";");
     let al = allowlist();
@@ -939,10 +1070,12 @@ fn regex_literals_are_path_scoped_and_traceable() {
         &source_all,
     );
 
+    // the pathless text surface of the redact hook runs the regex step as well.
     let matches = scan_text(&line, &SCANNER, &traced);
     assert_eq!(matches.len(), 1);
-    assert_eq!(matches[0].rule_id, ENTROPY);
+    assert_eq!(matches[0].rule_id, "exempt:regex");
     assert_eq!(&line[matches[0].range.clone()], literal);
+    assert!(scan_text(&line, &SCANNER, &al).is_empty());
 }
 
 #[test]
@@ -1124,13 +1257,13 @@ fn url_shaped_values_skip_non_url_exemptions() {
     let al = allowlist();
     let uppercase = uppercase_token(9);
     let url = format!("https://host/{uppercase}");
-    let captured_url = &url["https:".len()..];
+    // the scheme the value grammar reads as a key is re-anchored, so the whole url is reported.
     let markdown = format!("[link]({url})");
-    check(&markdown, &[(ENTROPY, captured_url)], &al);
+    check(&markdown, &[(ENTROPY, &url)], &al);
 
     let mut traced = allowlist();
     traced.trace_exemptions = true;
-    check(&markdown, &[(ENTROPY, captured_url)], &traced);
+    check(&markdown, &[(ENTROPY, &url)], &traced);
 
     check(&url, &[(ENTROPY, &url)], &al);
     check(&format!("url = \"{url}\""), &[(ENTROPY, &url)], &al);
@@ -1142,10 +1275,9 @@ fn url_shaped_values_skip_non_url_exemptions() {
 
     let base64url = base64url_token(19);
     let base64url = format!("https://host/{base64url}");
-    let captured_base64url = &base64url["https:".len()..];
     check(
         &format!("[link]({base64url})"),
-        &[(ENTROPY, captured_base64url)],
+        &[(ENTROPY, &base64url)],
         &al,
     );
     check("some-random-words-here-ok", &[], &al);
@@ -1268,7 +1400,9 @@ fn call_literals_have_exact_independent_ranges() {
 // the two surfaces diverge on a bare (unquoted) assignment next to a call literal: the
 // agent surface (scan_text/redact_text) carries no path and so never applies source
 // posture (ADR 0003), while the diff surface (scan, with a source-language path) treats
-// the bare assignment as code and drops it, keeping only the call-literal body.
+// the bare assignment as code and drops it, keeping only the call-literal body. the posture
+// governs this rule alone: the contextual token rule reads the credential-named assignment
+// after `;` on both surfaces.
 #[test]
 fn bare_code_adjacent_to_a_call_literal_is_surface_scoped() {
     let s = token(3);
@@ -1279,6 +1413,7 @@ fn bare_code_adjacent_to_a_call_literal_is_surface_scoped() {
     let text_matches = scan_text(&line, &SCANNER, &al);
     let mut text_actual: Vec<_> = text_matches
         .iter()
+        .filter(|matched| matched.rule_id == ENTROPY)
         .map(|matched| &line[matched.range.clone()])
         .collect();
     text_actual.sort_unstable();
@@ -1289,9 +1424,24 @@ fn bare_code_adjacent_to_a_call_literal_is_surface_scoped() {
     let diff_findings = scan(&[make_file("src/x.rs", &line)], &SCANNER, &al);
     let diff_actual: Vec<_> = diff_findings
         .iter()
+        .filter(|finding| finding.rule_id == ENTROPY)
         .map(|finding| finding.matched_value.as_slice())
         .collect();
     assert_eq!(diff_actual, vec![s.as_bytes()], "diff surface: {line}");
+
+    let contextual = |rule: &str| rule == "generic-token-assignment";
+    assert!(
+        text_matches
+            .iter()
+            .any(|matched| contextual(&matched.rule_id) && line[matched.range.clone()] == t),
+        "agent surface: {line}"
+    );
+    assert!(
+        diff_findings
+            .iter()
+            .any(|finding| contextual(&finding.rule_id) && finding.matched_value == t.as_bytes()),
+        "diff surface: {line}"
+    );
 }
 
 #[test]
@@ -1382,8 +1532,7 @@ fn call_literal_policy_is_body_scoped_and_switchable() {
     ] {
         check(&format!("build(\"{body}\")"), &[], &al);
     }
-    // dense regexes use the path-scoped regex exemption, but remain visible on the
-    // pathless text surface.
+    // dense regexes use the regex exemption on every surface, the pathless text included.
     for body in [r"^[A-Za-z0-9+/]{43}=$", r"(?i)\b[0-9a-f]{7,40}\b"] {
         let line = format!("Regex::new(r#\"{body}\"#)");
         check_scan("notes/shapes.txt", &line, &[], &al);
@@ -1395,9 +1544,13 @@ fn call_literal_policy_is_body_scoped_and_switchable() {
             &[("exempt:regex", body)],
             &traced,
         );
-        let text_matches = scan_text(&line, &SCANNER, &al);
+        assert!(
+            scan_text(&line, &SCANNER, &al).is_empty(),
+            "pathless text: {line}"
+        );
+        let text_matches = scan_text(&line, &SCANNER, &traced);
         assert_eq!(text_matches.len(), 1, "pathless text: {line}");
-        assert_eq!(text_matches[0].rule_id, ENTROPY);
+        assert_eq!(text_matches[0].rule_id, "exempt:regex");
         assert_eq!(&line[text_matches[0].range.clone()], body);
         check(&line, &[], &off);
     }
@@ -1457,9 +1610,13 @@ fn multiline_call_literals_run_once_with_exact_offsets() {
         redact_text(&input, &SCANNER, &allowlist()),
         "// unicode: λ\r\nbuild(\"[REDACTED]\");\rwrap(br#\"[REDACTED]\"#\n"
     );
-    // neither a comma nor an unclosed literal inherits state from the previous line.
+    // call state carries across lines within the span bound, so the comma continues the open
+    // call; a literal never crosses a line, and an unclosed one resets the call state.
     let input = format!("build(\n, \"{s}\")\nbuild(\"{t}\n\")");
-    assert!(scan_text(&input, &SCANNER, &allowlist()).is_empty());
+    let start = input.find(&s).unwrap();
+    let matches = scan_text(&input, &SCANNER, &allowlist());
+    assert_eq!(matches.len(), 1);
+    assert_eq!(matches[0].range, start..start + s.len());
 }
 
 #[test]

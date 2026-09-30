@@ -112,10 +112,7 @@ fn run_bash(env: &IsolatedEnv, stdout: &str) -> Output {
 }
 
 fn write_user_config(env: &IsolatedEnv, config: &str) {
-    let config_dir = env.home().join(".config/sekretbarilo");
-    std::fs::create_dir_all(&config_dir).expect("failed to create config directory");
-    std::fs::write(config_dir.join("sekretbarilo.toml"), config)
-        .expect("failed to write user config");
+    env.write_user_config(config);
 }
 
 fn write_disabled_entropy_rule_config(env: &IsolatedEnv) {
@@ -219,7 +216,7 @@ fn assert_new_rule_detects(
 
 #[test]
 fn env_dump_high_entropy_values_redacted_regardless_of_name() {
-    let env = IsolatedEnv::new();
+    let env = IsolatedEnv::with_heuristic();
     let mut generator = SplitMix64::new(0x5e9d_2ab1_c04f_7713);
     let values: Vec<String> = (0..5)
         .map(|_| high_entropy_value(&mut generator, 32))
@@ -245,15 +242,17 @@ fn env_dump_high_entropy_values_redacted_regardless_of_name() {
 
 #[test]
 fn name_independent_redaction_across_benign_variable_names() {
-    let env = IsolatedEnv::new();
+    let env = IsolatedEnv::with_heuristic();
     let mut generator = SplitMix64::new(0x2a8c_1f5e_9374_b6d0);
     let value = high_entropy_value(&mut generator, 32);
     let stdout = format!(
         "PATH={value}\nMANPATH={value}\nLS_COLORS={value}\nTERM_SESSION_ID={value}\nDB_TOKEN={value}\nJWT={JWT_SENTINEL}\n"
     );
     let expected_redacted = "PATH=[REDACTED]\nMANPATH=[REDACTED]\nLS_COLORS=[REDACTED]\nTERM_SESSION_ID=[REDACTED]\nDB_TOKEN=[REDACTED]\nJWT=[REDACTED]\n";
+    // without the heuristic rule the contextual generic-token-assignment still reads DB_TOKEN, a
+    // name ending in the credential word `token`; the other names are covered by nothing else.
     let expected_when_disabled = format!(
-        "PATH={value}\nMANPATH={value}\nLS_COLORS={value}\nTERM_SESSION_ID={value}\nDB_TOKEN={value}\nJWT=[REDACTED]\n"
+        "PATH={value}\nMANPATH={value}\nLS_COLORS={value}\nTERM_SESSION_ID={value}\nDB_TOKEN=[REDACTED]\nJWT=[REDACTED]\n"
     );
 
     assert_new_rule_detects(
@@ -267,7 +266,7 @@ fn name_independent_redaction_across_benign_variable_names() {
 
 #[test]
 fn realistic_mixed_env_corpus_exact_expectations() {
-    let env = IsolatedEnv::new();
+    let env = IsolatedEnv::with_heuristic();
     let mut generator = SplitMix64::new(0x7139_c0ad_58e2_4b16);
     let ls_colors = "rs=0:di=01;34:ln=01";
     // expected to survive: 19 bytes and entropy about 3.537; no 20-byte candidate exists.
@@ -329,7 +328,7 @@ fn realistic_mixed_env_corpus_exact_expectations() {
 
 #[test]
 fn jwt_shaped_value_is_covered_by_existing_jwt_rule_not_new_rule() {
-    let env = IsolatedEnv::new();
+    let env = IsolatedEnv::with_heuristic();
     // jwt-token uses (eyJ[A-Za-z0-9_-]{10,}\\.eyJ[A-Za-z0-9_-]{10,}\\.[A-Za-z0-9_-]{10,}).
     let stdout = format!("JWT={JWT_SENTINEL}\n");
     let output = run_bash(&env, &stdout);
@@ -344,7 +343,7 @@ fn jwt_shaped_value_is_covered_by_existing_jwt_rule_not_new_rule() {
 
 #[test]
 fn check_file_masks_high_entropy_env_dump() {
-    let env = IsolatedEnv::new();
+    let env = IsolatedEnv::with_heuristic();
     let mut generator = SplitMix64::new(0xbac4_397e_12d0_6f85);
     let values: Vec<String> = (0..3)
         .map(|_| high_entropy_value(&mut generator, 32))
@@ -406,7 +405,7 @@ fn check_file_masks_high_entropy_env_dump() {
 
 #[test]
 fn boundary_19_bytes_not_redacted() {
-    let env = IsolatedEnv::new();
+    let env = IsolatedEnv::with_heuristic();
     let mut generator = SplitMix64::new(0x6df1_4782_be95_30ac);
     let value = high_entropy_value(&mut generator, 19);
     assert_eq!(value.len(), 19);
@@ -417,7 +416,7 @@ fn boundary_19_bytes_not_redacted() {
 
 #[test]
 fn boundary_20_bytes_high_entropy_redacted() {
-    let env = IsolatedEnv::new();
+    let env = IsolatedEnv::with_heuristic();
     let mut generator = SplitMix64::new(0x1ca7_8e53_94b0_d26f);
     let value = high_entropy_value(&mut generator, 20);
     assert_eq!(value.len(), 20);
@@ -437,7 +436,7 @@ fn boundary_20_bytes_high_entropy_redacted() {
 
 #[test]
 fn boundary_32_bytes_low_entropy_not_redacted() {
-    let env = IsolatedEnv::new();
+    let env = IsolatedEnv::with_heuristic();
     let value = "aaaaaaaaaaaaaaaabbbbbbbbbbbbbbbb";
     assert_eq!(value.len(), 32);
     assert!(shannon_entropy(value.as_bytes()) < 2.0);
@@ -447,7 +446,7 @@ fn boundary_32_bytes_low_entropy_not_redacted() {
 
 #[test]
 fn assignment_shapes_redact_the_captured_value() {
-    let env = IsolatedEnv::new();
+    let env = IsolatedEnv::with_heuristic();
     let mut generator = SplitMix64::new(0x8fe0_64b3_1a59_c27d);
     let values: Vec<String> = (0..7)
         .map(|_| high_entropy_value(&mut generator, 32))
@@ -464,7 +463,7 @@ fn assignment_shapes_redact_the_captured_value() {
 
 #[test]
 fn standalone_bare_and_padded_base64_values_are_redacted() {
-    let env = IsolatedEnv::new();
+    let env = IsolatedEnv::with_heuristic();
     let mut generator = SplitMix64::new(0x4a12_b3de_7f80_69c5);
     let bare = high_entropy_value(&mut generator, 32);
     let quoted = high_entropy_value(&mut generator, 32);
@@ -485,7 +484,7 @@ fn standalone_bare_and_padded_base64_values_are_redacted() {
 
 #[test]
 fn per_rule_allowlist_preserves_high_entropy_value() {
-    let env = IsolatedEnv::new();
+    let env = IsolatedEnv::with_heuristic();
     let mut generator = SplitMix64::new(0x29df_5a41_c80b_7e36);
     let value = high_entropy_value(&mut generator, 32);
     let stdout = format!("SESSION={value}\n");
@@ -505,7 +504,7 @@ fn per_rule_allowlist_preserves_high_entropy_value() {
 
 #[test]
 fn key_allowlist_preserves_tmpdir_in_redact_and_check_file() {
-    let env = IsolatedEnv::new();
+    let env = IsolatedEnv::with_heuristic();
     let mut generator = SplitMix64::new(0xc431_4aa6_d41e_f36b);
     let path_value = format!(
         "/var/folders/xx/{}/T/",
@@ -540,16 +539,23 @@ fn key_allowlist_preserves_tmpdir_in_redact_and_check_file() {
     assert!(checked.stdout.is_empty());
     let stderr = String::from_utf8_lossy(&checked.stderr);
     assert!(!stderr.contains(&token));
-    assert_eq!(stderr.matches("  line:").count(), 1, "{stderr}");
+    // the token name is also read by the contextual generic-token-assignment: two findings, both
+    // on line 2, and none for the allowlisted TMPDIR on line 1.
+    assert_eq!(stderr.matches("  line:").count(), 2, "{stderr}");
+    assert_eq!(stderr.matches("  line: 2\n").count(), 2, "{stderr}");
     assert!(
         stderr.contains("  line: 2\n  rule: generic-high-entropy-value\n"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("  line: 2\n  rule: generic-token-assignment\n"),
         "{stderr}"
     );
 }
 
 #[test]
 fn unquoted_quote_and_backtick_values_are_redacted_in_full_by_the_hook() {
-    let env = IsolatedEnv::new();
+    let env = IsolatedEnv::with_heuristic();
     let mut generator = SplitMix64::new(0x9552_3ac8_2b7f_0441);
     let token = high_entropy_value(&mut generator, 32);
     let double = format!("{}\"{}", &token[..2], &token[2..]);
@@ -573,7 +579,7 @@ fn unquoted_quote_and_backtick_values_are_redacted_in_full_by_the_hook() {
 
 #[test]
 fn rooted_path_hook_output_is_preserved_while_the_next_token_is_redacted() {
-    let env = IsolatedEnv::new();
+    let env = IsolatedEnv::with_heuristic();
     let path = "/Users/example/work/rust/sekretbarilo/.claude/backlog/tasks/2026-09-08-redact-claude-masks-plain-absolute-files-9zVZK8LgjmLKdXZG.md";
     let mut generator = SplitMix64::new(0x4fae_9473_986d_12c5);
     let token = high_entropy_value(&mut generator, 32);

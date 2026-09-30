@@ -1,7 +1,7 @@
 // password strength heuristic
 // goal: block strong/complex passwords, allow simple/placeholder ones
 
-use crate::scanner::entropy;
+use crate::scanner::{entropy, wordshape};
 
 /// minimum score to consider a password "strong" (and thus a real secret)
 const STRONG_PASSWORD_THRESHOLD: f64 = 6.0;
@@ -34,6 +34,33 @@ const COMMON_PASSWORDS: &[&str] = &[
     "access",
 ];
 
+/// placeholder words the scanner already treats as non-secrets (the default stopwords and the url
+/// placeholders). a digit or `!` suffix defeats the stopword word boundary, so the assignment gate
+/// compares stems against these as well.
+const PLACEHOLDER_STEMS: &[&str] = &[
+    "changeme",
+    "example",
+    "sample",
+    "placeholder",
+    "dummy",
+    "fake",
+    "mock",
+    "test",
+    "todo",
+    "fixme",
+    "lorem",
+    "default",
+    "redacted",
+    "hidden",
+    "none",
+    "null",
+    "empty",
+];
+
+/// the key's credential words. `pass` covers password and passwd, so the two cover every key the
+/// generic-password-assignment rule accepts.
+const CREDENTIAL_WORDS: &[&[u8]] = &[b"pass", b"pwd"];
+
 /// result of password strength analysis
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
@@ -54,6 +81,233 @@ pub struct PasswordStrength {
 pub fn is_strong_password(data: &[u8]) -> bool {
     let strength = analyze_strength(data);
     strength.score >= STRONG_PASSWORD_THRESHOLD
+}
+
+/// folds common leet substitutions onto one letter each, so `P@ssw0rd` and `password` compare
+/// equal. `1`, `!` and `l` share the class of `i` because `1` stands for either letter.
+fn leet_fold(byte: u8) -> u8 {
+    match byte.to_ascii_lowercase() {
+        b'0' => b'o',
+        b'1' | b'!' | b'l' => b'i',
+        b'3' => b'e',
+        b'4' | b'@' => b'a',
+        b'5' | b'$' => b's',
+        b'7' => b't',
+        other => other,
+    }
+}
+
+fn leet_eq(value: &[u8], word: &[u8]) -> bool {
+    value.len() == word.len()
+        && value
+            .iter()
+            .zip(word)
+            .all(|(&left, &right)| leet_fold(left) == leet_fold(right))
+}
+
+/// whether the value is a dictionary or placeholder word followed only by digits and `!?.*#`,
+/// compared after leet folding on both sides. every split point inside that trailing run is
+/// tried, so a word that itself ends in a digit (`trustno1`) still matches with more digits
+/// appended, and a whole-value match needs no separate check.
+fn is_dictionary_stem(data: &[u8]) -> bool {
+    let mut stem_end = data.len();
+    while stem_end > 0
+        && matches!(
+            data[stem_end - 1],
+            b'0'..=b'9' | b'!' | b'?' | b'.' | b'*' | b'#'
+        )
+    {
+        stem_end -= 1;
+    }
+    (stem_end.max(1)..=data.len()).any(|end| {
+        COMMON_PASSWORDS
+            .iter()
+            .chain(PLACEHOLDER_STEMS)
+            .any(|word| leet_eq(&data[..end], word.as_bytes()))
+    })
+}
+
+/// a value naming the key's own credential word (`passwordFieldLabel1`, `MyPass123`, `p@ss_hint`)
+/// is a label or placeholder, not the credential.
+fn contains_credential_word(data: &[u8]) -> bool {
+    CREDENTIAL_WORDS
+        .iter()
+        .any(|word| data.windows(word.len()).any(|window| leet_eq(window, word)))
+}
+
+/// a value made only of identifier words (camel, snake, dotted, short digit runs), two or more of
+/// them meaningful, is a field label such as `DatabaseHostName3`. a meaningful word is a wordlike
+/// run of four or more letters; a common short word may sit between them. an all-caps run counts
+/// only in a separated constant (`SERVICE_HOST_NAME`): inside a camel value it is an acronym or,
+/// far more often, a random stretch of capitals. any other chunk keeps the value opaque, so a
+/// generated value is not rejected merely for having an uppercase boundary: its single letters and
+/// consonant clusters break the word structure.
+fn is_identifier_label(data: &[u8]) -> bool {
+    let Some(words) = wordshape::identifier_words(data) else {
+        return false;
+    };
+    let separated = data
+        .iter()
+        .any(|byte| !byte.is_ascii_alphanumeric() && !matches!(byte, b',' | b';'));
+    let mut meaningful = 0;
+    for word in words {
+        if word[0].is_ascii_digit() {
+            if word.len() > 4 {
+                return false;
+            }
+        } else if word.len() >= 4 && wordshape::has_wordlike_vowels(word) {
+            if separated || !word.iter().all(u8::is_ascii_uppercase) {
+                meaningful += 1;
+            }
+        } else if !wordshape::is_short_word(word) {
+            return false;
+        }
+    }
+    meaningful >= 2
+}
+
+/// whitespace-separated natural-language words (a sentence quoted after a `password:` label) are
+/// prose, not a credential. a passphrase of ordinary words is therefore missed as well, the blind
+/// spot the word-structure exemption already documents.
+fn is_prose(data: &[u8]) -> bool {
+    if !data.iter().any(u8::is_ascii_whitespace) {
+        return false;
+    }
+    let mut tokens = 0;
+    let mut words = 0;
+    for token in data
+        .split(u8::is_ascii_whitespace)
+        .filter(|token| !token.is_empty())
+    {
+        tokens += 1;
+        let start = token
+            .iter()
+            .position(|byte| !byte.is_ascii_punctuation())
+            .unwrap_or(token.len());
+        let end = token
+            .iter()
+            .rposition(|byte| !byte.is_ascii_punctuation())
+            .map_or(start, |index| index + 1);
+        let core = &token[start..end];
+        let case_consistent = core.iter().all(u8::is_ascii_lowercase)
+            || core.iter().all(u8::is_ascii_uppercase)
+            || core.split_first().is_some_and(|(first, rest)| {
+                first.is_ascii_uppercase() && rest.iter().all(u8::is_ascii_lowercase)
+            });
+        if !core.is_empty()
+            && case_consistent
+            && (core.len() <= 3 || wordshape::has_wordlike_vowels(core))
+        {
+            words += 1;
+        }
+    }
+    words >= 3 && words * 4 >= tokens * 3
+}
+
+/// minimum number of distinct bytes the interleaved lowercase+digit branch requires, so a
+/// short-period alternation of a handful of symbols does not qualify as a generated password.
+const MIN_INTERLEAVED_DISTINCT_BYTES: usize = 6;
+
+/// the longest repeating period treated as "short": a value that is its own first `k` bytes
+/// repeated (and truncated) for some `k` up to this bound reads as a pattern, not a generated
+/// secret.
+const MAX_SHORT_PERIOD: usize = 4;
+
+/// whether `data`'s shortest repeating period is at most `max_period` bytes: `data` equals its
+/// first `k` bytes repeated (and truncated to length) for some `k` in `1..=max_period`.
+fn has_short_period(data: &[u8], max_period: usize) -> bool {
+    (1..=max_period.min(data.len())).any(|period| {
+        data.iter()
+            .enumerate()
+            .all(|(index, &byte)| byte == data[index % period])
+    })
+}
+
+/// count of distinct bytes appearing anywhere in `data`.
+fn distinct_byte_count(data: &[u8]) -> usize {
+    let mut seen = [false; 256];
+    data.iter()
+        .filter(|&&byte| {
+            let is_new = !seen[byte as usize];
+            seen[byte as usize] = true;
+            is_new
+        })
+        .count()
+}
+
+/// 12+ bytes of only lowercase letters and digits, with at least two runs of each, where no run of
+/// four or more letters is wordlike, at least `MIN_INTERLEAVED_DISTINCT_BYTES` distinct bytes
+/// appear, and the value is not a short-period repetition (period at most `MAX_SHORT_PERIOD`
+/// bytes): the shape of a generated lowercase alphanumeric password rather than an alternation.
+fn is_interleaved_lowercase_digits(data: &[u8]) -> bool {
+    if data.len() < 12
+        || !data
+            .iter()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
+    {
+        return false;
+    }
+    let mut letter_runs = 0;
+    let mut digit_runs = 0;
+    for run in data.chunk_by(|left, right| left.is_ascii_digit() == right.is_ascii_digit()) {
+        if run[0].is_ascii_digit() {
+            digit_runs += 1;
+        } else {
+            letter_runs += 1;
+            if run.len() >= 4 && wordshape::has_wordlike_vowels(run) {
+                return false;
+            }
+        }
+    }
+    letter_runs >= 2
+        && digit_runs >= 2
+        && distinct_byte_count(data) >= MIN_INTERLEAVED_DISTINCT_BYTES
+        && !has_short_period(data, MAX_SHORT_PERIOD)
+}
+
+/// acceptance check for password-assignment values (used only at the generic-password-assignment
+/// gate). `concrete_literal` says the right-hand side is written as a literal: a quoted value, a
+/// shell assignment word, or a plain value in a yaml, ini-style, toml or dotenv file, never an
+/// unquoted source identifier or expression.
+///
+/// posture:
+/// - prose (three or more whitespace-separated words) is never a password.
+/// - a value scoring at least STRONG_PASSWORD_THRESHOLD is reported.
+/// - below that threshold, labels and placeholders are dropped first: a dictionary or placeholder
+///   stem followed only by digits and `!?.*#` (leet-folded), a value containing the key's
+///   credential word, or an identifier made of two or more meaningful words.
+/// - what remains is reported when it is 12+ bytes mixing lowercase, uppercase and digits (any
+///   right-hand side), or, for a concrete literal without whitespace only, when it is 8-11 bytes
+///   with four character classes or three including a special byte and no repeating period of
+///   four bytes or fewer, or 12+ bytes of interleaved lowercase letters and digits whose
+///   4+-letter runs are not wordlike, with at least six distinct bytes and no repeating period of
+///   four bytes or fewer.
+///
+/// gaps by design: word-based lowercase passwords (`hunter2hunter2`), word-built identifiers and
+/// passphrases, one- or two-class values under the threshold, 12+-byte values without uppercase
+/// that mix in punctuation, and any low-strength value written as an unquoted source expression.
+pub fn is_strong_assignment_password(data: &[u8], concrete_literal: bool) -> bool {
+    if is_prose(data) {
+        return false;
+    }
+    if is_strong_password(data) {
+        return true;
+    }
+    if is_dictionary_stem(data) || contains_credential_word(data) || is_identifier_label(data) {
+        return false;
+    }
+    let strength = analyze_strength(data);
+    if data.len() >= 12 && strength.has_lowercase && strength.has_uppercase && strength.has_digits {
+        return true;
+    }
+    if !concrete_literal || data.iter().any(u8::is_ascii_whitespace) {
+        return false;
+    }
+    let classes = strength.char_class_count;
+    ((8..=11).contains(&data.len())
+        && (classes == 4 || (classes == 3 && strength.has_special))
+        && !has_short_period(data, MAX_SHORT_PERIOD))
+        || is_interleaved_lowercase_digits(data)
 }
 
 /// perform detailed password strength analysis
@@ -131,7 +385,7 @@ pub fn analyze_strength(data: &[u8]) -> PasswordStrength {
 /// returns whether a value is a placeholder password embedded in a URL.
 ///
 /// `secret` and `passphrase` are deliberately not placeholders because
-/// `https://user:secret@host/` is the reference fixture of the bug this repairs.
+/// a url whose password is `secret` is the reference fixture of the bug this repairs.
 pub fn is_url_password_placeholder(value: &[u8]) -> bool {
     const PLACEHOLDERS: &[&[u8]] = &[
         b"password",
@@ -288,6 +542,258 @@ mod tests {
     #[test]
     fn strong_password_long_mixed() {
         assert!(is_strong_password(b"aB3dEf7hIj1kLmN0pQrS"));
+    }
+
+    #[test]
+    fn strong_assignment_password_accepts_long_mixed_alphanumeric_values() {
+        let value = [
+            'q', '2', 'r', 'Q', 't', '2', 'w', 'r', 'R', 'q', 'y', '2', 't', 'u', 'q', '5', 'i',
+            'r', 'o', 'q', 'p', 'q',
+        ]
+        .into_iter()
+        .collect::<String>()
+        .into_bytes();
+
+        assert!(!is_strong_password(&value));
+        for literal in [true, false] {
+            assert!(is_strong_assignment_password(&value, literal));
+        }
+    }
+
+    #[test]
+    fn strong_assignment_password_rejects_dictionary_word_with_trailing_digits() {
+        let dictionary_word = COMMON_PASSWORDS
+            .iter()
+            .copied()
+            .find(|word| *word == "password")
+            .unwrap();
+        let mut chars = dictionary_word.chars();
+        let capitalized = chars
+            .next()
+            .unwrap()
+            .to_uppercase()
+            .chain(chars)
+            .collect::<String>();
+        let suffix: String = (0..4).map(|index| char::from(b'1' + index as u8)).collect();
+        let value = format!("{capitalized}{suffix}");
+
+        for literal in [true, false] {
+            assert!(!is_strong_assignment_password(value.as_bytes(), literal));
+        }
+
+        let incident_shape = [
+            'q', '2', 'r', 'Q', 't', '2', 'w', 'r', 'R', 'q', 'y', '2', 't', 'u', 'q', '5', 'i',
+            'r', 'o', 'q', 'p', 'q',
+        ]
+        .into_iter()
+        .collect::<String>();
+        for literal in [true, false] {
+            assert!(is_strong_assignment_password(
+                incident_shape.as_bytes(),
+                literal
+            ));
+        }
+    }
+
+    #[test]
+    fn strong_assignment_password_keeps_length_and_class_requirements() {
+        let short: Vec<u8> = (0..11)
+            .map(|index| match index % 3 {
+                0 => b'q',
+                1 => b'2',
+                _ => b'R',
+            })
+            .collect();
+        let missing_digit: Vec<u8> = (0..20)
+            .map(|index| if index % 2 == 0 { b'q' } else { b'R' })
+            .collect();
+
+        for literal in [true, false] {
+            assert!(!is_strong_assignment_password(&short, literal));
+            assert!(!is_strong_assignment_password(&missing_digit, literal));
+        }
+    }
+
+    fn capitalized(word: &str) -> String {
+        let mut chars = word.chars();
+        chars
+            .next()
+            .map(|first| first.to_uppercase().chain(chars).collect())
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn dictionary_stem_tries_every_split_point_of_the_trailing_run() {
+        let ends_in_digit = COMMON_PASSWORDS
+            .iter()
+            .copied()
+            .find(|word| {
+                word.bytes()
+                    .last()
+                    .is_some_and(|byte| byte.is_ascii_digit())
+                    && word.bytes().any(|byte| byte.is_ascii_alphabetic())
+            })
+            .unwrap();
+        for suffix in ["", "2345", "0", "99!", "7#?", "!*."] {
+            let value = format!("{}{suffix}", capitalized(ends_in_digit));
+            assert!(is_dictionary_stem(value.as_bytes()), "{value}");
+        }
+        // leet folding on both sides: `1` stands for `i` or `l`, `@` for `a`, `0` for `o`
+        let folded = |word: &str| -> String {
+            word.chars()
+                .map(|character| match character {
+                    'a' => '@',
+                    'o' => '0',
+                    'i' | 'l' => '1',
+                    'e' => '3',
+                    's' => '5',
+                    't' => '7',
+                    other => other,
+                })
+                .collect()
+        };
+        for word in COMMON_PASSWORDS.iter().chain(PLACEHOLDER_STEMS) {
+            for suffix in ["", "1", "2024!", "#"] {
+                let value = format!("{}{suffix}", capitalized(&folded(word)));
+                assert!(is_dictionary_stem(value.as_bytes()), "{value}");
+            }
+        }
+        // a stem needs the whole word: a longer or interrupted stem is not a dictionary word
+        for value in ["admins1", "adm_in1", "xadmin1", "admin1x"] {
+            assert!(!is_dictionary_stem(value.as_bytes()), "{value}");
+        }
+    }
+
+    #[test]
+    fn credential_words_and_identifier_labels_are_recognized() {
+        for value in [
+            ["password", "Field", "Label", "1"].concat(),
+            ["confirm", "_", "pwd"].concat(),
+            ["P@", "55", "hint"].concat(),
+        ] {
+            assert!(contains_credential_word(value.as_bytes()), "{value}");
+        }
+        for value in [
+            ["Database", "Host", "Name", "3"].concat(),
+            ["db", ".", "connection", ".", "timeout"].concat(),
+            ["SERVICE", "_", "HOST", "_", "URL", "_", "2"].concat(),
+            ["Secure", "Router", "123"].concat(),
+        ] {
+            assert!(is_identifier_label(value.as_bytes()), "{value}");
+        }
+        for value in [
+            // one meaningful word, an all-caps run inside a camel value, a single-letter chunk, a
+            // consonant cluster, a long digit run, or a byte outside identifiers keeps a value
+            // opaque
+            ["Router", "123"].concat(),
+            ["Web", "Router", "123"].concat(),
+            ["ROUTE", "Name", "1"].concat(),
+            ["q2r", "Q", "t2wr"].concat(),
+            ["Xkcd", "Mnbv", "7"].concat(),
+            ["Secure", "Router", "12345"].concat(),
+            ["Secure", "!", "Router"].concat(),
+        ] {
+            assert!(!is_identifier_label(value.as_bytes()), "{value}");
+        }
+    }
+
+    #[test]
+    fn prose_and_interleaving_shapes() {
+        assert!(is_prose(
+            b"Keyring: stores the value in the OS keychain; never written to disk."
+        ));
+        assert!(!is_prose(b"two words"));
+        assert!(!is_prose(["aB9!", "wX2#", "rT7pL4"].join(" ").as_bytes()));
+        assert!(!is_prose(b"NoSpacesAtAll"));
+
+        // generated: consonant, digit, consonant, digit, ...
+        let consonants = b"bcdfghjkmnpqrstvwxz";
+        let interleaved = |length: usize| -> Vec<u8> {
+            (0..length)
+                .map(|index| {
+                    if index % 2 == 0 {
+                        consonants[(index * 7) % consonants.len()]
+                    } else {
+                        b'0' + (index * 3 % 10) as u8
+                    }
+                })
+                .collect()
+        };
+        assert!(is_interleaved_lowercase_digits(&interleaved(12)));
+        // a run of four consonants has no vowel, so it is not wordlike
+        let consonant_run = [&consonants[..4], &interleaved(9)[1..]].concat();
+        assert_eq!(consonant_run.len(), 12);
+        assert!(is_interleaved_lowercase_digits(&consonant_run));
+        // a wordlike run of four or more letters, a single digit run, another class, or length
+        assert!(!is_interleaved_lowercase_digits(
+            ["hunter", "2", "hunter", "2"].concat().as_bytes()
+        ));
+        assert!(!is_interleaved_lowercase_digits(
+            &[&consonants[..10], b"42".as_slice()].concat()
+        ));
+        assert!(!is_interleaved_lowercase_digits(
+            &[interleaved(11).as_slice(), b"A".as_slice()].concat()
+        ));
+        assert!(!is_interleaved_lowercase_digits(&interleaved(11)));
+    }
+
+    /// xorshift64*
+    fn next(state: &mut u64) -> u64 {
+        *state ^= *state >> 12;
+        *state ^= *state << 25;
+        *state ^= *state >> 27;
+        state.wrapping_mul(0x2545_F491_4F6C_DD1D)
+    }
+
+    #[test]
+    fn random_values_are_never_placeholders_and_rarely_labels() {
+        const SAMPLES: usize = 5_000;
+        let alphabet = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+        let mut state = 0x9E37_79B9_7F4A_7C15_u64;
+        let mut credential_words = 0;
+        for length in 8..=22 {
+            let mut labels = 0;
+            let mut stems = 0;
+            for _ in 0..SAMPLES {
+                let value: Vec<u8> = (0..length)
+                    .map(|_| alphabet[(next(&mut state) >> 33) as usize % alphabet.len()])
+                    .collect();
+                labels += usize::from(is_identifier_label(&value));
+                stems += usize::from(is_dictionary_stem(&value));
+                credential_words += usize::from(contains_credential_word(&value));
+            }
+            eprintln!("base62 length {length}: labels {labels}/{SAMPLES}, stems {stems}");
+            assert_eq!(stems, 0, "length {length}");
+            // two random runs of four letters with a vowel can read as two camel words: a
+            // documented residual of at most 2 in 1000, none from 20 bytes up
+            assert!(labels * 500 <= SAMPLES, "length {length}: {labels}");
+            if length >= 20 {
+                assert_eq!(labels, 0, "length {length}");
+            }
+        }
+        // a random value spells pass or pwd less than once per 1000 samples
+        eprintln!("credential words in random base62: {credential_words}");
+        assert!(credential_words * 1000 < SAMPLES * 15, "{credential_words}");
+
+        // an 8-11 byte candidate reaches the veto with a special byte only when that byte is a
+        // separator, so this is the population whose recall the veto can cost
+        let separated = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-";
+        for length in 8..=11 {
+            let mut labels = 0;
+            let mut drawn = 0;
+            while drawn < SAMPLES {
+                let value: Vec<u8> = (0..length)
+                    .map(|_| separated[(next(&mut state) >> 33) as usize % separated.len()])
+                    .collect();
+                if !value.iter().any(|byte| matches!(byte, b'.' | b'_' | b'-')) {
+                    continue;
+                }
+                drawn += 1;
+                labels += usize::from(is_identifier_label(&value));
+            }
+            eprintln!("separated length {length}: labels {labels}/{SAMPLES}");
+            assert!(labels * 500 <= SAMPLES, "length {length}: {labels}");
+        }
     }
 
     #[test]

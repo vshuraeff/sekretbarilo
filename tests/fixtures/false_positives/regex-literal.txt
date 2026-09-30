@@ -1,6 +1,6 @@
 # regex-literal: regular expressions in source and configuration.
 # character classes, quantifiers, escapes and groups are structure, not opaque secrets.
-# known gap: word alternation alone, such as `re.compile(r"alpha|bravo|charlie")`, is not regex evidence by design.
+# word alternation alone, such as `re.compile(r"alpha|bravo|charlie")`, is not regex evidence; the word step claims it (see alternation.txt).
 slug_pattern = "^[a-z]+$"
 upper_pattern = "[A-Z]{2,8}"
 word_pattern = r"[\d_]+"

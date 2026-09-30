@@ -56,6 +56,29 @@ fn e2e_check_file_with_secret() {
 }
 
 #[test]
+fn e2e_check_file_detects_long_mixed_assignment_password() {
+    let dir = tempfile::tempdir().unwrap();
+    let env = IsolatedEnv::new();
+    let file_path = dir.path().join("settings.yaml");
+    let value: String = [
+        'q', '2', 'r', 'Q', 't', '2', 'w', 'r', 'R', 'q', 'y', '2', 't', 'u', 'q', '5', 'i', 'r',
+        'o', 'q', 'p', 'q',
+    ]
+    .into_iter()
+    .collect();
+    std::fs::write(&file_path, format!("x_password: \"{value}\"\n")).unwrap();
+
+    let output = env
+        .command()
+        .args(["check-file", file_path.to_str().unwrap()])
+        .output()
+        .expect("failed to execute check-file");
+
+    assert_eq!(output.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("generic-password-assignment"));
+}
+
+#[test]
 fn e2e_check_file_stdin_json() {
     let dir = tempfile::tempdir().unwrap();
     let env = IsolatedEnv::new();

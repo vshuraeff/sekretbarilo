@@ -15,5 +15,28 @@ review/9zjEfcywkWlJ5QOj/platform/checklist
 # measurement on real payloads before being added.
 # known gap: a relative path with two id segments is not covered (disqualified by design: more than
 # one id-shaped segment is treated as ambiguous rather than as two ids).
-# known gap: a relative path with an assignment key in front (e.g. `token = task/.../lead`) is not
-# covered; presence of a key is treated as reducing confidence that the value is a harmless path.
+# a keyed relative path is covered when every part between `/ . - _ + :` is a word, a number of at
+# most eight digits or the one letter-and-digit part of at most eight bytes it may carry, and its
+# leaf, read before a `:` suffix, is wordy.
+model: provider/abc-5-large:medium
+Evidence: .agent/tasks/ab-12345-run7-migration/02-summary
+path: docs/plans/hud-refresh-flow.md
+where: Sources/AppKit/WindowStore+Layout.swift:restoreFrame
+where: Sources/Kit/QuickPanel+Keyboard.swift:handleKey
+# known gap: a keyed relative path whose id segment is longer than eight bytes
+# (e.g. `token = task/<16-byte id>/lead`) is reported; a key reduces confidence that a longer mixed
+# segment is a harmless id.
+# a keyed relative path reads a usage placeholder as the words it holds, and sets aside git's
+# exclude magic before a pathspec and an English possessive after its leaf; a dated file name,
+# `YYYY-MM-DD-` then words, needs no `/`, keyed or alone on its line.
+usage: Tests/<ExampleClass>/<method_name>/fixtures.json
+template: docs/<workspace>/<task-id>/manifest.md
+exclude: ':!vendor/widget-toolkit/generated-bindings.json'
+evidence: guides/widget-timeout-applies-per-phase.md's
+source: tasks/review-widget-report-summary-message.md's
+2026-09-14-widget-cache-enforces-minimum-lifetime.md
+2026-07-04-release-planning-notes.md
+plan: 2026-09-14-widget-cache-enforces-minimum-lifetime.md
+notes: docs/plans/2026-09-10-docs-site-redesign.md
+# known gap: a dated name whose words are all short (`2026-08-17-<five words of three to five
+# letters>.md`) reads as a value cut into short groups and stays reported.

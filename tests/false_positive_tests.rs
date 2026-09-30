@@ -216,7 +216,7 @@ fn entropy_flags_base64_image_data_uri() {
 
 #[test]
 fn entropy_flags_base64_in_test_fixture() {
-    // tier3_skip_test_paths (decision C, default true) turns the keywordless entropy rule
+    // heuristic_skip_test_paths (decision C, default true) turns the keywordless entropy rule
     // off under a tests/fixtures path segment, so the default config sees nothing here.
     let path = "tests/fixtures/data.rs";
     let line: &[u8] = b"let encoded = \"SGVsbG8gV29ybGQhIFRoaXMgaXMgYSB0ZXN0IG1lc3NhZ2U=\";";
@@ -237,13 +237,13 @@ fn entropy_flags_base64_in_test_fixture() {
 
     // the original intent, still detected when the test-path skip is switched off.
     let mut al = config::build_allowlist(&config::ProjectConfig::default(), &rules).unwrap();
-    al.tier3_skip_test_paths = false;
+    al.heuristic_skip_test_paths = false;
     let file = make_file(path, vec![(1, line)]);
     let findings = scan(&[file], &scanner, &al);
     assert_eq!(
         findings.len(),
         1,
-        "expected one entropy finding with tier3_skip_test_paths=false: {findings:?}"
+        "expected one entropy finding with heuristic_skip_test_paths=false: {findings:?}"
     );
     assert_eq!(findings[0].rule_id, "generic-high-entropy-value");
     assert!(findings[0].matched_value.len() >= 20);
@@ -625,7 +625,7 @@ fn fp_full_pipeline_test_file_with_assertions() {
     let rules = load_default_rules().unwrap();
     let scanner = compile_rules(&rules).unwrap();
 
-    // the filename matches `_test.` too, so tier3_skip_test_paths (decision C, default
+    // the filename matches `_test.` too, so heuristic_skip_test_paths (decision C, default
     // true) drops the keywordless entropy rule here regardless of the directory segment.
     let al = config::build_allowlist(&config::ProjectConfig::default(), &rules).unwrap();
     let findings = scan(&files, &scanner, &al);
@@ -655,7 +655,7 @@ fn fp_full_pipeline_test_file_with_assertions() {
     // the original intent, still detected when the test-path skip is switched off:
     // opaque call-argument literals are tier-3 candidates (s19b), and nothing else fires.
     let mut al = config::build_allowlist(&config::ProjectConfig::default(), &rules).unwrap();
-    al.tier3_skip_test_paths = false;
+    al.heuristic_skip_test_paths = false;
     let findings = scan(&files, &scanner, &al);
     assert!(
         findings.len() == 1

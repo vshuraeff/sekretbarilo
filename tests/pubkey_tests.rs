@@ -299,7 +299,9 @@ fn config_detect_public_keys_merge_overlay_wins() {
             detect_public_keys: Some(false),
             exemption_layer: None,
             source_posture: None,
-            tier3_skip_test_paths: None,
+            heuristic_skip_test_paths: None,
+            rule_classes: Default::default(),
+            rules: Default::default(),
         },
         ..Default::default()
     };
@@ -309,7 +311,9 @@ fn config_detect_public_keys_merge_overlay_wins() {
             detect_public_keys: Some(true),
             exemption_layer: None,
             source_posture: None,
-            tier3_skip_test_paths: None,
+            heuristic_skip_test_paths: None,
+            rule_classes: Default::default(),
+            rules: Default::default(),
         },
         ..Default::default()
     };
@@ -327,7 +331,9 @@ fn config_detect_public_keys_base_preserved_when_overlay_none() {
             detect_public_keys: Some(true),
             exemption_layer: None,
             source_posture: None,
-            tier3_skip_test_paths: None,
+            heuristic_skip_test_paths: None,
+            rule_classes: Default::default(),
+            rules: Default::default(),
         },
         ..Default::default()
     };
@@ -353,7 +359,9 @@ fn build_allowlist_detect_public_keys_true_when_set() {
             detect_public_keys: Some(true),
             exemption_layer: None,
             source_posture: None,
-            tier3_skip_test_paths: None,
+            heuristic_skip_test_paths: None,
+            rule_classes: Default::default(),
+            rules: Default::default(),
         },
         ..Default::default()
     };

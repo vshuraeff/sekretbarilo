@@ -1,0 +1,29 @@
+# syntax-values: an opaque value in every position the syntax exemption reads as source text.
+# each shape mirrors a false-positive shape of swift-macro.txt, member-chain.txt,
+# type-expression.txt, code-expression.txt or call-opener.txt with the value in the variable slot,
+# so a reading that widens past its grammar shows up here as a missed value.
+generic-high-entropy-value	        #expect({S32})
+generic-high-entropy-value	        #expect(settings.{S32})
+generic-high-entropy-value	        #expect(manager.installedHooks.contains({S36}))
+generic-high-entropy-value	        #expect(Session(identifier: {S32}).displayTitle(forWindow: 2) == expectedTitle)
+generic-high-entropy-value	            let name = #selector({S32}(_:))
+generic-high-entropy-value	    @AppStorage({S32})
+generic-high-entropy-value	    @AppStorage(PreferenceKeys.{S40})
+generic-high-entropy-value	#[serial({S32})]
+generic-high-entropy-value	        let frame = NSApp.{S36}?.firstResponder
+generic-high-entropy-value	            action: AppActions.{S32},
+generic-high-entropy-value	            action: {S32}.{S36},
+generic-high-entropy-value	    source: &runtime_config.{HEX40},
+generic-high-entropy-value	        if let session = $0.{S32}.first(where: { $0.isFocused }) {
+generic-high-entropy-value	        self.0.{S32}.removeAll()
+generic-high-entropy-value	    func handleAction(ui: {S32}?) {
+generic-high-entropy-value	    var hostController: {S36}!
+generic-high-entropy-value				expected: map[string]{S32}{"alpha": first},
+generic-high-entropy-value	    var isEnabled: Bool { preferences.value(forKey: {S32}).boolValue }
+generic-high-entropy-value	            try await store.update(workspace: {S40})?.refreshSessions()
+generic-high-entropy-value				value.(*widgetState).Transition({S32})
+generic-high-entropy-value				value.({S32}).Transition(expectedState)
+generic-high-entropy-value	        let text = build("prefix-\(value)-{S32}")
+generic-high-entropy-value	            register{S32}()
+generic-high-entropy-value			auto key = std::make_unique<KeyStream>({S32}, mode, cipher,
+generic-high-entropy-value	    let mut state = Wrapping(0x{HEX32});

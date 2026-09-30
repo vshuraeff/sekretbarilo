@@ -1,0 +1,23 @@
+# argv-env-assignments: credential-named NAME=value pairs as a process listing (pgrep -fl, ps) prints
+# them, at line start and embedded among other pairs, paths and flags. an earlier quote byte on the
+# line, stray or opening a quoted phrase, must not hide the assignment.
+# format: <rule id> TAB <line>. the test expands the placeholder, so no opaque literal is stored here.
+# a UUID under a *_CLIENT_ID key is absent on purpose: it is an identifier by value shape and by key,
+# and false_positives/env-var-name.txt keeps the same shape under ACME_WIDGET_TENANT_ID clean.
+generic-high-entropy-value	VAST_AI_API_KEY={HEX64}
+generic-high-entropy-value	41234 /usr/bin/env LANG=en_US.UTF-8 TERM=xterm-256color PATH=/usr/bin:/bin HOME=/home/u VAST_AI_API_KEY={HEX64} bundle exec jekyll serve
+generic-high-entropy-value	ZEROENTROPY_API_KEY={HEX32}
+generic-high-entropy-value	41234 /usr/bin/env LANG=en_US.UTF-8 ZEROENTROPY_API_KEY={HEX32} PATH=/usr/bin:/bin jekyll serve --port 4000
+generic-high-entropy-value	ZEROENTROPY_API_KEY={S40}
+generic-high-entropy-value	41234 /bin/zsh -c -l source /home/u/.cache/snapshot.sh && eval 'cd /home/u/site && ZEROENTROPY_API_KEY={S40} bundle exec jekyll serve' < /dev/null
+generic-high-entropy-value	PUSHOVER_APP_TOKEN={S32}
+generic-high-entropy-value	41234 /usr/bin/env TERM=xterm-256color PUSHOVER_APP_TOKEN={S32} HOME=/home/u /usr/local/bin/ruby -w jekyll serve
+generic-high-entropy-value	41234 /usr/bin/ruby PS1="%n@%m VAST_AI_API_KEY={HEX64} PROMPT="%# " jekyll serve
+generic-high-entropy-value	41234 /usr/bin/ruby JEKYLL_ARGS='--trace PUSHOVER_APP_TOKEN={S32} --verbose' jekyll serve
+# the contextual rules read the same embedded assignments by their credential-named keys, with the
+# heuristic rule on or off; a hex key is measured by its hex symbols.
+generic-api-key	41234 /usr/bin/env LANG=en_US.UTF-8 TERM=xterm-256color PATH=/usr/bin:/bin HOME=/home/u VAST_AI_API_KEY={HEX64} bundle exec jekyll serve
+generic-api-key	41234 /bin/zsh -c -l source /home/u/.cache/snapshot.sh && eval 'cd /home/u/site && ZEROENTROPY_API_KEY={S40} bundle exec jekyll serve' < /dev/null
+generic-token-assignment	41234 /usr/bin/env TERM=xterm-256color PUSHOVER_APP_TOKEN={S32} HOME=/home/u /usr/local/bin/ruby -w jekyll serve
+generic-token-assignment	41234 /usr/bin/ruby JEKYLL_ARGS='--trace PUSHOVER_APP_TOKEN={S32} --verbose' jekyll serve
+generic-secret-assignment	41234 /usr/bin/env DJANGO_SETTINGS_MODULE=app.settings DJANGO_SECRET_KEY={S36} gunicorn app.wsgi

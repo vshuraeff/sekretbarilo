@@ -1,0 +1,29 @@
+# reference-values: an opaque value inside a reference path, a parameter expansion, a list, a
+# module path, a scheme-less url or a dated file name. the syntax around it vouches for nothing,
+# so each value stays reported in every position the path recognizers read.
+# format: <rule id> TAB <line>.
+generic-high-entropy-value	cache_dir="${STATE_DIR:-{S32}}/settings.log"
+generic-high-entropy-value	cache_dir="$HOME/{S32}"
+generic-high-entropy-value	cache_dir="$HOME/{S32}/settings.log"
+generic-high-entropy-value	message_log="${STATE_DIR:?{S32}}/run.log"
+generic-high-entropy-value	display_name="${display_name//{S32}/}"
+generic-high-entropy-value	config_path="${config_path/#{S32}/$HOME}"
+generic-high-entropy-value	config_path="${config_path/#\~/{S32}}"
+generic-high-entropy-value	bundle_stem="${bundle_name%{S32}}"
+generic-high-entropy-value	entry="${cleanup_patterns[{S32}]}"
+generic-high-entropy-value	editor="${EDITOR:-${VISUAL:-{S32}}}"
+generic-high-entropy-value	output="$({S32})/run.log"
+# known gap: a command with an argument, `output="$(cmd {S32})/run.log"`, is not reported at all:
+# a quoted value holding whitespace is dropped as a phrase before any exemption runs (the same for
+# `output="cmd {S32}"`), and the unquoted form ends the capture at the space.
+generic-high-entropy-value	cache_glob="$HOME/Library/Caches/{S32}*"
+generic-high-entropy-value	cleanup_list="$HOME/Library/Caches|{S32}|backups"
+generic-high-entropy-value	PATH="{S32}:$PATH"
+generic-high-entropy-value	hook_path="\"$HOME/.config/{S32}\""
+generic-high-entropy-value	stop_file="${TMPDIR:-/tmp}/{S32}_$$.flag"
+generic-high-entropy-value	cache_dir="$HOME/{B64_44}/settings.log"
+generic-high-entropy-value	module_path: github.com/example/{S32}
+generic-high-entropy-value	asset_url: //cdn.example.com/{S32}
+generic-high-entropy-value	asset_url: //cdn.example.com/assets/{S32}/app.js
+generic-high-entropy-value	notes: 2026-09-10-{S32}.md
+generic-high-entropy-value	usage: docs/<{S32}>/notes.md

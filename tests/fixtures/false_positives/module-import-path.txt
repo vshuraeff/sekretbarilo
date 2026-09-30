@@ -1,0 +1,18 @@
+# module-import-path: module and package paths rooted at a host, as go import lists, go.mod and
+# docs write them. a host vouches for nothing after it, so every part after it reads as a word or a
+# short number in coherent case, a single letter or a `vN` major version, at most one part mixes
+# digits with short letters, no run of short letter groups crosses the path, a run of 20 bytes or
+# more reads as a file name, and the leaf is wordy.
+	"github.com/charmbracelet/x/ansi"
+	"github.com/charmbracelet/x/exp/teatest/v2"
+	"github.com/shirou/gopsutil/v4/net"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"google.golang.org/protobuf/types/known/timestamppb"
+	k8s.io/apimachinery/pkg/apis/meta/v1/unstructured
+	sigs.k8s.io/controller-runtime/pkg/client
+	google.golang.org/protobuf/types/known/timestamppb
+# the same reading keeps these shapes clear, which base already left alone.
+	"golang.org/x/net/http2"
+	github.com/example/widget-toolkit/v2/renderer
+module_path: github.com/example/widget-service/internal/transport

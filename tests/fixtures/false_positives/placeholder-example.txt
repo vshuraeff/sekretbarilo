@@ -10,3 +10,12 @@ AWS_SECRET_ACCESS_KEY=<replace-me-before-running>
 secret_key = "changeme-changeme-changeme"
 database_password: "{{ vault.acme.widget.database_password }}"
     "authorization": "Bearer <token>"
+# signature prefixes do not turn repetitive placeholder bodies into credentials.
+OPENAI_API_KEY="sk-proj-________________________"
+OPENAI_API_KEY="sk-proj-------------------------"
+OPENAI_API_KEY="sk-proj-a_a_a_a_a_a_a_a_a_a_a_a_"
+OPENAI_API_KEY="sk-proj-ab-ab-ab-ab-ab-ab-ab-ab-"
+OPENAI_API_KEY="sk-proj-a_-a_-a_-a_-a_-a_-a_-a_-"
+OPENAI_API_KEY="sk-proj-abc_-abc_-abc_-abc_-abc_-"
+OPENAI_API_KEY="sk-proj-123_-123_-123_-123_-123_-"
+OPENAI_API_KEY="sk-proj-abAB_-abAB_-abAB_-abAB_-"

@@ -65,7 +65,7 @@ Notice the matcher. Redaction runs after `Bash`, `Read` and `Grep` return, not b
 
 ## Step 3: create a value worth hiding
 
-The documentation never contains a detectable value, so we generate our own. Thirty random bytes in base64 give a forty-character string, which clears both gates the catch-all rule applies: at least twenty bytes, and Shannon entropy of at least 4.0 bits per byte.
+The documentation never contains a detectable value, so we generate our own. Thirty random bytes in base64 give a forty-character value for the enabled contextual `generic-api-key` rule. Its `api_key` assignment and entropy threshold supply the detection evidence. The keywordless heuristic rule is off by default in 0.9.0.
 
 ```sh
 openssl rand -base64 30 | sed 's/.*/api_key = "&"/' > config.txt
@@ -82,20 +82,15 @@ sekretbarilo check-file config.txt
 
   file: config.txt
   line: 1
-  rule: generic-high-entropy-value
-  match: zI************************************/8
-
-  file: config.txt
-  line: 1
   rule: generic-api-key
   match: zI************************************/8
 
-file contains 2 secret(s). reading blocked to prevent secret exposure.
+file contains 1 secret(s). reading blocked to prevent secret exposure.
 ```
 
-Two rules matched the same value: the catch-all entropy rule, which ignores the name on the left of the `=`, and the generic API-key rule, which was drawn in by the name `api_key`.
+With default settings, one rule matches: `generic-api-key`, drawn in by the name `api_key`. If your configuration enables `generic-high-entropy-value`, it may report the same value as a second finding.
 
-The catch-all rule also runs a layer of structural exemptions that dismiss values whose shape is not a credential — paths, URLs, import lines, source expressions. A quoted random value assigned to a name is none of those, so it survives the layer and is reported. [How secret detection works]({{ '/how-detection-works/' | relative_url }}) covers the thirteen steps.
+When explicitly enabled, the heuristic rule also runs a layer of structural exemptions that dismiss values whose shape is not a credential — paths, URLs, import lines, source expressions. A quoted random value assigned to a name is none of those, so it survives the layer and is reported. [How secret detection works]({{ '/how-detection-works/' | relative_url }}) covers the fourteen steps.
 
 The `match` line is how sekretbarilo reports a finding: first two characters, last two characters, asterisks in between. Enough to recognise which value it was, not enough to reconstruct it. Your own characters will differ from the ones above.
 

@@ -47,7 +47,10 @@ pub fn parse_diff(input: &[u8]) -> Vec<DiffFile> {
 /// parse a single file block starting at a "diff --git" line.
 /// returns the DiffFile and the number of lines consumed.
 fn parse_file_block(lines: &[&[u8]], start: usize, total: usize) -> (DiffFile, usize) {
-    let header = lines[start];
+    // the file header establishes diff framing. an lf-framed git diff may
+    // still carry source cr bytes on added lines.
+    let crlf_framing = lines[start].ends_with(b"\r");
+    let header = lines[start].strip_suffix(b"\r").unwrap_or(lines[start]);
     let path = extract_path_from_diff_header(header);
 
     let mut file = DiffFile {
@@ -64,7 +67,7 @@ fn parse_file_block(lines: &[&[u8]], start: usize, total: usize) -> (DiffFile, u
 
     // parse metadata lines between "diff --git" and first hunk or next diff
     while i < total {
-        let line = lines[i];
+        let line = lines[i].strip_suffix(b"\r").unwrap_or(lines[i]);
 
         if line.starts_with(b"diff --git ") {
             // next file block
@@ -92,7 +95,7 @@ fn parse_file_block(lines: &[&[u8]], start: usize, total: usize) -> (DiffFile, u
             // deleted file, path stays from header
         } else if line.starts_with(b"@@") {
             // start of a hunk, parse it
-            let (added, consumed) = parse_hunk(lines, i, total);
+            let (added, consumed) = parse_hunk(lines, i, total, crlf_framing);
             file.added_lines.extend(added);
             i += consumed;
             continue;
@@ -131,7 +134,12 @@ fn extract_path_from_diff_header(header: &[u8]) -> String {
 
 /// parse a hunk starting at an @@ line.
 /// returns added lines and the number of lines consumed.
-fn parse_hunk(lines: &[&[u8]], start: usize, total: usize) -> (Vec<AddedLine>, usize) {
+fn parse_hunk(
+    lines: &[&[u8]],
+    start: usize,
+    total: usize,
+    crlf_framing: bool,
+) -> (Vec<AddedLine>, usize) {
     let hunk_header = lines[start];
     let new_start_line = parse_hunk_header_new_start(hunk_header);
 
@@ -140,7 +148,11 @@ fn parse_hunk(lines: &[&[u8]], start: usize, total: usize) -> (Vec<AddedLine>, u
     let mut i = start + 1;
 
     while i < total {
-        let line = lines[i];
+        let line = if crlf_framing {
+            lines[i].strip_suffix(b"\r").unwrap_or(lines[i])
+        } else {
+            lines[i]
+        };
 
         if line.starts_with(b"diff --git ") || line.starts_with(b"@@") {
             // next file or next hunk

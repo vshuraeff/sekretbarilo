@@ -76,7 +76,7 @@ sekretbarilo --help
 
 ## Installing git hooks
 
-sekretbarilo integrates with git through hooks. You can install hooks locally (per project) or globally (all repositories).
+sekretbarilo integrates with git through hooks. You can install hooks locally (per project) or globally (all repositories). What each choice changes, which hook wins when both exist, and why re-running an install is safe are explained in [Global and local hook installation]({{ '/hook-installation-scopes/' | relative_url }}).
 
 ### Pre-commit hooks
 
@@ -136,6 +136,8 @@ sekretbarilo install agent-hook claude
 cat .claude/settings.json
 ```
 
+This creates or modifies `./.claude/settings.json` in your project root. The hook only applies when Claude Code is run from this project.
+
 For a new installation this selects `block`: sekretbarilo checks files before `Read` and blocks access if secrets are detected. Reinstallation without `--mode` preserves the mode already installed in the selected settings file.
 
 #### Claude Code: install globally (all projects)
@@ -148,7 +150,7 @@ sekretbarilo install agent-hook claude --global
 cat ~/.claude/settings.json
 ```
 
-Global agent hooks protect all projects where Claude Code is used.
+This applies the hook to all projects where Claude Code runs under your user account.
 
 #### Claude Code: choose output redaction
 
@@ -171,9 +173,13 @@ sekretbarilo install agent-hook claude --settings .claude/settings.local.json --
 
 `redact` requires Claude Code >= 2.1.121. A missing, unknown, or older version prevents the installer from changing the previous Claude protection. The synchronous `PostToolUse` hook uses a 10-second timeout; it replaces detected values with `[REDACTED]` in memory and preserves source files and response structure.
 
-Mode changes affect only sekretbarilo handlers in the selected settings file. Other hooks are preserved. Installation and `doctor` warn if a blocking Read hook in the other local/global scope can prevent a result from reaching redaction. Set the intended mode explicitly in each affected scope. Read the [redaction coverage and limitations]({{ '/agent-hooks/#redact-mode-output-editor' | relative_url }}) before relying on it.
+Without `--mode`, installation preserves the mode already present in the selected settings file; a new installation uses `block`. `install all` follows the same rule and accepts `--mode block|redact` for its Claude step. `--mode` does not change Codex behavior.
 
-`--settings <path>` installs into that exact file, mutually exclusive with `--global`; a relative path resolves against the current directory, not the repository root, and this works even outside a git repository. Writing into an arbitrary file does not by itself make Claude Code load it: Claude picks up a settings file only when it is one of its standard locations, when Claude is launched with its own `--settings <path>` flag, or when the file is the `settings.json` of the profile directory named by `CLAUDE_CONFIG_DIR`. See the [Claude Code CLI reference](https://code.claude.com/docs/en/cli-reference) and the [configuration directory docs](https://code.claude.com/docs/en/claude-directory).
+Switching modes replaces only sekretbarilo's handlers in the selected file, atomically and without duplicates. Other hooks and their order are preserved. It does not switch hooks in another settings scope. A global blocking Read hook can still block a read before a local redaction hook gets any result, and the reverse scope combination has the same issue. Installation and `doctor` report this conflict; choose the intended mode explicitly in each affected scope. Read the [redaction coverage and limitations]({{ '/agent-hooks/#redact-mode-output-editor' | relative_url }}) before relying on it.
+
+**Targeting an explicit file.** `--settings <path>` installs into exactly that file instead of the local or global default, and is mutually exclusive with `--global`. A relative path resolves against the current directory of the invocation, not the repository root, and the flag works outside a git repository too; the file is created if absent, and existing content and other hooks are preserved exactly as with the default locations. Scope-conflict warnings from installation and `doctor` treat the explicit file as one more scope alongside local and global.
+
+Writing into an arbitrary file does not register a new Claude Code profile by itself: Claude only loads a settings file when it is one of its standard locations, when Claude is launched with its own `--settings <path>` flag, or when the file is the `settings.json` of the profile directory named by `CLAUDE_CONFIG_DIR`. See the [Claude Code CLI reference](https://code.claude.com/docs/en/cli-reference) and the [configuration directory docs](https://code.claude.com/docs/en/claude-directory). `sekretbarilo doctor --settings <path>` inspects the file's contents; it is not proof that a running Claude Code session has actually loaded it.
 
 #### Codex CLI: install locally (single project)
 
@@ -188,6 +194,8 @@ sekretbarilo install agent-hook codex
 cat .codex/hooks.json
 ```
 
+This creates or modifies `.codex/hooks.json` in your repository root. The hook only applies when Codex CLI runs in this project.
+
 Now when Codex CLI is about to apply a patch or run a shell command, sekretbarilo scans it first and blocks the tool call if secrets are detected.
 
 #### Codex CLI: install globally (all projects)
@@ -200,7 +208,7 @@ sekretbarilo install agent-hook codex --global
 cat ~/.codex/hooks.json
 ```
 
-The global hook is written to `$CODEX_HOME/hooks.json`, which defaults to `~/.codex/hooks.json` when `CODEX_HOME` is unset.
+This writes `$CODEX_HOME/hooks.json` — `~/.codex/hooks.json` when `CODEX_HOME` is unset — and applies to every project where Codex CLI runs under your user account.
 
 #### Codex CLI: approve the hook
 
@@ -221,67 +229,28 @@ See [Agent Hooks]({{ '/agent-hooks/#hook-trust' | relative_url }}) for the detai
 Install the pre-commit hook and every supported agent hook in one command:
 
 ```sh
-# install all hooks locally
+# install locally (project pre-commit + project agent hooks)
 sekretbarilo install all
 
-# install all hooks globally
+# install globally (global pre-commit + global agent hooks)
 sekretbarilo install all --global
 
 # select claude redaction while installing the other hooks normally
 sekretbarilo install all --mode redact
 ```
 
-This covers the pre-commit hook, the Claude Code hook, and the Codex CLI hook. The Codex step is skipped with a `[SKIP]` line when `codex` is neither on `PATH` nor has a `$CODEX_HOME` directory. Omitted `--mode` preserves an existing Claude mode or uses `block` for a new install; selecting or preserving `redact` requires a supported Claude version. Follow installation with `/hooks` in Codex to approve its hook.
+`install all` covers the pre-commit hook, the Claude Code hook, and the Codex CLI hook, in that order, reporting each one as it goes.
 
-## Understanding global vs local installation
+Only the Codex step is conditional. Codex is looked for on `PATH` and at `$CODEX_HOME` (default `~/.codex`); when neither is present the step is skipped with a `[SKIP]` line rather than failing:
 
-### Local installation
-
-- Hooks are installed in the current project: `.git/hooks/` for pre-commit, `.claude/settings.json` for Claude Code, `.codex/hooks.json` for Codex CLI
-- Only affects the current repository
-- Requires running `sekretbarilo install` in each project
-
-Use local installation when:
-- You want project-specific hook behavior
-- You're testing sekretbarilo before deploying globally
-- Different projects need different configurations
-
-### Global installation
-
-- Hooks are installed in your home directory: `~/.config/git/hooks/` for pre-commit (via `core.hooksPath`), `~/.claude/settings.json` for Claude Code (or `$CLAUDE_CONFIG_DIR/settings.json` when that variable is set and non-empty), `$CODEX_HOME/hooks.json` (default `~/.codex/hooks.json`) for Codex CLI
-- Applies to all repositories automatically
-- One-time setup for all projects
-
-Use global installation when:
-- You want consistent protection across all projects
-- You work on multiple repositories
-- You want new repositories to be protected automatically
-
-### Precedence
-
-When both global and local hooks exist:
-
-1. **Pre-commit hooks**: the global one wins, and completely. `core.hooksPath` replaces `.git/hooks/` instead of layering with it, so once a global hook is installed, per-repository pre-commit hooks stop running everywhere. `sekretbarilo install pre-commit` without `--global` then writes to that same global file, because `git rev-parse --git-path hooks` resolves to it. Unset `core.hooksPath` if you want per-repository hooks back.
-2. **Claude Code hooks**: sekretbarilo writes to whichever scope you choose and leaves the other alone; which files Claude Code loads and in what order is Claude Code's own settings behavior.
-3. **Codex CLI hooks**: layers are additive — a global hook and a project hook both run
-
-## Idempotent installation
-
-sekretbarilo's install command is idempotent - safe to run multiple times:
-
-```sh
-# running this multiple times is safe
-sekretbarilo install pre-commit
-sekretbarilo install pre-commit
-sekretbarilo install pre-commit
-
-# no errors, hook is simply updated if needed
+```
+installing codex cli agent hook...
+[SKIP] codex cli not detected on this machine; skipping codex agent hook install
 ```
 
-This means you can:
-- Re-run installation to update hooks after upgrading sekretbarilo
-- Include installation in setup scripts without worry
-- Run install commands in CI/CD pipelines
+Omitted `--mode` preserves an existing Claude mode or uses `block` for a new install. In `block` mode, the Claude settings file can be installed even when Claude Code is absent. Selecting or preserving `redact` requires a known supported Claude version before the Claude settings can change.
+
+Follow installation with `/hooks` in Codex to approve its hook.
 
 ## Uninstalling hooks
 
@@ -354,6 +323,8 @@ sekretbarilo doctor
 ```
 
 ## Troubleshooting
+
+The checks below cover installation problems. For an agent hook that is installed but misbehaves, see [Troubleshoot the agent hooks]({{ '/troubleshoot-agent-hooks/' | relative_url }}).
 
 ### Hook not running
 
@@ -455,3 +426,4 @@ Now that sekretbarilo is installed:
 - **[CLI Reference]({{ '/cli-reference/' | relative_url }})** - explore all available commands
 - **[Agent Hooks]({{ '/agent-hooks/' | relative_url }})** - detailed agent hook configuration
 - **[Configuration]({{ '/configuration/' | relative_url }})** - customize sekretbarilo for your needs
+- **[Global and local hook installation]({{ '/hook-installation-scopes/' | relative_url }})** - what each scope changes and which hook wins

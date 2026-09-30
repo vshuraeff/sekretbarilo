@@ -1,0 +1,23 @@
+# numeric-and-escaped-payloads: an opaque value in the argument list of an attribute, annotation
+# or macro head that the syntax step reads as a widened expression, and an opaque value behind a
+# regex class and an escape in a pattern the regex step reads on the pathless text or as an
+# unquoted `/body/flags` literal. each stays reported wherever the head or the escape stands.
+# format: <rule id> TAB <line>. a list of decimal groups or of `0x` bytes, and a payload escaped
+# before every second or third byte, cannot be written with a placeholder; the generated cells of
+# tests/syntax_montecarlo_tests.rs (`numeric_lists_inside_widened_heads_stay_reported`) and
+# tests/posture_clip_tests.rs (`escaped_regex_payloads_keep_detection_and_redaction_montecarlo`)
+# cover those shapes.
+generic-high-entropy-value	@JsonAlias({S32})
+generic-high-entropy-value	k=@JsonAlias({S36})
+generic-high-entropy-value	@JsonAlias({S32}.{S36})
+generic-high-entropy-value	#[secret_bytes({S32})]
+generic-high-entropy-value	k=#[secret_bytes({S40})]
+generic-high-entropy-value	#[secret_bytes({S32},{S36})]
+generic-high-entropy-value	#[secret_bytes(0x{HEX40})]
+generic-high-entropy-value	@JsonAlias({UUID})
+generic-high-entropy-value	value="[^x]+\{S32}"
+generic-high-entropy-value	value="[^x]+\{B64_44}"
+generic-high-entropy-value	/[^x]+\{S32}/i
+generic-high-entropy-value	k=/[^x]+\{S36}/i
+generic-high-entropy-value	/[^x]+\x{HEX40}/i
+generic-high-entropy-value	/[a-z]+\.{S40}\b/g

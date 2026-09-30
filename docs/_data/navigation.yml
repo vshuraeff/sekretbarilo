@@ -15,10 +15,18 @@ groups:
     pages:
       - title: Installation
         url: /installation/
+      - title: Write a configuration file
+        url: /write-a-configuration-file/
       - title: Allowlist a confirmed false positive
         url: /allowlist-a-false-positive/
       - title: Audit Git history for secrets
         url: /audit-git-history/
+      - title: Scan a single file with check-file
+        url: /scan-a-file-with-check-file/
+      - title: Verify redaction with a synthetic smoke check
+        url: /verify-redaction/
+      - title: Troubleshoot the agent hooks
+        url: /troubleshoot-agent-hooks/
       - title: Testing False Positives
         url: /testing-false-positives/
       - title: Examples
@@ -30,6 +38,8 @@ groups:
     pages:
       - title: CLI reference
         url: /cli-reference/
+      - title: Common commands
+        url: /common-commands/
       - title: Configuration
         url: /configuration/
       - title: Rules reference
@@ -43,8 +53,14 @@ groups:
     gloss: Understand the design
     eyebrow: Explanation
     pages:
+      - title: What sekretbarilo is for
+        url: /what-sekretbarilo-is-for/
       - title: How secret detection works
         url: /how-detection-works/
+      - title: How the agent hooks work
+        url: /how-agent-hooks-work/
+      - title: Global and local hook installation
+        url: /hook-installation-scopes/
       - title: Architecture
         url: /architecture/
       - title: Performance

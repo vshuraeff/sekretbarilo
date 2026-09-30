@@ -8,7 +8,8 @@ use sekretbarilo::config::{self, ProjectConfig};
 use sekretbarilo::scanner::engine::{TextMatch, redact_text, scan_text};
 use sekretbarilo::scanner::rules::{CompiledScanner, compile_rules, load_default_rules};
 
-static DEFAULTS: OnceLock<(CompiledScanner, config::allowlist::CompiledAllowlist)> = OnceLock::new();
+static DEFAULTS: OnceLock<(CompiledScanner, config::allowlist::CompiledAllowlist)> =
+    OnceLock::new();
 
 fn defaults() -> &'static (CompiledScanner, config::allowlist::CompiledAllowlist) {
     DEFAULTS.get_or_init(|| {

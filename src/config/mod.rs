@@ -2,9 +2,10 @@ pub mod allowlist;
 pub mod discovery;
 pub mod merge;
 
-use crate::scanner::rules::{self, Rule};
+use crate::scanner::rules::{self, Rule, RuleClass};
 use allowlist::{CompiledAllowlist, PerRuleAllowlistWithKeys};
 use serde::Deserialize;
+use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
@@ -73,7 +74,123 @@ pub struct SettingsConfig {
     /// enable exemption-layer filtering (default: true)
     pub exemption_layer: Option<bool>,
     pub source_posture: Option<SourcePosture>,
-    pub tier3_skip_test_paths: Option<bool>,
+    /// turn generic-high-entropy-value off under test paths (default: true).
+    /// `tier3_skip_test_paths` is the deprecated spelling; both in one file is an error.
+    #[serde(alias = "tier3_skip_test_paths")]
+    pub heuristic_skip_test_paths: Option<bool>,
+    /// per-class switches; a class no layer sets keeps its built-in default
+    /// (signature and contextual on, heuristic off).
+    #[serde(default)]
+    pub rule_classes: BTreeMap<RuleClass, bool>,
+    /// per-rule switches by rule id; they win over the class switch.
+    #[serde(default)]
+    pub rules: BTreeMap<String, bool>,
+}
+
+/// why a rule is on or off after all config layers merged.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RuleSwitchReason {
+    /// the class default, no layer set anything
+    Default,
+    /// a `[settings.rule_classes]` entry
+    Class,
+    /// a `[settings.rules]` entry
+    RuleOverride,
+}
+
+impl RuleSwitchReason {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            RuleSwitchReason::Default => "default",
+            RuleSwitchReason::Class => "class",
+            RuleSwitchReason::RuleOverride => "rule override",
+        }
+    }
+}
+
+/// the resolved state of one defined rule, for diagnostics (doctor, trace).
+#[derive(Debug, Clone)]
+pub struct RuleState {
+    pub id: String,
+    pub class: RuleClass,
+    /// on after the class and rule switches
+    pub enabled: bool,
+    pub reason: RuleSwitchReason,
+    /// switched on, but a public-key rule held back by `detect_public_keys = false`
+    pub public_key_gated: bool,
+}
+
+/// resolve every defined rule (defaults merged with custom rules) against the settings.
+/// switch ids are validated the same way the scan path validates them.
+pub fn rule_states(config: &ProjectConfig) -> Result<Vec<RuleState>, String> {
+    let all = load_all_rules_with_config(config)?;
+    filter_enabled_rules(all.clone(), &config.settings)?;
+    let detect_public_keys = config.settings.detect_public_keys.unwrap_or(false);
+    Ok(all
+        .iter()
+        .map(|rule| {
+            let (enabled, reason) = rule_switch(&config.settings, rule);
+            RuleState {
+                id: rule.id.clone(),
+                class: rule.resolved_class(),
+                enabled,
+                reason,
+                public_key_gated: enabled
+                    && !detect_public_keys
+                    && crate::scanner::engine::is_public_key_rule(&rule.id),
+            }
+        })
+        .collect())
+}
+
+/// the heuristic-only settings a layer set explicitly; they do nothing while
+/// `generic-high-entropy-value` is disabled.
+pub fn explicit_heuristic_settings(settings: &SettingsConfig) -> Vec<&'static str> {
+    let mut names = Vec::new();
+    if settings.exemption_layer.is_some() {
+        names.push("exemption_layer");
+    }
+    if settings.source_posture.is_some() {
+        names.push("source_posture");
+    }
+    if settings.heuristic_skip_test_paths.is_some() {
+        names.push("heuristic_skip_test_paths");
+    }
+    names
+}
+
+/// appended to ordinary cli config diagnostics (never to hook protocol output).
+pub const CONFIG_HELP_HINT: &str = "see: sekretbarilo help config";
+
+/// resolve whether a rule is enabled under the merged settings.
+pub fn rule_switch(settings: &SettingsConfig, rule: &Rule) -> (bool, RuleSwitchReason) {
+    if let Some(&on) = settings.rules.get(&rule.id) {
+        return (on, RuleSwitchReason::RuleOverride);
+    }
+    let class = rule.resolved_class();
+    match settings.rule_classes.get(&class) {
+        Some(&on) => (on, RuleSwitchReason::Class),
+        None => (class.enabled_by_default(), RuleSwitchReason::Default),
+    }
+}
+
+/// drop the rules the settings switch off. a `[settings.rules]` id that names
+/// no known rule is an error, so a misspelt switch cannot pass silently.
+pub fn filter_enabled_rules(
+    rules: Vec<Rule>,
+    settings: &SettingsConfig,
+) -> Result<Vec<Rule>, String> {
+    if let Some(unknown) = settings
+        .rules
+        .keys()
+        .find(|id| !rules.iter().any(|r| &r.id == *id))
+    {
+        return Err(format!("[settings.rules] names unknown rule '{}'", unknown));
+    }
+    Ok(rules
+        .into_iter()
+        .filter(|r| rule_switch(settings, r).0)
+        .collect())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -121,15 +238,73 @@ pub fn load_single_config(path: &Path) -> Option<ProjectConfig> {
 
 /// discover all config files (system, xdg, directory hierarchy) and load them.
 /// returns configs in priority order (lowest priority first).
-fn discover_and_load_configs(start_dir: &Path) -> Vec<ProjectConfig> {
+/// a layer that exists but does not parse is an error: skipping it would silently drop its
+/// switches and allowlists and change what the scan detects.
+fn discover_and_load_configs(start_dir: &Path) -> Result<Vec<ProjectConfig>, String> {
     let home = dirs_home(start_dir);
     let config_paths = discovery::discover_configs(start_dir, &home);
 
-    config_paths
-        .iter()
-        .filter_map(|path| load_single_config(path))
-        .collect()
+    let mut configs = Vec::with_capacity(config_paths.len());
+    for path in &config_paths {
+        if let Some(config) = parse_discovered_config(path)? {
+            configs.push(config);
+        }
+    }
+    Ok(configs)
 }
+
+/// parse one discovered layer. files that cannot be read (permissions, io) keep the old
+/// warn-and-skip behaviour; a parse error, invalid UTF-8 included, is returned with the path
+/// and a fixed category.
+fn parse_discovered_config(path: &Path) -> Result<Option<ProjectConfig>, String> {
+    if !path.is_file() {
+        return Ok(None);
+    }
+    let content = match std::fs::read_to_string(path) {
+        Ok(content) => content,
+        // toml is utf-8 text, so bytes that do not decode are a parse failure, not an io one.
+        Err(error) if error.kind() == std::io::ErrorKind::InvalidData => {
+            return Err(config_encoding_error(path));
+        }
+        Err(_) => return Ok(load_single_config(path)),
+    };
+    if content.trim().is_empty() {
+        return Ok(None);
+    }
+    toml::from_str::<ProjectConfig>(&content)
+        .map(Some)
+        .map_err(|e| config_parse_error(path, &content, &e))
+}
+
+// parser messages can contain values as well as source excerpts. report only location
+// and a fixed category; even error.message() is not safe to echo.
+fn config_parse_error(path: &Path, content: &str, error: &toml::de::Error) -> String {
+    let offset = error.span().map_or(0, |span| span.start).min(content.len());
+    let prefix = &content.as_bytes()[..offset];
+    let line = prefix.iter().filter(|&&byte| byte == b'\n').count() + 1;
+    let column = prefix
+        .iter()
+        .rposition(|&byte| byte == b'\n')
+        .map_or(offset + 1, |newline| offset - newline);
+    format!(
+        "failed to parse config {} at line {line}, column {column}: invalid TOML syntax or configuration type",
+        path.display()
+    )
+}
+
+/// a config file that is not UTF-8 text; like `config_parse_error`, it names the path and a
+/// fixed category and never echoes the bytes.
+fn config_encoding_error(path: &Path) -> String {
+    format!(
+        "failed to parse config {}: invalid UTF-8 encoding",
+        path.display()
+    )
+}
+
+/// the fixed category reported for an allowlist that does not compile. the compiler errors
+/// quote the offending pattern, which is config content, so no caller forwards them.
+pub const ALLOWLIST_ERROR_CATEGORY: &str =
+    "an allowlist path, stopword, regex or key pattern is invalid";
 
 /// resolve the home directory for hierarchy walking.
 fn dirs_home(fallback: &Path) -> PathBuf {
@@ -146,7 +321,7 @@ pub fn load_project_config(repo_root: Option<&Path>) -> Result<ProjectConfig, St
         None => std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
     };
 
-    let configs = discover_and_load_configs(&start);
+    let configs = discover_and_load_configs(&start)?;
 
     if configs.is_empty() {
         return Ok(ProjectConfig::default());
@@ -161,24 +336,47 @@ pub fn load_project_config(repo_root: Option<&Path>) -> Result<ProjectConfig, St
 /// from `.sekretbarilo.toml` in the given directory (typically repo root)
 #[allow(dead_code)]
 pub fn load_rules(repo_root: Option<&Path>) -> Result<Vec<Rule>, String> {
-    let defaults = rules::load_default_rules()?;
     let config = load_project_config(repo_root)?;
-
-    if config.rules.is_empty() {
-        return Ok(defaults);
-    }
-
-    Ok(rules::merge_rules(defaults, config.rules))
+    load_rules_with_config(&config)
 }
 
-/// load rules using an already-loaded project config (avoids parsing config twice)
+/// load the enabled rules using an already-loaded project config (avoids
+/// parsing config twice): defaults merged with user rules, then filtered by
+/// the rule-class and rule switches.
 pub fn load_rules_with_config(config: &ProjectConfig) -> Result<Vec<Rule>, String> {
-    let defaults = rules::load_default_rules()?;
+    filter_enabled_rules(load_all_rules_with_config(config)?, &config.settings)
+}
 
+/// the `--no-defaults` selection: only the config's own rules, with their class resolved
+/// against the embedded inventory and switch ids validated against every known rule, so a
+/// shared config behaves the same with and without `--no-defaults`.
+pub fn load_custom_rules_with_config(config: &ProjectConfig) -> Result<Vec<Rule>, String> {
+    let all = load_all_rules_with_config(config)?;
+    let custom: Vec<Rule> = all
+        .into_iter()
+        .filter(|r| config.rules.iter().any(|c| c.id == r.id))
+        .collect();
+    let known = rules::load_default_rules()?;
+    if let Some(unknown) = config
+        .settings
+        .rules
+        .keys()
+        .find(|id| !custom.iter().any(|r| &r.id == *id) && !known.iter().any(|r| &r.id == *id))
+    {
+        return Err(format!("[settings.rules] names unknown rule '{}'", unknown));
+    }
+    Ok(custom
+        .into_iter()
+        .filter(|r| rule_switch(&config.settings, r).0)
+        .collect())
+}
+
+/// every defined rule, enabled or not (for diagnostics).
+pub fn load_all_rules_with_config(config: &ProjectConfig) -> Result<Vec<Rule>, String> {
+    let defaults = rules::load_default_rules()?;
     if config.rules.is_empty() {
         return Ok(defaults);
     }
-
     Ok(rules::merge_rules(defaults, config.rules.clone()))
 }
 
@@ -194,10 +392,15 @@ pub fn load_project_config_from_paths(paths: &[PathBuf]) -> Result<ProjectConfig
         if !path.exists() {
             return Err(format!("config file not found: {}", path.display()));
         }
-        let content = std::fs::read_to_string(path)
-            .map_err(|e| format!("failed to read {}: {}", path.display(), e))?;
-        let config: ProjectConfig = toml::from_str(&content)
-            .map_err(|e| format!("failed to parse {}: {}", path.display(), e))?;
+        let content = std::fs::read_to_string(path).map_err(|e| {
+            if e.kind() == std::io::ErrorKind::InvalidData {
+                config_encoding_error(path)
+            } else {
+                format!("failed to read {}: {}", path.display(), e)
+            }
+        })?;
+        let config: ProjectConfig =
+            toml::from_str(&content).map_err(|e| config_parse_error(path, &content, &e))?;
         configs.push(config);
     }
 
@@ -295,7 +498,7 @@ pub fn build_allowlist_with_trace_exemptions(
     )?;
     allowlist.exemption_layer = config.settings.exemption_layer.unwrap_or(true);
     allowlist.source_posture = config.settings.source_posture;
-    allowlist.tier3_skip_test_paths = config.settings.tier3_skip_test_paths.unwrap_or(true);
+    allowlist.heuristic_skip_test_paths = config.settings.heuristic_skip_test_paths.unwrap_or(true);
     allowlist.trace_exemptions = trace_exemptions;
     Ok(allowlist)
 }
@@ -429,7 +632,9 @@ entropy_threshold = 3.5
                 detect_public_keys: None,
                 exemption_layer: None,
                 source_posture: None,
-                tier3_skip_test_paths: None,
+                heuristic_skip_test_paths: None,
+                rule_classes: Default::default(),
+                rules: Default::default(),
             },
             rules: vec![],
             ..Default::default()
@@ -456,6 +661,7 @@ entropy_threshold = 3.5
                 regexes: vec!["AKIAIOSFODNN7EXAMPLE".to_string()],
                 paths: vec![],
             },
+            class: None,
         }];
 
         let config = ProjectConfig {
@@ -594,6 +800,25 @@ stopwords = ["from_b"]
         let result = load_project_config_from_paths(&[path]);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("failed to parse"));
+    }
+
+    #[test]
+    fn invalid_utf8_is_a_fatal_parse_error_for_discovered_and_explicit_configs() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".sekretbarilo.toml");
+        // a latin-1 byte in a comment makes the whole file invalid utf-8, and so invalid toml
+        std::fs::write(
+            &path,
+            b"# caf\xe9 SYNTHETIC_PRIVATE_COMMENT\n[settings]\nentropy_threshold = 4.0\n",
+        )
+        .unwrap();
+        let discovered = parse_discovered_config(&path).unwrap_err();
+        let explicit = load_project_config_from_paths(std::slice::from_ref(&path)).unwrap_err();
+        for error in [discovered, explicit] {
+            assert!(error.contains("invalid UTF-8 encoding"), "{error}");
+            assert!(error.contains(".sekretbarilo.toml"), "{error}");
+            assert!(!error.contains("SYNTHETIC_PRIVATE"), "{error}");
+        }
     }
 
     #[test]

@@ -1,0 +1,19 @@
+# raw-strings: a string prefix or raw-string delimiters around a quoted value.
+# python r b u f t prefixes, c/c++ L u U u8 prefixes and their R raw forms, and a swift raw string
+# `#"..."#`. the value is the body where the line is no env-style assignment. an env-style line
+# (`KEY=b"..."`) keeps the whole shell word, prefix and quotes included, on the pathless text and in
+# a shell script, a dotenv file or a text file: its body reading applies to source files only. an
+# f-string body is judged around its `{...}` holes only on a python file.
+# format: <rule id> TAB <line>.
+generic-high-entropy-value	let k = #"{S32}"#
+generic-high-entropy-value	let k = ##"{S32}"##
+generic-high-entropy-value	configure(token: #"{S32}"#)
+generic-high-entropy-value	key = f"{S32}"
+generic-high-entropy-value	key = rb"{S32}"
+generic-high-entropy-value	key = b'{S32}'
+generic-high-entropy-value	key = u8"{S32}"
+generic-high-entropy-value	key = L"{S32}"
+generic-high-entropy-value	key = t'{S32}'
+generic-high-entropy-value	key = f"{name}{S32}"
+generic-high-entropy-value	key = f"{S32}{name.label()}"
+generic-high-entropy-value	auto k = R"({S32})";

@@ -1,0 +1,15 @@
+# escaped-key: the letter of a backslash escape (`\n`, `\t`, `\r`) read as a one-letter key.
+# inside a quoted command or message, `\n: "..."` is a line break before text, not an assignment.
+# a one-letter key behind an odd run of backslashes is dropped and the scan resumes after its
+# separator; every shape here fired before that drop.
+    "script": "set -eu\n: \"${DEPLOY_TARGET:?deploy target unset}\" && run"
+    "run": "bash -lc\n: \"${WORKSPACE_ROOT:?missing}/scripts/ci/bootstrap.sh\""
+    "cmd": "cd /srv\n: \"release-${RELEASE_CHANNEL:?}-${BUILD_NUMBER:?}\""
+    "stdout": "ok\n: \"sha256-${ARTIFACT_DIGEST_VALUE}\" verified"
+echo -e "a\t= \"$HOME/.config/app/settings.json\""
+# known gap: four short words in a row read as a chunked token, so this escape key is kept:
+#     "text": "Heading\n= \"Build(v${MAJOR}.${MINOR}.${PATCH})-Release\""
+    "detail": "error\n: \"InvalidParameterValue(EngineVersion)\" returned"
+    "note": "warning\n: \"DeprecatedParameter(MaxConnections)\" ignored"
+    "message": "failed\r: \"ServiceUnavailable(RetryAfterSeconds)\""
+    "hint": "retry\n= \"ThrottlingException(RequestLimitExceeded)\" backoff"

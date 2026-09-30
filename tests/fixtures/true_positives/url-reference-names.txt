@@ -1,0 +1,22 @@
+# url-reference-names: an opaque value inside a position the url, pin and markup readers take apart
+# as structure: the owner, repository, path and release branch of a tag-pinned action, the leaf and
+# fragment of a badge chain's relative target, a url path slug and fragment, an email local part, a
+# form list field, and an element text after a url. each line is the twin of a shape in
+# false_positives/action-tag-ref.txt, markdown-link.txt, url-no-credential.txt, font-css-url.txt or
+# markup-element.txt. a value cut into short groups (four-byte letter-digit groups, or letter groups
+# of two to five, joined by `_`, `-` or `.`) has no placeholder here; those twins are generated in
+# tests/markup_url_digest_tests.rs, on both surfaces and through the redaction.
+# format: <rule id> TAB <line>.
+generic-high-entropy-value	      - uses: acme/{S32}@v1
+generic-high-entropy-value	      - uses: {S32}/widget@v4
+generic-high-entropy-value	      - uses: acme/widget/{S32}@v3.2.1
+generic-high-entropy-value	      - uses: acme/{S32}@release/v1
+generic-high-entropy-value	MIT](https://img.example.org/badge.svg)](docs/{S32}
+generic-high-entropy-value	[![License: MIT](https://img.example.org/badge.svg)](docs/{S32})
+generic-high-entropy-value	[![License: MIT](https://img.example.org/badge.svg)](docs/guide.md#{S32})
+generic-high-entropy-value	url: https://docs.example.org/blog/{S32}
+generic-high-entropy-value	url: https://docs.example.org/guide.md#{S36}
+generic-high-entropy-value	contact: jane.{S32}@example.com
+generic-high-entropy-value	fonts: https://fonts.example.internal/css2?family=Press+Start+{S32}
+generic-high-entropy-value	    https://github.example.internal/acme/guide</loc><lastmod>{S32}</lastmod></url>
+generic-high-entropy-value	example.com/widget v1.4.2 h1:{S40}

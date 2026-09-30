@@ -1,0 +1,12 @@
+# scope-resolution: a `::` scope separator or a posix bracket class read as `key:value`.
+# the grammar took the name before `::` (or inside `[:name:]`) as a key and the rest of the path as
+# its value. no supported format writes a credential as `key::value` or `[:key:]`, so the candidate
+# is dropped and the scan resumes after the separator; every shape here fired before that drop.
+	absl::StatusOr<std::unique_ptr<TokenVerifier>> verifier;
+	return std::make_unique<AesGcmSivEncryptor>(key_material);
+	return std::make_shared<SessionManagerImpl>(config);
+	std::unique_ptr<EVP_CIPHER_CTX_wrapper> ctx;
+	Foo::Bar::Baz::QuxHandler::handle_request(request_ctx);
+	tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
+apt-get -o Acquire::Check-Valid-Until=false -o Acquire::AllowInsecureRepositories=true update
+grep -Eq '^[[:alpha:]][[:alnum:]_.-]{2,63}@[[:alnum:].-]+$' <<<"$email"

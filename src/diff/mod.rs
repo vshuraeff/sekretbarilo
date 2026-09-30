@@ -71,7 +71,8 @@ pub fn attach_staged_context(files: &mut [DiffFile]) {
         file.context = None;
         if file.is_renamed
             || file.is_deleted
-            || crate::scanner::literals::language_for_path(&file.path).is_none()
+            || (crate::scanner::literals::language_for_path(&file.path).is_none()
+                && !crate::scanner::source_literals::supports_path(&file.path))
         {
             continue;
         }

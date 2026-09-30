@@ -26,6 +26,10 @@ pub fn run_redact_claude() -> i32 {
     emit(output, &mut std::io::stdout(), &mut std::io::stderr())
 }
 
+// rust's std can report EBADF on a stdout write as `Ok(())` on some platforms
+// (handle_ebadf), so an `Ok` result here is not proof stdout was writable, and
+// no abort/retry decision is made on it: emit only maps the outcome it is
+// given to an exit code, and callers do the same.
 fn emit(output: Option<Vec<u8>>, stdout: &mut impl Write, stderr: &mut impl Write) -> i32 {
     if let Some(output) = output
         && (stdout.write_all(&output).is_err() || stdout.flush().is_err())

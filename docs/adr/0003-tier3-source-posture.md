@@ -1,6 +1,23 @@
 # ADR 0003: a source-file posture for the tier-3 entropy rule
 
-- status: accepted, amended 2026-09-20
+## 0.9.0 rule-class amendment
+
+`generic-high-entropy-value` now belongs to the `heuristic` rule class, disabled
+by default. The rule behavior and historical measurements below assume it is
+enabled. Opt in with `[settings.rules]` and `"generic-high-entropy-value" = true`
+or `[settings.rule_classes]` and `heuristic = true`. The signature and contextual
+classes remain enabled; `generic-api-key` and `generic-token-assignment` are
+contextual, despite their historical tier-3 grouping.
+
+`heuristic_skip_test_paths` is the current name of `tier3_skip_test_paths`; the
+old spelling is a deprecated input alias, and using both in one file is an error.
+It, `exemption_layer`, and `source_posture` still affect only the enabled
+`generic-high-entropy-value` rule. They do not turn it on. Earlier “tier” wording,
+test names, source identifiers and links below are retained as historical evidence;
+they do not define the current class switches. ADR filenames remain stable.
+
+
+- status: accepted, amended 2026-09-20 and 2026-09-26
 - date: 2026-09-15
 - scope: the source posture, its `[settings] source_posture` switch and the test-path skip behind
   `[settings] tier3_skip_test_paths` are scoped to rule `generic-high-entropy-value` only. Tier 1 and
@@ -85,6 +102,26 @@ applied to a `mod` item only: `cfg(all(test, ...))`, the same attribute on a `fn
 active in literals posture only and `source_posture = "all"` does not get it, unlike the directory
 skip, which applies under any posture. Unknown lexical state still never narrows a scan: where no
 context exists, the lines after the gap are scanned in full posture and no region is assumed.
+
+Since 2026-09-26 the test-path predicate recognises the common layouts of other ecosystems as well,
+under the same label and the same switch. The directory segments are `test`, `tests`, `__tests__`,
+`testdata`, `fixtures` and `benches`, matched exactly and case-sensitively, a segment ending in
+`_tests` or `-tests`, an XCTest target segment (`Tests` itself, or a CamelCase `Tests` suffix after
+an ASCII letter or digit, as in `FooTests` or `FooUITests`), and a dotted .NET test project segment:
+a non-empty prefix, a `.`, then a run of ASCII alphanumeric characters ending in `Tests`, as in
+`Foo.Tests` or `Foo.UnitTests`. `spec` and `specs` are deliberately not directory segments, because a
+bare `spec/` directory is also a common production specification/schema package name — a
+corpus measurement found 9 real-code findings lost to it in one repository. The file names are
+`*_test.*`, `test_*.py`, `*_spec.rb`, `*Tests.swift`, `*Test.swift`, `conftest.py`, and a JS/TS-family
+`*.test.<ext>` or `*.spec.<ext>` name decided by the file's LAST extension (`js`, `jsx`, `mjs`, `cjs`,
+`ts`, `tsx`, `mts` or `cts`, so `x.spec.d.ts` still matches via the final `.ts`, while
+`config.test.env` and `api.spec.json` do not). A path carrying a literal `..` segment anywhere is
+never a test path, regardless of any other segment. Lookalikes stay ordinary paths — `latest`,
+`contests`, `attestation`, `Testimonials`, `specification`, `spectrum`, `protest.rs`, `inspect.py`,
+`spec/x.rb`, `Foo_Tests/` — and `testing` is deliberately not a test segment, because it usually
+holds shipped test-support code rather than tests. A baseline audit of an eight-repository corpus
+had put 57% of the remaining tier-3 findings in test-shaped paths the narrower predicate missed,
+most of them XCTest targets. Tier 1 and tier 2 are unchanged there.
 
 One predicate is widened with the posture: a `#/`-rooted JSON pointer is path-shaped, with the
 opaque-run veto for segments of 20 bytes or more kept as it is.
@@ -187,6 +224,75 @@ Re-enabling a family needs three things: a bounded lexical subset that rejects t
 not support and falls back to full posture before guessing at them, rather than one that guesses;
 engine-level parity tests against full posture over those constructs, so a body set that differs is
 caught by a test and not by a review; and a review of that subset against this ADR's invariant.
+
+## amendment 2026-09-26: the parser posture clips a straddling finding
+
+The parser families (C/C++, Python, JavaScript/TypeScript and Swift, through
+`src/scanner/source_literals.rs`) used to keep every tier-3 finding whose range intersected a proved
+literal body and drop only a finding disjoint from all of them. A finding that began at a string
+prefix, an interpolation hole or a regex delimiter and ran into the body was therefore kept whole:
+`"\(name)<text>"`, `` `token=${name}<text>` ``, `R"(<text>)"` and `/<pattern>/i` were reported with
+the hole or delimiter bytes inside the value, and an interpolation of words beside a hole was a
+finding at all only because of those bytes.
+
+A surviving `generic-high-entropy-value` finding is now compared with the proved bodies on its line:
+
+- disjoint from every body: dropped and traced `exempt:code`, as before;
+- inside a single string body: it stands as evaluated, its key and hex bypass included;
+- otherwise, when it touches several bodies or covers bytes outside the one body it touches: it is
+  traced `exempt:clip` over its original range, and each part of it that lies inside a body is
+  evaluated again as a keyless literal body, the path a call-argument body takes (no key, no import
+  or syntax step, no hex bypass). A segment is reported on its own merits or not at all, and the
+  hole, prefix or delimiter bytes never reach a value.
+
+The adapter also records which bodies are regular-expression literals (`analyze_with_kinds` and
+`ParsedLine::body_kind`, a string, regex or generic body), so a segment inside `/.../flags` reaches
+the regex step as a literal body even when the finding was exactly that body. The engine reads the
+parsed lines once per file and applies the clip to this rule alone; tier 1 and tier 2 findings and
+the Rust and Go tracker are untouched.
+
+A Python f-string or t-string is read around its `{...}` holes by the value grammar itself, on a
+Python file only and only when every hole is an expression of names (ADR 0002, amendments of the
+same date), so the clip finds those segments already inside bodies and the trace for the reading is
+`exempt:hole`. A hole whose format specification is not Python's mini-language and whose text reads
+as a token cut into short groups stands whole, as does any clip whose literal pieces together read
+as a chunked token. The Rust and Go tracker, whose
+languages have no such string, keeps its own body check for that text.
+
+Recall. The clip only narrows a finding to text the parser proves literal, and each segment faces
+the gates any literal body faces. What it gives up:
+
+- a credential split by an interpolation hole into pieces that are each shorter than 20 bytes, or
+  each below 4.0 bits, is no longer reported; it was reported whole before. Interpolation joins
+  runtime values, so such a string holds no complete literal credential;
+- a hex value below 4.0 bits clipped out of a straddle has no key and no hex bypass. The straddle
+  was never a hex policy candidate either, since the hole bytes are not hex, so nothing reported
+  before is lost here;
+- the clip acts on surviving findings only: a straddle whose whole value is dropped by a gate is
+  not rescued. That is unchanged from the intersect policy.
+
+Measured by `interpolation_hole_recall_montecarlo` in `tests/posture_clip_tests.rs`: 104,000
+samples per dialect (Swift `\(...)`, Swift raw `\#(...)`, TypeScript `${...}`, Python f-string
+`{...}` and a C++ raw string's delimiters), a random token of 20 to 64 bytes from base62, base64,
+base64url, hex, base32 or lowercase base36 before or after a random hole of a name, a member access
+or a call. Of the tokens a call-literal control reports (about 78 percent, the rest falling below
+the entropy gate), none is lost: the audit surface reports each exactly, without hole bytes, and
+the pathless surface covers each. `regex_body_recall_montecarlo` puts 104,000 tokens in a
+TypeScript regex literal: none is regex-shaped and none is lost.
+
+Corpus, eight repositories with an empty configuration (`scripts/corpus-audit.sh`, base against
+head): the audit surface goes from 669 to 607 findings, tier 3 from 471 to 409, 99 rows removed and
+37 added. Every added row is a respan of a removed row on the same line: 17 URLs now reported from
+their scheme (ADR 0002 amendment), 15 regex bodies clipped out of their delimiters that the regex
+step does not yet read as patterns, three opaque identifiers inside URLs now reported with the
+scheme, and two rows whose values changed span on lines that keep a finding. The removals by class:
+29 interpolated strings, 25 regex literals, 17 split URLs, 13 prefixed strings, three escaped keys,
+three scope separators and nine others, among them the three URL identifiers respanned above.
+
+`tests/parser_posture_tests.rs` pins the contract: a straddling full-posture finding yields exactly
+one `exempt:clip` and exactly the generated body when the body alone passes the gates, a finding
+inside a body is retained exactly, a disjoint one yields exactly one `exempt:code`, and each of the
+four branches is exercised at least a hundred times.
 
 ## references
 

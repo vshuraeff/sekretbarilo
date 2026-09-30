@@ -1,5 +1,22 @@
 # ADR 0001: entropy baseline for 8-character passwords
 
+## 0.9.0 rule-class amendment
+
+`generic-high-entropy-value` now belongs to the `heuristic` rule class, disabled
+by default. The rule behavior and historical measurements below assume it is
+enabled. Opt in with `[settings.rules]` and `"generic-high-entropy-value" = true`
+or `[settings.rule_classes]` and `heuristic = true`. The signature and contextual
+classes remain enabled; `generic-api-key` and `generic-token-assignment` are
+contextual, despite their historical tier-3 grouping.
+
+`heuristic_skip_test_paths` is the current name of `tier3_skip_test_paths`; the
+old spelling is a deprecated input alias, and using both in one file is an error.
+It, `exemption_layer`, and `source_posture` still affect only the enabled
+`generic-high-entropy-value` rule. They do not turn it on. Earlier “tier” wording,
+test names, source identifiers and links below are retained as historical evidence;
+they do not define the current class switches. ADR filenames remain stable.
+
+
 - status: accepted
 - date: 2026-09-05
 - scope: reference figures for entropy-gated detection; no rule or gate is changed

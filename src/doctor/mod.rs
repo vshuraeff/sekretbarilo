@@ -23,6 +23,7 @@ enum Status {
     Warn,
     Error,
     NotInstalled,
+    Info,
 }
 
 impl Status {
@@ -32,6 +33,7 @@ impl Status {
             Status::Warn => "[WARN]",
             Status::Error => "[ERROR]",
             Status::NotInstalled => "[NOT INSTALLED]",
+            Status::Info => "[INFO]",
         }
     }
 
@@ -65,6 +67,13 @@ impl CheckResult {
     fn error(msg: impl Into<String>) -> Self {
         Self {
             status: Status::Error,
+            message: msg.into(),
+        }
+    }
+
+    fn info(msg: impl Into<String>) -> Self {
+        Self {
+            status: Status::Info,
             message: msg.into(),
         }
     }
@@ -953,23 +962,116 @@ fn check_config() -> Vec<CheckResult> {
                         }
                         Err(e) => {
                             results.push(CheckResult::error(format!(
-                                "rules compilation failed: {}",
-                                e
+                                "rules compilation failed: {} ({})",
+                                e,
+                                crate::config::CONFIG_HELP_HINT
                             )));
                         }
                     }
+
+                    // the same allowlist the scan context builds; its errors quote the
+                    // offending pattern, so only a fixed category is reported
+                    match crate::config::build_allowlist(&config, &rules) {
+                        Ok(_) => results.push(CheckResult::ok("allowlist compiles successfully")),
+                        Err(_) => results.push(CheckResult::error(format!(
+                            "allowlist is invalid: a path, stopword, regex or key pattern does not compile ({})",
+                            crate::config::CONFIG_HELP_HINT
+                        ))),
+                    }
                 }
                 Err(e) => {
-                    results.push(CheckResult::error(format!("failed to load rules: {}", e)));
+                    results.push(CheckResult::error(format!(
+                        "failed to load rules: {} ({})",
+                        e,
+                        crate::config::CONFIG_HELP_HINT
+                    )));
                 }
+            }
+            if let Ok(states) = crate::config::rule_states(&config) {
+                append_rule_switch_report(&mut results, &config, &states);
             }
         }
         Err(e) => {
-            results.push(CheckResult::error(format!("failed to load config: {}", e)));
+            results.push(CheckResult::error(format!(
+                "failed to load config: {} ({})",
+                e,
+                crate::config::CONFIG_HELP_HINT
+            )));
         }
     }
 
     results
+}
+
+/// report the resolved rule-class switches: one line per class, one per explicit
+/// rule override, the effective count, the public-key gate and heuristic settings
+/// that have no effect. informational; switch states are not issues.
+fn append_rule_switch_report(
+    results: &mut Vec<CheckResult>,
+    config: &crate::config::ProjectConfig,
+    states: &[crate::config::RuleState],
+) {
+    use crate::scanner::rules::RuleClass;
+
+    for class in [
+        RuleClass::Signature,
+        RuleClass::Contextual,
+        RuleClass::Heuristic,
+    ] {
+        let (on, provenance) = match config.settings.rule_classes.get(&class) {
+            Some(&on) => (on, "configured"),
+            None => (class.enabled_by_default(), "default"),
+        };
+        results.push(CheckResult::info(format!(
+            "rule class {}: {} ({})",
+            class,
+            if on { "enabled" } else { "disabled" },
+            provenance
+        )));
+    }
+    for (id, &on) in &config.settings.rules {
+        results.push(CheckResult::info(format!(
+            "rule {}: {} (rule override)",
+            crate::audit::history::sanitize_display(id),
+            if on { "enabled" } else { "disabled" }
+        )));
+    }
+
+    let active = states
+        .iter()
+        .filter(|s| s.enabled && !s.public_key_gated)
+        .count();
+    results.push(CheckResult::info(format!(
+        "rules enabled: {}/{}",
+        active,
+        states.len()
+    )));
+    let gated: Vec<&str> = states
+        .iter()
+        .filter(|s| s.public_key_gated)
+        .map(|s| s.id.as_str())
+        .collect();
+    if !gated.is_empty() {
+        results.push(CheckResult::info(format!(
+            "public-key rules held back by detect_public_keys = false: {}",
+            gated
+                .iter()
+                .map(|id| crate::audit::history::sanitize_display(id))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )));
+    }
+
+    let heuristic_off = states
+        .iter()
+        .any(|s| s.id == "generic-high-entropy-value" && !s.enabled);
+    let explicit = crate::config::explicit_heuristic_settings(&config.settings);
+    if heuristic_off && !explicit.is_empty() {
+        results.push(CheckResult::info(format!(
+            "{} set, but no effect on detection while generic-high-entropy-value is disabled",
+            explicit.join(", ")
+        )));
+    }
 }
 
 /// warn about in-workspace config layers the agent hooks (check-file / check-codex) will

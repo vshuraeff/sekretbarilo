@@ -1,0 +1,9 @@
+# scanned as pkg/sample.go in literal posture by fixture_corpus_tests
+type Record struct { Field string `json:"field,omitempty"` }
+type Record struct { Field string `json:"field" yaml:"field"` }
+type Record struct { Field string `db:"record_id,index"` }
+type Record struct { Field string `json:"left\"quote,right"` }
+type Record struct { Field string `json:"first\x2csecond,third"` }
+type Record struct { Field string `xml:"record>field,attr"` }
+type Record struct { Field string `validate:"required,min=1"` }
+type Record struct { Field string `json:"name,omitempty" yaml:"name,omitempty"` }

@@ -1,0 +1,16 @@
+# symbol-table: punctuation lookup sets passed to contains, IndexAny, strpbrk or bound to a name.
+# every element is distinct and no alphanumeric appears, so the value carries no token payload.
+# known gap: a character set spelled out as a string is reported (`ALLOWED = "abc...xyz0123456789-_."`,
+# a base64 or base32 alphabet, the unreserved characters of a URL). the same bytes are the dummy
+# token test suites carry, and the property test of the exemption layer keeps every window of the
+# alphabet `a..zA..Z0..9-_` reported, so a set cannot be told from a token by its bytes.
+DELIMITERS = "()[]{}<>,;:?!&*=|.~^%"
+const delimiters = "()[]{}<>,;:?!&*=|.~^%/"
+const SEPARATORS = '()[]{}<>,;:?!&*=|.~^%@';
+let delimiter = is_any(b"()[]{}<>,;:?!&*=\\'\"`|.", byte);
+const char *OPERATORS = "+-*/%=<>!&|^~?:,;()[]{}";
+idx := strings.IndexAny(input, "!#$%&'*+-.^_`|~:/?@[]")
+table = str.maketrans("", "", "!#$%&*+-./:;<=>?@^_|~")
+SHELL_META='|&;<>()$*?[]#~=%!{}^'
+"reserved": "!*'();:@&=+$,/?#[]%-._~",
+url_reserved: ":/?#[]@!$&'()*+,;=%-._~"

@@ -1,0 +1,24 @@
+# markup-element: one element of xml, a property list, an entitlements file or html on a line, and
+# the residue a formatter leaves when it breaks a tag across lines (`>text</code` after an open tag
+# closed on the line before, `text</code>` inside an element opened earlier). the element text is
+# the value and the tags around it are syntax; an opaque element text is still reported, see
+# true_positives/markup-values.txt.
+# known gap: an apple key with an acronym prefix, such as `NSAppleEventsUsageDescription`, and a
+# reverse-dns entitlement with a two-letter label, such as `com.apple.security.cs.allow-jit`, are not
+# word-structured, so their text is still reported when it reaches the entropy gate.
+# known gap: a url after an open tag on the same line, as in a sitemap `<url><loc>https://...</loc>`,
+# is reported, because the value grammar starts that capture after the scheme and a `//` value is
+# never read as a url cut out of its element (returned alone it would read as a path).
+	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+	<string>com.example.widget.helper-tool</string>
+	<string>public.app-category.developer-tools</string>
+	<key>com.apple.security.automation.apple-events</key>
+	<key>com.apple.security.files.user-selected.read-write</key>
+            <string>${WIDGET_HELPER_EXECUTABLE}</string>
+                >{widget_session_name_value}</code
+                >~/.config/widget/settings-template.toml</code
+                  >widget-release-notes-archive.md</a
+# a url whose element opened on the line before is read up to its close tag; the tags and short
+# element texts after it are syntax.
+    https://widget.example.org/guide/getting-started-with-widgets</loc>
+    https://widget.example.org/guide/getting-started-with-widgets</loc><lastmod>2026-09-01</lastmod></url>

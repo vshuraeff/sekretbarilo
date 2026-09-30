@@ -1,0 +1,17 @@
+# type-expression: type names in parameter, property and composite-literal positions.
+# the syntax exemption reads a type name marked optional or implicitly unwrapped (`Name?`,
+# `Name!`) as complete when the name reads as words, and a go slice, array or map type heads the
+# composite literal or conversion after it.
+# known gap: a bracketed type such as `[WorkspaceEntry<SessionRestorePlan>]` after a `key:` is a
+# bracket capture, which does not reach the syntax step, so it is still reported.
+# known gap: a generic argument naming a c type whose last snake_case word is a single letter,
+# such as `UnsafeMutablePointer<surface_config_s>?`, does not read as words and still vetoes.
+    func handleAction(ui: UnsafeMutableRawPointer?) {
+    func handleAction(ui: UnsafeMutableRawPointer?, count: Int) {
+        surface: UnsafeMutableRawPointer?,
+        weak var accessoryHost: TerminalAccessoryHostView?
+    private var appearanceObserver: NSKeyValueObservation?
+    var hostController: NSTitlebarAccessoryViewController!
+    var titlebarHost: NSTitlebarAccessoryHostingView!
+    weak var windowObserver: WindowFrameObserverProxy?
+			expected: map[string]widget.Descriptor{"alpha": first},

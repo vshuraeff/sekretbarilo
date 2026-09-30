@@ -1,0 +1,21 @@
+# markup-values: opaque values inside the wrappers and records the exemption layer reads through.
+# an element, a formatter's element residue, a one-item flow sequence, an action reference and a
+# labelled digest record are syntax around a value; an opaque value in that position is still a
+# finding. each line is the twin of a shape in false_positives/markup-element.txt,
+# action-tag-ref.txt or go-sum-digest.txt.
+# format: <rule id> TAB <line>.
+generic-high-entropy-value		<string>{S32}</string>
+generic-high-entropy-value		<key>{S32}</key>
+generic-high-entropy-value	                >{S32}</code
+generic-high-entropy-value	{S32}</code>
+generic-high-entropy-value	    https://github.example.internal/acme/{S32}</loc>
+generic-high-entropy-value	    https://github.example.internal/acme/{S32}</loc><lastmod>2026-09-01</lastmod></url>
+generic-high-entropy-value		<string>widget</string><string>{S32}</string>
+generic-high-entropy-value	custom: ['{S32}']
+generic-high-entropy-value	custom: ['https://github.example.internal/acme/{S32}']
+generic-high-entropy-value	      - uses: {S32}/widget@v4
+generic-high-entropy-value	      - uses: acme/{S32}@v4
+generic-high-entropy-value	      - uses: acme/widget@{S32}
+generic-high-entropy-value	example.com/widget v1.4.2 h1:{S32}
+generic-high-entropy-value	token: {B64_44}
+generic-high-entropy-value	integrity: sha256-{S32}

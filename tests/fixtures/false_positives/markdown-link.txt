@@ -9,3 +9,23 @@ Read the output of `sekretbarilo audit --trace-exemptions` in [the testing guide
 ![architecture diagram](../assets/img/widget-architecture-overview.svg "widget architecture")
 Both [the rules reference][rules] and [the configuration guide][configuration] describe the layer.
 [configuration]: ../configuration/#per-rule-allowlists
+# repository blob and tree links with numbered, hyphenated file names. the sentence punctuation
+# after the closing paren, `).` `):` `)?` `>.`, closes the prose, not the URL.
+# a dated file name such as `2026-09-10-docs-site-redesign.md` is a slug of words and short numbers.
+The layer is described in [ADR 0002](https://github.example.internal/acme/widget/blob/master/docs/adr/0002-tier3-exemption-layer.md).
+[ADR 0001](https://github.example.internal/acme/widget/blob/master/docs/adr/0001-entropy-baseline-8-char-password.md) explains the baseline.
+The baseline is described in [ADR 0001](https://github.example.internal/acme/widget/blob/master/docs/adr/0001-entropy-baseline-8-char-password.md).
+[ADR 0003](https://github.example.internal/acme/widget/blob/master/docs/adr/0003-source-posture-for-literals.md): literals posture for source files.
+Is the layer still the one in [the tagged ADR](https://github.example.internal/acme/widget/blob/v0.8.0/docs/adr/0002-tier3-exemption-layer.md)?
+Browse the corpus in [the fixtures tree](https://github.example.internal/acme/widget/tree/master/tests/fixtures/false_positives).
+The canonical copy lives at <https://github.example.internal/acme/widget/blob/master/docs/adr/0001-entropy-baseline-8-char-password.md>.
+[ADR-0002](../adr/0002-tier3-exemption-layer.md).
+The site redesign is recorded in [the plan](https://github.example.internal/acme/widget/blob/master/docs/plans/2026-09-10-docs-site-redesign.md).
+# badge chains, which the value grammar splits inside the label, and an autolink whose closing `>`
+# it consumes; every target of a chain is checked as a url or a relative file name.
+[![CI](https://img.shields.io/badge/ci-passing-green.svg)](https://github.example.internal/acme/widget/actions)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+- Bug reports: <https://github.example.internal/acme/widget/issues/new>
+# heading anchors and review anchors: a fragment of words and short numbers is a slug.
+See [the session guide](https://github.example.internal/acme/widget/blob/master/docs/guide.md#using-sessions-in-the-terminal-view).
+Reviewed in [PR 42](https://github.example.internal/acme/widget/pull/42#pullrequestreview-12345678).

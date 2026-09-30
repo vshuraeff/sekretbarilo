@@ -6,16 +6,9 @@ nav_order: 5
 
 # Agent Hooks
 
-## What Are Agent Hooks
+This page is the reference for the agent hooks: what each hook intercepts, how it is configured, what it prints, its exit codes, and what `doctor` checks. Why the hooks are built this way, with illustrated sessions, is in [How the agent hooks work]({{ '/how-agent-hooks-work/' | relative_url }}). Installation steps are in [Installation]({{ '/installation/#agent-hooks-ai-coding-tool-protection' | relative_url }}), step-by-step fixes in [Troubleshoot the agent hooks]({{ '/troubleshoot-agent-hooks/' | relative_url }}), and running `check-file` by hand in [Scan a single file with check-file]({{ '/scan-a-file-with-check-file/' | relative_url }}).
 
-AI coding agents interact with your codebase in two directions: they **read** files to understand context, and they **write** patches and run shell commands to act on it. Both directions leak secrets. A file the agent reads can carry a credential into conversations, logs, and generated snippets; a patch or a shell command the agent writes can put a fresh credential into your repository.
-
-sekretbarilo integrates into the agent's tool pipeline. Blocking hooks run before a tool call executes:
-
-1. The agent triggers a sekretbarilo hook
-2. sekretbarilo scans the file, the patch, or the command
-3. If secrets are found, the tool call is blocked and the agent is told why
-4. If it is clean, the tool call proceeds normally
+## Supported Agents and Modes
 
 | Agent / mode | Coverage | Event / tools | Hook command |
 |--------------|----------|---------------|--------------|
@@ -93,9 +86,9 @@ For example, a Bash response containing `host = localhost`, a detected password 
 
 The whole captured secret value becomes `[REDACTED]`; no prefix or suffix remains. Repeated findings are masked and overlapping ranges are merged. Surrounding text and UTF-8 are preserved, as are CR, LF, and CRLF line endings, including line breaks inside a multiline secret. PEM and PGP headers extend the masked range through the corresponding end marker. If the end marker is missing, masking covers the remainder of that text field. Public-key blocks receive the same treatment when `detect_public_keys` is enabled. With public-key detection disabled, an unterminated public-key header does not suppress scanning of the remaining output.
 
-`redact` uses the current rules, custom capture groups, entropy thresholds, password heuristics, stopwords, and per-rule value exceptions through the trusted configuration loader. Path allowlists, audit path exclusions, and documentation relaxations do **not** apply to tool output. An `.env` file is scanned by its returned content, rather than blocked by its filename. This mode includes a bounded [generic high-entropy-value detector]({{ '/rules-reference/#tier-3-catch-all-rules' | relative_url }}) for long, high-entropy, non-whitespace values regardless of variable name; it does not search for every random-looking string.
+`redact` uses the current rules, custom capture groups, entropy thresholds, password heuristics, stopwords, and per-rule value exceptions through the trusted configuration loader. Path allowlists, audit path exclusions, and documentation relaxations do **not** apply to tool output. An `.env` file is scanned by its returned content, rather than blocked by its filename. From 0.9.0, this mode disables the keywordless heuristic rule by default. Prefix-less random tokens, such as bare `printenv` output, are not masked unless another enabled rule matches. Opt in through `[settings.rules]` with `"generic-high-entropy-value" = true` (or `[settings.rule_classes]` with `heuristic = true`) in a trusted configuration layer. Once enabled, it uses a bounded [generic high-entropy-value detector]({{ '/rules-reference/#heuristic-rules' | relative_url }}) for long, high-entropy, non-whitespace values regardless of variable name; it does not search for every random-looking string.
 
-Environment dumps and similar tool output also redact eligible high-entropy values regardless of the variable name. Some harmless high-entropy data, such as base64 blobs or checksums, may be redacted; use `[allowlist].stopwords` or a per-rule `[[allowlist.rules]]` `regexes` exception to suppress a specific case. An in-workspace `.sekretbarilo.toml` exception must be committed before hooks honor it; see [Config Inside the Repository Must Be Committed]({{ '/agent-hooks/#config-inside-the-repository-must-be-committed' | relative_url }}).
+With the heuristic rule enabled, environment dumps and similar tool output also redact eligible high-entropy values regardless of the variable name. Some harmless high-entropy data, such as base64 blobs or checksums, may be redacted; use `[allowlist].stopwords` or a per-rule `[[allowlist.rules]]` `regexes` exception to suppress a specific case. An in-workspace `.sekretbarilo.toml` exception must be committed before hooks honor it; see [Config Inside the Repository Must Be Committed]({{ '/agent-hooks/#config-inside-the-repository-must-be-committed' | relative_url }}).
 
 #### Output and Errors
 
@@ -113,21 +106,11 @@ Exit 2 is not a way to remove PostToolUse output: the tool has already executed.
 - A hook crash, timeout, failure to deliver output, or another hook replacing the same result can leave the original output exposed. These cases are outside the masking guarantee. Claude's fallback for an invalid replacement also matters; preserving response structure is required.
 - Detection is rule-based and uses configured value exceptions. A secret not detected by those rules is not masked.
 - Password assignments support double quotes, single quotes, backticks, and unquoted values. Unquoted captures end at whitespace or a syntax delimiter; escaped whitespace and delimiters remain part of the value. Quote values that contain literal delimiters. Existing password-strength and placeholder filters still apply.
-- Ambiguous raw versus escaped quotes can mask adjacent text: a backslash before a possible closing single quote or backtick favors the longer escaped interpretation. Password assignments with multiline or mixed shell quoting are not parsed. See [password rules]({{ '/rules-reference/#tier-2-context-aware-rules' | relative_url }}) for detection boundaries.
+- Ambiguous raw versus escaped quotes can mask adjacent text: a backslash before a possible closing single quote or backtick favors the longer escaped interpretation. Password assignments with multiline or mixed shell quoting are not parsed. See [password rules]({{ '/rules-reference/#context-based-rules' | relative_url }}) for detection boundaries.
 
 These boundaries follow the [Claude hooks lifecycle and failure behavior](https://code.claude.com/docs/en/hooks).
 
-#### Synthetic Smoke Check
-
-Verified with the sekretbarilo 0.6.0 release build and Claude Code 2.1.261 on 2026-09-05: a synthetic AWS key and passwords without quotes and in double, single, and backtick quotes were masked in the model-visible results of Bash, text Read, and Grep content mode. The source file remained unchanged. Other result shapes and error cases are covered by the automated hook tests.
-
-Use a disposable project and a synthetic credential that matches an enabled detector. Keep the synthetic value out of the prompt so the model cannot recover it from the request itself.
-
-1. Check `claude --version`, install with `--mode redact`, and run `sekretbarilo doctor`. Resolve any local/global blocking-hook conflict.
-2. Create a text fixture containing safe surrounding lines and the synthetic credential, and record its checksum outside Claude.
-3. In a fresh Claude session, ask it to inspect the fixture separately with `Bash` (`cat`), `Read`, and `Grep` in content mode. Check that each tool was actually used and the model receives `[REDACTED]` with the safe lines intact.
-4. Repeat with Bash output on stderr, Grep's file/count modes, repeated secrets, and a multiline key fixture. Inspect the actual tool results, not only the model's final paraphrase.
-5. Compare the fixture checksum afterward. The file must be unchanged.
+To confirm redaction end to end on your own machine, see [Verify redaction with a synthetic smoke check]({{ '/verify-redaction/' | relative_url }}).
 
 ## Codex CLI Integration
 
@@ -225,7 +208,7 @@ The cap affects the reason text only. The decision is still a block, and the `to
 
 The file paths and rule names in the reason come from the patch, which the agent wrote. They pass through the same control-character and bidirectional-override stripping the audit output uses before being printed. A path such as `spoof\u001b[2K\rname\u202e.rs` is reported as `spoof[2Kname.rs`: the escape, the carriage return, and the right-to-left override are gone.
 
-This matters more here than elsewhere, because the reason has two audiences that both interpret escape sequences — the terminal it is printed to, and the model whose context it lands in. A rule name that can move the cursor is a rule name that can rewrite what the block appears to say.
+Why this matters more here than elsewhere is explained in [How the agent hooks work]({{ '/how-agent-hooks-work/#why-block-reasons-are-sanitized' | relative_url }}).
 
 #### Payload Size
 
@@ -293,10 +276,7 @@ Approve the hook from the Codex TUI:
 /hooks
 ```
 
-sekretbarilo does not write the trust state for you, and this is deliberate:
-
-- the trust hash is an internal, undocumented Codex implementation detail — writing it means guessing at a format that can change in any release;
-- a security tool that grants itself trust defeats the purpose of the trust model. The approval has to come from a human.
+sekretbarilo does not write the trust state for you; why is explained in [How the agent hooks work]({{ '/how-agent-hooks-work/#why-sekretbarilo-does-not-approve-its-own-hook' | relative_url }}).
 
 Codex records the approval in a `[hooks.state]` table inside the `config.toml` of the user layer, keyed by source file path, event, and index.
 
@@ -314,95 +294,7 @@ The Codex hook is a narrower instrument than the Claude Code hook. Know what it 
 - **The `Bash` check is textual.** The command string is scanned as text. sekretbarilo does not parse shell syntax, does not expand variables, and does not analyse redirect targets, so the check can be circumvented deliberately. Treat it as a guardrail against accidental leakage, not as a sandbox.
 - **Write direction only.** Coverage is `apply_patch` and `Bash`. Nothing else Codex does is intercepted.
 
-## Installation
-
-Install agent hooks using the `install` command, one agent at a time. Each hook can be installed locally (per-project) or globally (for all projects).
-
-### Project-Local Installation (Claude Code)
-
-Install in the current project's `.claude/settings.json`:
-
-```sh
-sekretbarilo install agent-hook claude
-```
-
-This creates or modifies `./.claude/settings.json` in your project root. The hook only applies when Claude Code is run from this project.
-
-### Global Installation (Claude Code)
-
-Install in your user-level `~/.claude/settings.json`:
-
-```sh
-sekretbarilo install agent-hook claude --global
-```
-
-This applies the hook to all projects where Claude Code runs under your user account.
-
-### Selecting and Switching Claude Modes
-
-```sh
-sekretbarilo install agent-hook claude --mode redact
-sekretbarilo install agent-hook claude --mode block
-sekretbarilo install agent-hook claude --mode redact --global
-sekretbarilo install agent-hook claude --settings .claude/settings.local.json --mode redact
-```
-
-Without `--mode`, installation preserves the mode already present in the selected settings file; a new installation uses `block`. `install all` follows the same rule and accepts `--mode block|redact` for its Claude step. `--mode` does not change Codex behavior.
-
-Switching modes replaces only sekretbarilo's handlers in the selected file, atomically and without duplicates. Other hooks and their order are preserved. It does not switch hooks in another settings scope. A global blocking Read hook can still block a read before a local redaction hook gets any result, and the reverse scope combination has the same issue. Installation and `doctor` report this conflict; choose the intended mode explicitly in each affected scope.
-
-**Targeting an explicit file.** `--settings <path>` installs into exactly that file instead of the local or global default, and is mutually exclusive with `--global`. A relative path resolves against the current directory of the invocation, not the repository root, and the flag works outside a git repository too; the file is created if absent, and existing content and other hooks are preserved exactly as with the default locations. Scope-conflict warnings from installation and `doctor` treat the explicit file as one more scope alongside local and global.
-
-Writing into an arbitrary file does not register a new Claude Code profile by itself: Claude only loads a settings file when it is one of its standard locations, when Claude is launched with its own `--settings <path>` flag, or when the file is the `settings.json` of the profile directory named by `CLAUDE_CONFIG_DIR`. See the [Claude Code CLI reference](https://code.claude.com/docs/en/cli-reference) and the [configuration directory docs](https://code.claude.com/docs/en/claude-directory). `sekretbarilo doctor --settings <path>` inspects the file's contents; it is not proof that a running Claude Code session has actually loaded it.
-
-### Project-Local Installation (Codex CLI)
-
-Install in the current project's `.codex/hooks.json`:
-
-```sh
-sekretbarilo install agent-hook codex
-```
-
-This creates or modifies `.codex/hooks.json` in your repository root. The hook only applies when Codex CLI runs in this project.
-
-### Global Installation (Codex CLI)
-
-Install in your user-level Codex configuration directory:
-
-```sh
-sekretbarilo install agent-hook codex --global
-```
-
-This writes `$CODEX_HOME/hooks.json` — `~/.codex/hooks.json` when `CODEX_HOME` is unset — and applies to every project where Codex CLI runs under your user account.
-
-> **Installing is not enough.** Codex will not run the hook until you approve it with `/hooks` in the Codex TUI, and it says nothing when it skips an unapproved hook. See [Hook Trust](#hook-trust).
-
-### Install All Hooks at Once
-
-To install the pre-commit hook and every supported agent hook in one command:
-
-```sh
-# install locally (project pre-commit + project agent hooks)
-sekretbarilo install all
-
-# install globally (global pre-commit + global agent hooks)
-sekretbarilo install all --global
-```
-
-`install all` covers the pre-commit hook, the Claude Code hook, and the Codex CLI hook, in that order, reporting each one as it goes.
-
-Only the Codex step is conditional. Codex is looked for on `PATH` and at `$CODEX_HOME` (default `~/.codex`); when neither is present the step is skipped rather than failing:
-
-```
-installing codex cli agent hook...
-[SKIP] codex cli not detected on this machine; skipping codex agent hook install
-```
-
-In `block` mode, the Claude settings file can be installed even when Claude Code is absent. Selecting or preserving `redact` requires a known supported Claude version before the Claude settings can change.
-
-Remember to approve the Codex hook afterwards with `/hooks`.
-
-## How It Works (Claude Code Block Pipeline)
+## Claude Code Block Pipeline
 
 The following pipeline, path policies, and `check-file` examples describe Claude `block` mode. For tool-output masking, see [Redact Mode](#redact-mode-output-editor).
 
@@ -573,13 +465,7 @@ stdin input is limited to **1 MB** to prevent unbounded memory consumption. This
 
 Fast-path skipping applies to `check-file` / Claude `block` mode and file-based scans, not `redact`. It allows files considered low-risk by the configured path policy to pass through without scanning.
 
-### Why Fast-Path Skipping Matters
-
-- **Performance**: skipping binary files avoids reading megabytes of image/video data
-- **Accuracy**: scanning binary content produces garbage matches (false positives)
-- **Usability**: AI agents need to read lock files, images, and dependencies without friction
-
-Fast-path decisions are made based on **file path patterns only**, before the file is read. This keeps the check extremely fast.
+Fast-path decisions are made based on **file path patterns only**, before the file is read. This keeps the check extremely fast. Why these files are skipped at all is explained in [How the agent hooks work]({{ '/how-agent-hooks-work/#why-some-files-are-never-scanned' | relative_url }}).
 
 ### Binary Files
 
@@ -595,8 +481,6 @@ fonts         .woff, .woff2, .ttf, .eot, .otf
 generated     .min.js, .min.css
 ```
 
-Even if a binary file somehow embeds a secret (e.g., an API key in image metadata), it's not accessible to the AI agent in a way that creates risk.
-
 Extensions outside this list are scanned, including ones that are usually binary — `.o`, `.class`, `.jar`, `.wasm`, `.db`, `.sqlite`, `.tgz`, `.docx`, `.flac`. Scanning a compressed or binary file is cheap and finds nothing, so the fast path stays deliberately short rather than trying to enumerate every binary format in existence. Add your own entries under `[allowlist] paths` if a particular format shows up often enough to matter.
 
 ### Vendor Directories
@@ -611,11 +495,6 @@ bower_components/
 __pycache__/
 .git/
 ```
-
-These directories often contain thousands of files. Scanning them would:
-- Slow down the agent significantly
-- Produce false positives from test data in dependencies
-- Block legitimate reads of library code
 
 sekretbarilo skips these paths entirely.
 
@@ -635,8 +514,6 @@ composer.lock
 Pipfile.lock
 ```
 
-Lock files are often large (thousands of lines) and contain cryptographic hashes that can trigger false positives. They never contain user secrets, so they're safe to skip.
-
 ### User-Configured Patterns
 
 In addition to built-in patterns, sekretbarilo respects user-configured allowlists and audit exclude patterns from `.sekretbarilo.toml`:
@@ -653,18 +530,7 @@ These patterns are evaluated during the fast-path check, so you can customize wh
 
 ## .env File Blocking
 
-`.env` files are a special case: they are **always blocked**, regardless of content.
-
-### Why Block .env Files?
-
-`.env` files are designed to store secrets. They typically contain:
-- Database passwords
-- API keys
-- Service tokens
-- Encryption keys
-- OAuth secrets
-
-Allowing an AI agent to read a `.env` file is almost always a mistake. Even if the file happens to be clean at the moment, it's likely to contain secrets in the future.
+`.env` files are a special case: they are **always blocked**, regardless of content. Why they are never read is explained in [How the agent hooks work]({{ '/how-agent-hooks-work/#why-env-files-are-blocked-outright' | relative_url }}).
 
 ### Blocked Patterns
 
@@ -755,67 +621,6 @@ Errors (file not found, JSON parse failure, config load failure) also produce st
 
 This fail-closed behavior ensures that errors don't accidentally allow secrets through.
 
-## Using check-file Directly
-
-The `check-file` command can be used standalone, outside of the Claude Code hook context. This is useful for testing, CI pipelines, or integrating with other tools.
-
-### Scan a File by Path
-
-```sh
-sekretbarilo check-file src/config.rs
-```
-
-Exit code 0 = clean, exit code 2 = secrets found.
-
-### Read File Path from Stdin JSON (Agent Hook Mode)
-
-Simulate the Claude Code hook payload:
-
-```sh
-echo '{"tool_input":{"file_path":"src/config.rs"}}' | sekretbarilo check-file --stdin-json
-```
-
-This is the same mode used by the agent hook.
-
-### Example: CI Pipeline
-
-Run `check-file` on all source files in CI:
-
-```sh
-#!/bin/sh
-# scan all python files for secrets
-
-for file in $(find src -name '*.py'); do
-  sekretbarilo check-file "$file"
-  if [ $? -eq 2 ]; then
-    echo "secret detected in $file"
-    exit 1
-  fi
-done
-
-echo "all files clean"
-```
-
-### Example: Pre-Read Script
-
-Use `check-file` in a script before opening files in an editor:
-
-```sh
-#!/bin/sh
-# check file before opening in vim
-
-sekretbarilo check-file "$1"
-if [ $? -eq 2 ]; then
-  echo "file contains secrets. open anyway? (y/n)"
-  read -r answer
-  if [ "$answer" != "y" ]; then
-    exit 1
-  fi
-fi
-
-vim "$1"
-```
-
 ## Configuration
 
 `check-file`, `check-codex`, and `redact-claude` load hierarchical configuration from `.sekretbarilo.toml` files through the trusted loader. Custom rules, stopwords, value exceptions, and entropy thresholds apply across the hooks. Path policy differs by command, as described below.
@@ -828,7 +633,7 @@ The agent hooks — and only the agent hooks — require a `.sekretbarilo.toml` 
 [WARN] ignoring untrusted in-workspace config: /home/user/project/.sekretbarilo.toml
 ```
 
-The reason is the obvious attack: an agent that can write files can write a permissive config, and that patch carries no secret, so it passes. Requiring a commit puts a human between the agent and the rules the agent is checked against.
+The reason for the rule is explained in [How the agent hooks work]({{ '/how-agent-hooks-work/#why-in-workspace-config-must-be-committed' | relative_url }}).
 
 Layers above the repo root — a parent directory, `~/.sekretbarilo.toml`, the XDG user config, `/etc/sekretbarilo.toml` — are loaded normally, and `scan`/`audit` are not affected at all. If a value exception works under `sekretbarilo audit` but the hook still detects it, check whether the config is committed. Full detail in [Configuration]({{ '/configuration/#in-workspace-config-trust-agent-hooks-only' | relative_url }}).
 
@@ -1119,369 +924,15 @@ sekretbarilo install agent-hook claude
 
 The installer will update the command in place.
 
-## Practical Examples
-
-The sessions below are illustrative: they show the sequence of events and how the agent reacts, not literal program output.
-
-### Example 1: Developer Installs Hook, Claude Code Tries to Read .env
-
-**Setup**:
-
-```sh
-# install agent hook
-sekretbarilo install agent-hook claude
-
-# create .env file
-echo 'DB_PASSWORD=supersecret123' > .env
-```
-
-**Claude Code session**:
-
-```
-User: Read the .env file and show me the database password
-
-Claude Code: [attempts to read .env]
-[AGENT] .env file blocked: .env
-file likely contains environment secrets. reading blocked.
-
-Claude Code: I was unable to read the .env file because it was blocked by sekretbarilo. This is a security measure to prevent exposing secrets. If you need to share configuration, consider reading .env.example instead, or tell me what specific non-secret information you need.
-```
-
-**Result**: The `.env` file is never exposed to Claude Code. The developer is informed that the file was blocked.
-
-### Example 2: Claude Code Reads a Python File with AWS Key
-
-**Setup**:
-
-```sh
-# install agent hook
-sekretbarilo install agent-hook claude
-
-# create file with a real (not placeholder) aws key on line 3
-cat > src/config.py << 'EOF'
-import os
-
-aws_access_key = "AKIA...."          # a live key id, not a documentation placeholder
-aws_secret_key = os.environ.get('AWS_SECRET_KEY')
-
-def init_client():
-    return boto3.client('s3', aws_access_key_id=aws_access_key)
-EOF
-```
-
-> The key has to be a real one for this example to work. `AKIAIOSFODNN7EXAMPLE`, the key from AWS's own documentation, is allowlisted by a built-in rule allowlist and passes through untouched.
-
-**Claude Code session**:
-
-```
-User: Read src/config.py and explain how the AWS client is initialized
-
-Claude Code: [attempts to read src/config.py]
-[AGENT] secret(s) detected in src/config.py
-
-  file: src/config.py
-  line: 3
-  rule: aws-access-key-id
-  match: AK****************YZ
-
-file contains 1 secret(s). reading blocked to prevent secret exposure.
-
-Claude Code: I was unable to read src/config.py because it contains an AWS access key. This is a security measure to prevent accidentally exposing the key. If you'd like help with this file, please remove the hardcoded key and use environment variables instead, then I'll be able to read it.
-```
-
-**Result**: The AWS key is never exposed. Claude Code provides actionable feedback (use environment variables).
-
-### Example 3: Claude Code Reads a Normal Source File
-
-**Setup**:
-
-```sh
-# install agent hook
-sekretbarilo install agent-hook claude
-
-# create clean file
-cat > src/utils.py << 'EOF'
-import json
-
-def load_config(path):
-    with open(path, 'r') as f:
-        return json.load(f)
-
-def save_config(path, data):
-    with open(path, 'w') as f:
-        json.dump(data, f, indent=2)
-EOF
-```
-
-**Claude Code session**:
-
-```
-User: Read src/utils.py and explain what it does
-
-Claude Code: [attempts to read src/utils.py]
-[sekretbarilo scans silently, exits 0, no output]
-
-Claude Code: [reads file successfully]
-
-This module provides two utility functions for working with JSON configuration files:
-
-1. load_config(path): Reads a JSON file and returns the parsed data
-2. save_config(path, data): Writes data to a JSON file with pretty-printing (2-space indent)
-
-The functions use Python's built-in json module and file I/O.
-```
-
-**Result**: The file passes through transparently. Claude Code reads it normally and provides the requested explanation.
-
-### Example 4: Claude Code Reads a Binary/Lock File (Fast-Path Skip)
-
-**Setup**:
-
-```sh
-# install agent hook
-sekretbarilo install agent-hook claude
-
-# copy a real lock file (thousands of lines)
-cp package-lock.json /tmp/test-lock.json
-```
-
-**Claude Code session**:
-
-```
-User: Read package-lock.json and tell me which version of react is installed
-
-Claude Code: [attempts to read package-lock.json]
-[sekretbarilo fast-path detects lock file, exits 0 immediately, no scanning]
-
-Claude Code: [reads file successfully]
-
-The project is using React version 18.2.0. It's listed as a direct dependency with the following details:
-- Version: 18.2.0
-- Resolved from: https://registry.npmjs.org/react/-/react-18.2.0.tgz
-- Integrity: sha512-...
-...
-```
-
-**Result**: The lock file is recognized during fast-path checks and allowed through without scanning. The read completes quickly with no overhead, and Claude Code can answer the question normally.
-
-### Example 5: Codex CLI Tries to Write a Secret into .env
-
-**Setup**:
-
-```sh
-# install and approve the codex hook
-sekretbarilo install agent-hook codex
-# then, inside codex: /hooks -> approve
-```
-
-**Codex session**:
-
-```
-User: Put my AWS credentials in .env so the deploy script can read them
-
-Codex: [attempts apply_patch on .env]
-[sekretbarilo blocks the patch: .env target, exit 2, reason on stderr]
-
-Codex: I can't write to .env — sekretbarilo blocks patches targeting .env files
-outright, because they are where credentials end up. If you want the deploy
-script configured, I can add the variable names to .env.example and read the
-values from your shell environment at deploy time instead.
-```
-
-**Result**: The credential never reaches the repository. Codex sees the reason, so it proposes a workable alternative instead of retrying the same patch.
-
-### Example 6: Codex CLI Runs a Shell Command Containing a Token
-
-**Setup**:
-
-```sh
-sekretbarilo install agent-hook codex --global
-# then, inside codex: /hooks -> approve
-```
-
-**Codex session**:
-
-```
-User: Check whether the staging API is up, here's my token: sk_live_...
-
-Codex: [attempts Bash: curl -H "Authorization: Bearer sk_live_..." https://staging.example.com/health]
-[sekretbarilo blocks the command: secret in command string, exit 2, masked in the reason]
-
-Codex: That request would put a live API token on the command line, where it
-lands in shell history and process listings. sekretbarilo blocked it. Export the
-token as an environment variable first and I'll reference it as
-"$STAGING_TOKEN" in the request header.
-```
-
-**Result**: The token is not written into shell history or a process list. The value quoted back in the block reason is masked, so it is not re-exposed by the error itself.
-
-### Example 7: Codex CLI Applies a Clean Patch
-
-**Setup**:
-
-```sh
-sekretbarilo install agent-hook codex
-# then, inside codex: /hooks -> approve
-```
-
-**Codex session**:
-
-```
-User: Add a retry wrapper around the HTTP client in src/client.py
-
-Codex: [attempts apply_patch on src/client.py]
-[sekretbarilo scans the added lines, finds nothing, exits 0]
-
-Codex: [patch applied]
-
-Added a retry wrapper with exponential backoff around the request call, retrying
-on connection errors and 5xx responses up to three times.
-```
-
-**Result**: The patch passes through transparently. Ordinary edits carry no friction — only the lines being added are scanned, and clean lines produce no output at all.
-
-## Troubleshooting
-
-### Claude Code Hook Not Firing
-
-**Symptom**: Claude Code reads files without triggering sekretbarilo.
-
-These checks describe `block` mode. For `redact`, verify the synchronous `PostToolUse` handler, supported Claude version, and actual tool result using the [synthetic smoke check](#synthetic-smoke-check). Successful redaction lets the tool run; it does not block the call.
-
-**Check**:
-1. Verify hook is installed: `sekretbarilo doctor`
-2. Check `.claude/settings.json` exists and contains the hook
-3. Ensure sekretbarilo binary is in PATH: `which sekretbarilo`
-4. Test `check-file` manually: `sekretbarilo check-file path/to/file`
-
-### Hook Fails with "command not found"
-
-**Symptom**: Claude Code shows error: `sekretbarilo: command not found`.
-
-**Fix**:
-1. Add sekretbarilo to PATH: `export PATH="$HOME/.cargo/bin:$PATH"`
-2. Or use absolute path in hook: edit `.claude/settings.json` and change command to `/full/path/to/sekretbarilo check-file --stdin-json`
-
-### False Positives Blocking Clean Files
-
-**Symptom**: sekretbarilo blocks a file that doesn't contain real secrets.
-
-**Fix**:
-1. Add the false positive value to stopwords in `.sekretbarilo.toml`:
-   ```toml
-   [allowlist]
-   stopwords = ["known-safe-value"]
-   ```
-2. In `block` mode, you can instead allowlist the file path (`redact` ignores path exclusions):
-   ```toml
-   [allowlist]
-   paths = ["path/to/false-positive-file.py"]
-   ```
-3. **Commit the config.** A `.sekretbarilo.toml` inside the repository is ignored by the agent hooks until it is git-tracked and clean, so an edit that has not been committed yet changes nothing. `sekretbarilo doctor` says so explicitly, and the hook prints `[WARN] ignoring untrusted in-workspace config: ...` on every run. See [Config Inside the Repository Must Be Committed](#config-inside-the-repository-must-be-committed).
-
-### Slow Hook Execution
-
-**Symptom**: Claude Code shows "Scanning file for secrets..." for several seconds.
-
-The fast-path and exclusion advice below applies to `block` mode. Redaction scans supported output text regardless of its source path and uses a 10 MiB input/response limit.
-
-**Check**:
-1. Verify fast-path patterns are working: binary files, vendor dirs, and lock files should skip instantly
-2. Large source files (>10k lines) may take longer to scan
-3. Check if custom rules have expensive regexes
-
-**Fix**:
-- Exclude large generated files in `.sekretbarilo.toml`:
-  ```toml
-  [audit]
-  exclude_patterns = ["^build/", "^dist/"]
-  ```
-
-### Hook Installed but doctor Shows Outdated
-
-**Symptom**: `sekretbarilo doctor` reports outdated command.
-
-**Fix**:
-Run the installer again to update the command:
-```sh
-sekretbarilo install agent-hook claude
-```
-
-This will detect the outdated command and replace it with the current format.
-
-### Codex CLI Hook Not Firing
-
-**Symptom**: Codex applies patches and runs commands without triggering sekretbarilo, and nothing is reported anywhere.
-
-**Check, in this order**:
-
-1. **Approve the hook.** This is the usual cause. Run `/hooks` in the Codex TUI and approve the sekretbarilo entry. An unapproved hook is skipped without any message — see [Hook Trust](#hook-trust). If you already approved it once, approve it again: the approval is tied to the hook's position in the file, and adding or removing another hook shifts it.
-2. **Verify it is installed**: `sekretbarilo doctor` reports the local and global codex groups, and tells you whether it can find an approval entry for the position your hook occupies. Codex itself has no `hooks list` or `hooks validate` command to cross-check with.
-3. **Check the layer you expect**: project-local hooks live in `.codex/hooks.json` at the repository root, global ones in `$CODEX_HOME/hooks.json` (by default `~/.codex/hooks.json`). If you installed globally but run Codex somewhere with its own configuration, check both.
-4. **Look for a stray root key** if you edited `hooks.json` by hand. Only `hooks` and `description` are accepted at the root; anything else makes Codex discard that file's hooks completely, with no visible error.
-5. **Check the Codex version**: `codex --version`. The integration is verified on `0.145.0`; older releases may not deliver `PreToolUse` for `apply_patch`.
-6. **Ensure the binary is in PATH**: `which sekretbarilo`. The hook command is resolved by Codex, in Codex's environment.
-
-### Codex Warns About Duplicate Hook Definitions
-
-**Symptom**: Codex prints a warning that hooks are defined in more than one place.
-
-**Cause**: the same layer has both a `hooks.json` file and a `[hooks]` table in `config.toml`. Codex loads both representations and warns. sekretbarilo only ever writes `hooks.json`, so the `config.toml` definition is one you (or another tool) added.
-
-**Fix**: keep your hooks in one representation. If you consolidate into `config.toml`, note that re-running `sekretbarilo install agent-hook codex` will write `hooks.json` again.
-
-### Codex Blocks a Patch or Command You Know Is Safe
-
-**Symptom**: a patch containing a fixture value, or a command containing a harmless-looking high-entropy string, is refused.
-
-**Fix**: `check-codex` reads the same `.sekretbarilo.toml` hierarchy as every other command, so the same allowlist tools apply:
-
-```toml
-[allowlist]
-stopwords = ["known-safe-value"]
-paths = ["test/fixtures/.*"]
-```
-
-Commit the config afterwards — an uncommitted `.sekretbarilo.toml` inside the repository is ignored by `check-codex` entirely.
-
-Three things that will not work, however hard you try:
-
-- **An uncommitted in-workspace config.** The layer is dropped whole, and the hook says so on stderr. See [Config Inside the Repository Must Be Committed](#config-inside-the-repository-must-be-committed).
-- **A path allowlist against a `Bash` block.** `paths` entries are ignored when scanning command text — use `stopwords` or a per-rule value regex instead. For `apply_patch`, `paths` works as usual against the patch target.
-- **Anything against a `.env` block.** The `.env` check runs before configuration is even loaded, so no allowlist entry changes it. Write to `.env.example` instead, or set the value in your shell rather than through the agent.
-
 ---
 
-## Summary
+## See Also
 
-Agent hooks provide a critical security layer for AI-assisted development:
-
-- **Claude modes**: Block file reads or mask detected secrets in successful Bash/Read/Grep text results
-- **Prevent secret injection**: Block patches and shell commands that would write secrets through Codex CLI
-- **File scanning fast paths**: Skip configured binary, dependency, and lock-file paths in `block` mode
-- **Shared detectors**: Rules and value exceptions apply to all hook modes; redaction ignores path exclusions and documentation relaxations
-- **Configuration the agent cannot rewrite**: an in-workspace `.sekretbarilo.toml` counts only once it is committed
-- **Easy installation**: One command per agent, or `install all` for everything at once
-- **Diagnostic support**: `doctor` command validates hook configuration for both agents
-
-Install agent hooks today to protect your secrets from accidental exposure through AI coding agents:
-
-```sh
-# project-local
-sekretbarilo install agent-hook claude
-sekretbarilo install agent-hook codex
-
-# global
-sekretbarilo install agent-hook claude --global
-sekretbarilo install agent-hook codex --global
-
-# or install everything at once
-sekretbarilo install all --global
-```
-
-Then approve the Codex hook with `/hooks` in the Codex TUI — until you do, Codex skips it silently.
-
-For more information, see:
 - [Getting Started]({{ '/getting-started/' | relative_url }}) - Overview and quick setup
+- [Installation]({{ '/installation/#agent-hooks-ai-coding-tool-protection' | relative_url }}) - Installing each hook, choosing a Claude mode, approving the Codex hook
+- [How the agent hooks work]({{ '/how-agent-hooks-work/' | relative_url }}) - Why the hooks are built this way, with illustrated sessions
+- [Troubleshoot the agent hooks]({{ '/troubleshoot-agent-hooks/' | relative_url }}) - Step-by-step fixes for a hook that misbehaves
+- [Verify redaction with a synthetic smoke check]({{ '/verify-redaction/' | relative_url }}) - End-to-end check of `redact` mode
+- [Scan a single file with check-file]({{ '/scan-a-file-with-check-file/' | relative_url }}) - Running `check-file` outside the hook
 - [CLI Reference]({{ '/cli-reference/' | relative_url }}) - Complete command reference
 - [Configuration]({{ '/configuration/' | relative_url }}) - Customizing detection rules and allowlists

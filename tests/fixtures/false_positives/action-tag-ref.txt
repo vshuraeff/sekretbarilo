@@ -1,0 +1,14 @@
+# action-tag-ref: workflow steps that pin an action to a release tag `vN[.N[.N]]`, or to a major
+# release branch such as `release/v1`. a tag names a release, it does not authorise access, and the
+# owner, repository and path must still read as names; the commit-digest pin in commit-sha-pin.txt
+# stays the stronger form.
+# known gap: a repository name of four short words plus a suffix is reported, because the chunk
+# guard keeps such a name for recall: `owner/four-short-words-toolchain@v1`.
+      - uses: actions/setup-python@v5
+        uses: github/codeql-action/upload-sarif@v3.28.10
+      - uses: acme-labs-internal/widget-release-publisher@v1
+        uses: pypa/gh-action-pypi-publish@release/v1
+    - uses: widget-tools/rust-toolchain-installer@v1.2
+      uses: softprops/action-gh-release-helper@v2.0.8
+      - uses: widget-labs/actions-gh-pages-deploy@v4
+        uses: acme-internal/widget-docker-build-push@v6.9

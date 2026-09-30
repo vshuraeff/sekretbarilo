@@ -328,6 +328,15 @@ sekretbarilo check-codex --stdin-json
 
 ### `sekretbarilo doctor`
 
+Configuration diagnostics include resolved rule-class states, explicit rule-id
+overrides, and enabled/total counts. Defaults in 0.9.0 enable 109 of 113 built-in
+rules: `signature` and `contextual` are on, `heuristic` is off, and the three
+public-key rules also require `detect_public_keys`. An explicit rule override is
+shown separately, so `rule class heuristic: disabled (default)` can coexist with
+`rule generic-high-entropy-value: enabled (rule override)`. Heuristic-only
+settings have no effect while that rule is disabled. The abbreviated installation
+transcript below omits these configuration detail lines.
+
 runs diagnostic health checks for hook installations, configuration, and binary availability.
 
 **checks performed:**
@@ -374,7 +383,6 @@ codex cli agent hook:
 configuration:
   [OK] config file: /project/.sekretbarilo.toml
   [WARN] /project/.sekretbarilo.toml is untracked or has uncommitted changes; the check-file/check-codex agent hooks ignore this config layer entirely until it is committed
-  [OK] 112 rules loaded successfully
   [OK] rules compile successfully
 
 sekretbarilo binary:
@@ -414,6 +422,19 @@ sekretbarilo install -h
 
 ---
 
+### `sekretbarilo help`
+
+prints built-in reference topics on stdout, so an agent can read them through a pipe. `help` lists the topics; `help config` prints the full configuration reference (discovery and precedence, every setting, rule classes and switches, allowlists, custom rules, audit settings, common fixes); `help rules` prints every defined rule with its class, enabled or disabled state and the reason, resolved from the configuration of the current directory; `help rules --defaults` ignores external configuration and lists the built-in state. `help`, `help config` and `help rules --defaults` work even when a configuration file is broken. an unknown topic or option, or a configuration error under `help rules`, is reported on stderr with exit 2.
+
+**examples:**
+```sh
+sekretbarilo help config
+sekretbarilo help rules | grep heuristic
+sekretbarilo help rules --defaults
+```
+
+---
+
 ## Common Flags
 
 these flags apply to both `scan` and `audit` commands:
@@ -426,6 +447,21 @@ these flags apply to both `scan` and `audit` commands:
 | `--allowlist-path <pattern>` | repeatable | add path pattern to allowlist (regex). can be specified multiple times. appended to config-defined patterns. |
 | `--stopword <word>` | repeatable | add stopword to filter out false positives. can be specified multiple times. appended to config-defined stopwords. |
 | `--detect-public-keys` | boolean | report public keys (PEM, PGP, OpenSSH) as findings. by default, public keys are suppressed to reduce noise. |
+| `--trace-exemptions` | boolean | CLI-only. print, once per run and on stderr only, a `[TRACE] rule:disabled <id> class=<class> reason=<default|class|rule override>` line per rule the switches turn off and a `[TRACE] rule:gated` line per public-key rule held back by `detect_public_keys` (these lines are not findings and do not affect the exit code); report each enabled heuristic rule exemption-layer decision as an `exempt:<step>` pseudo-finding instead of silently dropping the candidate; the step names come from `generic-high-entropy-value`'s own exemption checks (`code`, `file`, `testpath`, `import`, `markdown`, `path`, `relpath`, `mktemp`, `shell-path`, `pin`, `url`, `regex`, `syntax`, `wordshape`, `digest`). there is no corresponding config setting. these pseudo-findings are reported and masked exactly like ordinary findings, so they also count toward the command's exit code. |
+
+**example (`--trace-exemptions` output shape):**
+```sh
+$ sekretbarilo audit --trace-exemptions
+
+[AUDIT] secret(s) detected in tracked files
+
+  file: src/config/loader.rs
+  line: 42
+  rule: exempt:wordshape
+  match: ab********yz
+
+[AUDIT] audit complete. scanned 118 file(s), 1 secret(s) in 1 file(s).
+```
 
 ---
 
@@ -536,6 +572,8 @@ note: like `check-file`, `check-codex` fails closed - an error blocks the patch 
 |-----------|---------|
 | 0 | all checks passed |
 | 1 | issues found (warnings or errors) |
+
+`[INFO]` lines (rule-class states, rule overrides, counts) are not issues and do not change the exit code; an invalid configuration, rule regex or allowlist is an `[ERROR]`.
 
 ### `install`
 
@@ -754,6 +792,7 @@ sekretbarilo validates flag combinations to prevent misuse:
 | `--allowlist-path` | `scan`, `audit` | `install`, `check-file`, `doctor` |
 | `--stopword` | `scan`, `audit` | `install`, `check-file`, `doctor` |
 | `--detect-public-keys` | `scan`, `audit` | `install`, `check-file`, `doctor` |
+| `--trace-exemptions` | `scan`, `audit` | `install`, `check-file`, `doctor` |
 | `--history` | `audit` | `scan`, `install`, `check-file`, `doctor` |
 | `--branch` | `audit --history` | `scan`, `audit` (without `--history`) |
 | `--since` | `audit --history` | `scan`, `audit` (without `--history`) |

@@ -44,6 +44,16 @@ mod tests {
     use super::*;
     use crate::scanner::engine::Finding;
 
+    fn github_token() -> Vec<u8> {
+        let body: String = (0..36u8)
+            .map(|index| {
+                let base = if index % 2 == 0 { b'A' } else { b'a' };
+                char::from(base + (index * 7 % 26))
+            })
+            .collect();
+        format!("ghp_{body}").into_bytes()
+    }
+
     #[test]
     fn report_no_findings() {
         let count = report_findings(&[], &[]);
@@ -82,7 +92,7 @@ mod tests {
                 file: "src/app.js".to_string(),
                 line: 10,
                 rule_id: "github-personal-access-token".to_string(),
-                matched_value: b"ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij".to_vec(),
+                matched_value: github_token(),
             },
         ];
         let env_files = vec![".env".to_string()];

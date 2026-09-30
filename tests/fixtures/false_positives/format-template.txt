@@ -1,0 +1,26 @@
+# format-template: format strings whose placeholders, specs and escapes carry the entropy.
+# brace fields and printf conversions; every literal segment reads as words. a ${name} placeholder
+# inside a path of words is a reference path and lives in variable-path.txt.
+label = "report-{0}-{kind:>6}-{stamp}.csv".format(count, kind=kind, stamp=stamp)
+name := fmt.Sprintf("archive-%s-%03d-%x.tar.gz", tag, count, sum)
+let directory = format!("sekretbarilo-fuzz-config-{}-{id}", std::process::id());
+println!("{name:>8}|{value:<12.3}|{unit:^6}|{flags:#06x}");
+thumb := fmt.Sprintf("%s/uploads/%d/thumbnail-%dx%d.jpg", root, id, width, height)
+key = "%(bucket)s/%(year)04d/%(month)02d/%(key)s.json.gz" % record
+dsn = "{user}@{host}:{port:05d}/{db}?timeout={secs:.1f}".format(**cfg)
+snprintf(path, sizeof path, "%s/cache/v%u/%08lx-%04hx_%zu.bin", root, version, hash, part, size);
+const endpoint = util.format("%s/v%d/checkout/%s?locale=%s&qty=%d", base, version, cart, locale, qty);
+# interpolation holes (swift `\(expr)` and `\#(expr)`, ruby `#{expr}`) and a currency sign before a
+# conversion; a hole's expression is words with at most one short name outside the vocabulary,
+# and it joins the literal text in the chunk guard. a string body whose escapes are its only
+# structure is words once unescaped.
+# known gap: a hole the capture cuts open (`\(controller.handle(for:`) and an escaped record with a
+# short piece outside the vocabulary (`qzx-list\nname=running`) are reported.
+# known gap: two holes of short member words (`#{user.first_name}-#{user.last_name}.profile`) read
+# as four short groups in a row, as a token cut into members does, and are reported.
+label = "window-detail-\(session.windowIdentifier)-\(tab.index)"
+let key = "\(windowID.uuidString):\(surfaceID.uuidString):\(pane.tabIndex)"
+label = "$%(default).2f/gb/month" % prices
+body = "\"quarterly-budget-review\"\tauthor=jimmy\nversion=2"
+line = "\"release-notes-summary\"\tpublished\nupdated"
+expected = "\"feature-toggle-rollout\"\nowner=platform\nstage=beta"

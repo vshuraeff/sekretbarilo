@@ -1,0 +1,29 @@
+# alternation: search-pattern alternations of words and short ids in shell, python, rust and js.
+# an alternation lists independent items: each is a word run or a short id (a digit, or both cases)
+# below the 20-byte minimum, or a longer identifier. one `(` or `(?:` group and `^`, `$`, `\b`
+# anchors may wrap the list and each item.
+# known gap: a grep basic-regex alternation such as `word\|word` and an inline flag group such as
+# `(?i)word|word` are reported, because the escaped pipe and the flag group are not item bytes.
+# known gap: a single-case acronym item of four or more letters without a vowel, such as `HTML`,
+# is not a word run, so an alternation containing one is reported.
+rg --regexp='DeprecationWarning|legacy_api_v2|removeAfter|OBSOLETE' src/
+grep -E --regexp="^(ERROR|WARNING|FATAL|panicked|timeout)$" build.log
+PATTERN='\b(FIXME|todo|Hack|XXX|workaround|kludge)\b'
+git log --grep='SEC-1042|OPS-2210|d735b40|9481f4b|INFRA-907'
+NOISE = re.compile(r"Delve|tapestry|Leverage|seamless|ROBUST|holistic")
+SKIP_DIRS = "node_modules|target|Vendor|dist_v2|BUILD|coverage"
+TICKETS = "(?:JIRA-4417|JIRA-4502|SEC-88|OPS-1203)"
+let keywords = Regex::new(r"(?:unsafe|transmute|from_raw_parts|unwrap_unchecked)")?;
+let levels = "Trace|DEBUG|Info|WARN|error|Critical_v2";
+let ids = Regex::new("^(SEC-1042|OPS-2210|INFRA-907|Web-88)$").unwrap();
+const markers = new RegExp("\\b(TODO|FIXME|Hack|XXX|workaround)\\b", "g");
+const filter = { pattern: 'SEC-1042|SEC-1187|OPS-2210|INFRA-907' };
+{"pattern": "WordShape|regexshape|UrlShape|calllit_v2|literals", "path": "src/scanner"}
+ids = "(?:bk-7f3a2c|bk-91d0e4|bk-c05b6e|bk-2e8d17)"
+# a search pattern of several groups, anchors and posix classes whose literal runs are words.
+# known gap: a pattern with fewer than three words of four or more letters (`(^|/)(target|dist)$`)
+# or with four short alternatives in a row (`(ls|cat|head|less)`) is reported, as a chunked token is.
+pattern = "(deprecated|legacy|obsolete)(_api|_client|_v2)"
+PRUNE='(^|/)(target|node_modules|coverage|vendor)/'
+SKIP = re.compile(r"(\.cache|build|artifacts|coverage)/")
+MATCH = "^(claude|claude-code|cc-wrapper)([[:space:]]|$)"

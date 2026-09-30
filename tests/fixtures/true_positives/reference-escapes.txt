@@ -1,0 +1,20 @@
+# reference-escapes: an opaque value inside a bracket expression, an ansi-c or single-quoted string,
+# a glob pattern or a path behind a backslash escape. an escaped letter or digit is a byte of the
+# value, not syntax, so each value stays reported wherever the escape stands.
+# format: <rule id> TAB <line>. the payload escaped before every byte, or cut by escaped
+# separators, cannot be written with a placeholder; the generated cells of
+# tests/reference_montecarlo_tests.rs and tests/pathshape_chunking_tests.rs cover those shapes.
+generic-high-entropy-value	setting="${BUNDLE_PATH_NAME%[{S32}]}/settings.log"
+generic-high-entropy-value	setting="${BUNDLE_PATH_NAME%[\{S32}]}/settings.log"
+generic-high-entropy-value	setting="${display_name//[$'{S32}']/}"
+generic-high-entropy-value	setting="${display_name//[$'\{S32}']/}"
+generic-high-entropy-value	setting="${display_name//['\{S32}']/}"
+generic-high-entropy-value	setting="${display_name//$'\{HEX40}'/}"
+generic-high-entropy-value	setting="${display_name//[a-z{S32}]/}"
+generic-high-entropy-value	setting="${ARCHIVE_NAME%\{S32}}.log"
+generic-high-entropy-value	setting="${ARCHIVE_NAME##*\.{S40}}.log"
+generic-high-entropy-value	setting="$HOME/.config/\{S32}/settings.json"
+generic-high-entropy-value	setting="\$HOME/.config/{S36}/settings.json"
+generic-high-entropy-value	setting="${XDG_CONFIG_HOME:-\{S32}}/settings.json"
+generic-high-entropy-value	setting="${display_name/#\~/\{S32}}"
+generic-high-entropy-value	setting="$HOME/config/${{HEX40}}.log"

@@ -27,7 +27,10 @@ fn is_hex_string(data: &[u8]) -> bool {
     !data.is_empty() && data.iter().all(|&b| b.is_ascii_hexdigit())
 }
 
-/// recognize a complete md5, sha-1, or sha-256 digest/checksum field value.
+/// recognize a complete md5, sha-1, or sha-256 digest/checksum field value, or an
+/// algorithm-labelled base64 digest of exact encoded length: a go.sum `h1:` hash, or a
+/// subresource-integrity `sha256-`, `sha384-` or `sha512-` value under an integrity, hash, digest
+/// or checksum key.
 pub fn is_digest_record(key: Option<&[u8]>, value: &[u8]) -> bool {
     fn algorithm_length(name: &[u8]) -> Option<usize> {
         [
@@ -44,6 +47,9 @@ pub fn is_digest_record(key: Option<&[u8]>, value: &[u8]) -> bool {
     let Some(key) = key else {
         return false;
     };
+    if is_base64_digest_record(key, value) {
+        return true;
+    }
     let field_length =
         if key.eq_ignore_ascii_case(b"digest") || key.eq_ignore_ascii_case(b"checksum") {
             None
@@ -69,6 +75,40 @@ pub fn is_digest_record(key: Option<&[u8]>, value: &[u8]) -> bool {
             (value, field_length.unwrap_or(value.len()))
         };
     matches!(length, 32 | 40 | 64) && payload.len() == length && is_hex_string(payload)
+}
+
+/// a base64 digest whose algorithm the record names: go's `h1:` directory hash (sha-256) under the
+/// `h1` label itself, or an sri value `sha256-`, `sha384-` or `sha512-` under a digest field key.
+fn is_base64_digest_record(key: &[u8], value: &[u8]) -> bool {
+    if key == b"h1" {
+        return is_padded_base64(value, 32);
+    }
+    if !["integrity", "hash", "digest", "checksum"]
+        .iter()
+        .any(|name| key.eq_ignore_ascii_case(name.as_bytes()))
+    {
+        return false;
+    }
+    [(&b"sha256-"[..], 32), (b"sha384-", 48), (b"sha512-", 64)]
+        .into_iter()
+        .any(|(prefix, bytes)| {
+            value
+                .strip_prefix(prefix)
+                .is_some_and(|encoded| is_padded_base64(encoded, bytes))
+        })
+}
+
+/// exactly the standard base64 encoding length of `bytes` bytes, `=` padding included.
+fn is_padded_base64(value: &[u8], bytes: usize) -> bool {
+    let padding = (3 - bytes % 3) % 3;
+    let Some(body) = value.len().checked_sub(padding).map(|end| &value[..end]) else {
+        return false;
+    };
+    value.len() == bytes.div_ceil(3) * 4
+        && value[body.len()..].iter().all(|byte| *byte == b'=')
+        && body
+            .iter()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'/'))
 }
 
 /// check if the line contains git-related context keywords at word boundaries.
@@ -263,6 +303,142 @@ mod tests {
                 HEX[(state >> 60) as usize]
             })
             .collect()
+    }
+
+    fn generated_from(alphabet: &[u8], seed: u64, length: usize) -> Vec<u8> {
+        let mut state = seed;
+        (0..length)
+            .map(|_| {
+                state = state
+                    .wrapping_mul(6_364_136_223_846_793_005)
+                    .wrapping_add(1_442_695_040_888_963_407);
+                alphabet[(state >> 33) as usize % alphabet.len()]
+            })
+            .collect()
+    }
+
+    const BASE64: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+    /// a padded base64 encoding of `bytes` random bytes' length, generated rather than stored.
+    fn generated_digest(seed: u64, bytes: usize) -> Vec<u8> {
+        let padding = (3 - bytes % 3) % 3;
+        let mut value = generated_from(BASE64, seed, bytes.div_ceil(3) * 4 - padding);
+        value.extend(std::iter::repeat_n(b'=', padding));
+        value
+    }
+
+    fn labelled(prefix: &str, body: &[u8]) -> Vec<u8> {
+        let mut value = prefix.as_bytes().to_vec();
+        value.extend(body);
+        value
+    }
+
+    #[test]
+    fn digest_record_accepts_labelled_base64_digests_of_exact_length() {
+        for seed in 0..64 {
+            assert!(is_digest_record(Some(b"h1"), &generated_digest(seed, 32)));
+            for (prefix, bytes) in [("sha256-", 32), ("sha384-", 48), ("sha512-", 64)] {
+                let value = labelled(prefix, &generated_digest(seed, bytes));
+                for key in [
+                    &b"integrity"[..],
+                    b"Integrity",
+                    b"hash",
+                    b"digest",
+                    b"checksum",
+                ] {
+                    assert!(is_digest_record(Some(key), &value));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn digest_record_refuses_base64_of_the_wrong_shape_or_label() {
+        let sha256 = generated_digest(7, 32);
+        let sha512 = generated_digest(8, 64);
+        let mut unpadded = sha256.clone();
+        unpadded.pop();
+        let mut long = sha256.clone();
+        long.insert(0, b'A');
+        let mut inner_pad = sha256.clone();
+        inner_pad[10] = b'=';
+        let mut url_safe = sha256.clone();
+        url_safe[5] = b'-';
+        let mut unpadded_full = sha256.clone();
+        *unpadded_full.last_mut().unwrap() = b'A';
+        for value in [
+            &unpadded,
+            &long,
+            &inner_pad,
+            &url_safe,
+            &unpadded_full,
+            &sha512,
+        ] {
+            assert!(!is_digest_record(Some(b"h1"), value));
+        }
+        for key in [&b"h2"[..], b"H1", b"token", b"api_key", b"h1_token"] {
+            assert!(!is_digest_record(Some(key), &sha256));
+        }
+        assert!(!is_digest_record(None, &sha256));
+        for (prefix, body) in [
+            ("sha256-", &sha512),
+            ("sha512-", &sha256),
+            ("sha384-", &sha256),
+            ("sha1-", &sha256),
+            ("sha256:", &sha256),
+            ("", &sha256),
+        ] {
+            assert!(!is_digest_record(
+                Some(b"integrity"),
+                &labelled(prefix, body)
+            ));
+        }
+        let sri = labelled("sha256-", &sha256);
+        for key in [&b"token"[..], b"secret", b"h1", b"integrity_key"] {
+            assert!(!is_digest_record(Some(key), &sri));
+        }
+    }
+
+    /// random tokens of 20 to 64 bytes in every labelled position: only a body of the exact
+    /// encoded length, padding included, is exempt, and with no `=` in these alphabets that is
+    /// only the unpadded sha-384 length of 64.
+    #[test]
+    fn random_tokens_are_digest_records_only_at_the_exact_encoded_length() {
+        let alphabets: [(&str, &[u8]); 5] = [
+            (
+                "base62",
+                b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789",
+            ),
+            ("base64", BASE64),
+            (
+                "base64url",
+                b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_",
+            ),
+            ("hex", b"0123456789abcdef"),
+            ("base32", b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"),
+        ];
+        for (name, alphabet) in alphabets {
+            let mut off_length = 0;
+            let mut exact = 0;
+            for index in 0..100_000_u64 {
+                let length = 20 + (index % 45) as usize;
+                let token = generated_from(alphabet, index ^ 0x9e37_79b9_7f4a_7c15, length);
+                let mut hits = usize::from(is_digest_record(Some(b"h1"), &token));
+                for prefix in ["sha256-", "sha384-", "sha512-"] {
+                    hits += usize::from(is_digest_record(
+                        Some(b"integrity"),
+                        &labelled(prefix, &token),
+                    ));
+                }
+                if length == 64 {
+                    exact += hits;
+                } else {
+                    off_length += hits;
+                }
+            }
+            eprintln!("{name}: off-length exemptions {off_length}, sha-384 exact-length {exact}");
+            assert_eq!(off_length, 0, "{name}");
+        }
     }
 
     fn prefixed_generated_hex(seed: u64, length: usize) -> Vec<u8> {

@@ -1,0 +1,27 @@
+# shell-expansion: values built from shell parameter expansion - substitutions, subscripts,
+# lengths, error messages, nested defaults, offsets, command and arithmetic substitution and the
+# special parameters. every name, pattern, replacement, default and literal piece reads as a word
+# or a short number, an operand is written in uniform case, and a run of 20 or more bytes reads as
+# words on its own, so an opaque operand, subscript or list item stays reported.
+display_path="${display_config/#$HOME/~}"
+clean_name="${bundle_display_name//[$'\n\r\t']/}"
+safe_name="${bundle_display_name//|/-}"
+selection="${cleaned_selection//[[:space:]]/}"
+for pattern in "${cleanup_protected_patterns[@]}"; do
+pattern_count="${#cleanup_protected_patterns[*]}"
+current_entry="${history_stack[$history_idx]}"
+chosen_option="${menu_options[cursor]:--1}"
+preferred_editor="${EDITOR:-${VISUAL:-vim}}"
+stop_file="${TMPDIR:-/tmp}/spinner_stop_$$_$session.flag"
+diagnostic_log="${STATE_DIR:?missing}/diagnostic.log"
+extracted_log="${archive_name:0:12}/extracted.log"
+bundle_stem="${bundle_identifier%.appextension}"
+snapshot_file="$((${#history_stack[@]}-1))/snapshot.json"
+release_notes="$(basename)/release-notes.md"
+# known gap: references alone whose words are all chunk-sized (`${raw_path/#\~/$HOME}`) carry no
+# word a value cut into short groups could not, and stay reported.
+# known gap: a camel-case word in an operand (`${bundle_id%.appExtension}`) is read like the mixed
+# case of a random value there and stays reported.
+# known gap: an expansion the capture cuts short - at a space inside `$(command arg)` or
+# `${VAR:?a message}`, or before a closing `]}` or `)` the value grammar strips - is not read to its
+# end and stays reported.

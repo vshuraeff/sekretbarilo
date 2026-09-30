@@ -1,5 +1,6 @@
 # code-expression: expressions, call chains, generics and index expressions.
-# these are the shapes the syntax exemption recognises: balanced brackets around the value span.
+# these are the shapes the syntax exemption recognises: balanced brackets around the value span,
+# or a call left open at the line end (see call-opener.txt).
 Regex::new(r"[a-z]+")
 CompiledAllowlist::from_config(&config, &rules).unwrap()
 container.querySelector<HTMLElement>(".wui-kanban__card")
@@ -12,3 +13,15 @@ refreshGateway.noteLifecycleChangeHappened();
 runtime.environment["ACME_WIDGET_SERVICE_ACCOUNT"],
 value = CompiledAllowlist::from_config(&config, &rules).unwrap()
 assert!(is_hex_policy_candidate(Some(b"value"), &bytes))
+# a capture that starts inside a group and closes it is read from the unmatched opener on its left.
+    var isEnabled: Bool { preferences.value(forKey: configurationKey).boolValue }
+            try await store.update(workspace: activeWorkspace)?.refreshSessions()
+        return Array(repeating: placeholderRow).prefix(visibleCount)
+            .onReceive(NotificationCenter.default.publisher(for: NSApplication.didChangeScreenParametersNotification)) { _ in
+# a go type assertion is a group after the dot, and a quoted argument of plain prose is split into
+# words, each checked on its own.
+			value.(*widgetState).Transition(expectedState)
+		fields.Items[0].Entries[1].(form.SelectOption).Label,
+        let label = String(localized: "Close the selected workspace and all of its sessions.")
+# a long callee name is not an opaque token when it reads as words.
+            registerURLSchemeHandlerForApplication()

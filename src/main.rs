@@ -6,6 +6,7 @@ mod audit;
 mod config;
 mod diff;
 mod doctor;
+mod help;
 mod hook;
 mod output;
 mod scanner;
@@ -141,9 +142,20 @@ fn parse_cli(
                     return Err(format!("unexpected argument: '{}'", pos));
                 }
             }
-            // help (only before a subcommand; after one it falls through to unknown)
+            // help (before a subcommand)
             Arg::Long("help") if command.is_none() => command = Some(Command::Help),
             Arg::Short('h') if command.is_none() => command = Some(Command::Help),
+            // help after any subcommand: same outcome as top-level --help, short-circuiting
+            // whatever flags were already collected so they are never re-validated
+            Arg::Long("help") | Arg::Short('h') => {
+                return Ok((
+                    Command::Help,
+                    CliOverrides::default(),
+                    AuditFlags::default(),
+                    CheckFileFlags::default(),
+                    InstallFlags::default(),
+                ));
+            }
             // version
             Arg::Long("version") if command.is_none() => command = Some(Command::Version),
             Arg::Short('V') if command.is_none() => command = Some(Command::Version),
@@ -376,6 +388,7 @@ fn parse_install_subcommand<'a, I: Iterator<Item = &'a str>>(
                 "unknown agent hook target: '{}'. supported: claude, codex",
                 other
             )),
+            Some(Arg::Long("help")) | Some(Arg::Short('h')) => Ok(Command::InstallHelp),
             _ => Err("install agent-hook requires a target. supported: claude, codex".to_string()),
         },
         Some(Arg::Long("help")) | Some(Arg::Short('h')) => Ok(Command::InstallHelp),
@@ -397,6 +410,9 @@ fn parse_install_subcommand<'a, I: Iterator<Item = &'a str>>(
 
 fn run() -> i32 {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().is_some_and(|arg| arg == "help") {
+        return help::run(&args[1..]);
+    }
 
     let (command, overrides, audit_flags, check_file_flags, install_flags) = match parse_cli(&args)
     {
@@ -519,6 +535,7 @@ fn print_usage() {
     eprintln!("sekretbarilo - secret scanner for git workflows and AI coding agents");
     eprintln!();
     eprintln!("usage:");
+    eprintln!("  sekretbarilo help <topic>  configuration reference and rule inventory");
     eprintln!("  sekretbarilo scan         scan staged changes");
     eprintln!("  sekretbarilo install      install hooks (see: sekretbarilo install --help)");
     eprintln!("  sekretbarilo audit        scan all tracked files in working tree");
@@ -541,9 +558,18 @@ fn print_usage() {
     eprintln!("  --no-defaults             skip embedded default rules");
     eprintln!("  --entropy-threshold <n>   override entropy threshold");
     eprintln!("  --detect-public-keys      report public keys as findings");
-    eprintln!("  --trace-exemptions        report exemption decisions as findings");
+    eprintln!(
+        "  --trace-exemptions        report disabled rules and exemption decisions as findings"
+    );
     eprintln!("  --allowlist-path <pat>    add path to allowlist (repeatable)");
     eprintln!("  --stopword <word>         add stopword (repeatable)");
+    eprintln!();
+    eprintln!("rule classes (configuration):");
+    eprintln!("  signature and contextual are enabled; heuristic is disabled by default");
+    eprintln!("  [settings.rule_classes]  set a class to true or false");
+    eprintln!("  [settings.rules]         rule-id switches override class switches");
+    eprintln!("  opt in: [settings.rules] with \"generic-high-entropy-value\" = true");
+    eprintln!("  prefix-less random tokens are not redacted by the heuristic rule unless enabled");
     eprintln!();
     eprintln!("audit flags:");
     eprintln!("  --history                 scan full git history (all commits)");
@@ -644,7 +670,9 @@ fn apply_cli_overrides(base: ProjectConfig, overrides: &CliOverrides) -> Project
             },
             exemption_layer: None,
             source_posture: None,
-            tier3_skip_test_paths: None,
+            heuristic_skip_test_paths: None,
+            rule_classes: Default::default(),
+            rules: Default::default(),
         },
         rules: vec![],
         audit: config::AuditConfig {
@@ -669,37 +697,79 @@ fn build_scan_context(
 ) -> Result<(ProjectConfig, CompiledScanner, CompiledAllowlist), String> {
     // step 1: load config
     let project_config = if !overrides.config_paths.is_empty() {
-        config::load_project_config_from_paths(&overrides.config_paths)?
+        config::load_project_config_from_paths(&overrides.config_paths)
     } else {
-        config::load_project_config(repo_root)?
-    };
+        config::load_project_config(repo_root)
+    }
+    .map_err(with_config_hint)?;
 
     // step 2: apply cli overrides
     let project_config = apply_cli_overrides(project_config, overrides);
 
     // step 3: load rules
     let rules = if overrides.no_defaults {
-        let r = project_config.rules.clone();
+        let r = config::load_custom_rules_with_config(&project_config).map_err(with_config_hint)?;
         if r.is_empty() {
             eprintln!("[WARN] --no-defaults: no rules found in config, scan will find nothing");
         }
         r
     } else {
-        config::load_rules_with_config(&project_config)?
+        config::load_rules_with_config(&project_config).map_err(with_config_hint)?
     };
+
+    if overrides.trace_exemptions {
+        trace_rule_switches(&project_config, overrides.no_defaults);
+    }
 
     // step 4: compile
     let compiled = scanner::rules::compile_rules(&rules)
-        .map_err(|e| format!("failed to compile rules: {}", e))?;
+        .map_err(|e| with_config_hint(format!("failed to compile rules: {}", e)))?;
 
     let allowlist = config::build_allowlist_with_trace_exemptions(
         &project_config,
         &rules,
         overrides.trace_exemptions,
     )
-    .map_err(|e| format!("failed to build allowlist: {}", e))?;
+    .map_err(|_| {
+        with_config_hint(format!(
+            "failed to build allowlist: {}",
+            config::ALLOWLIST_ERROR_CATEGORY
+        ))
+    })?;
 
     Ok((project_config, compiled, allowlist))
+}
+
+fn with_config_hint(error: String) -> String {
+    format!("{error} ({})", config::CONFIG_HELP_HINT)
+}
+
+/// `--trace-exemptions`: one stderr line per rule the switches turn off, and one per
+/// public-key rule held back by `detect_public_keys`, once per invocation. these are
+/// diagnostics, not findings: they never reach finding counts or the exit status.
+fn trace_rule_switches(project_config: &ProjectConfig, no_defaults: bool) {
+    let Ok(states) = config::rule_states(project_config) else {
+        return;
+    };
+    for state in states {
+        if no_defaults && !project_config.rules.iter().any(|r| r.id == state.id) {
+            continue;
+        }
+        if !state.enabled {
+            eprintln!(
+                "[TRACE] rule:disabled {} class={} reason={}",
+                audit::history::sanitize_display(&state.id),
+                state.class,
+                state.reason.as_str()
+            );
+        } else if state.public_key_gated {
+            eprintln!(
+                "[TRACE] rule:gated {} class={} reason=detect_public_keys",
+                audit::history::sanitize_display(&state.id),
+                state.class
+            );
+        }
+    }
 }
 
 fn run_install_pre_commit(global: bool) -> i32 {
@@ -827,21 +897,9 @@ fn run_scan(overrides: &CliOverrides) -> i32 {
         }
     };
 
-    if raw_diff.is_empty() {
-        return 0;
-    }
-
-    // step 2: parse diff into file blocks
-    let mut files = diff::parser::parse_diff(&raw_diff);
-    diff::attach_staged_context(&mut files);
-
-    // step 3: check for blocked .env files
-    let env_check = diff::check_env_files(&files);
-
-    // resolve repo root for config loading
+    // step 2: build scan context (config + scanner + allowlist) before the empty-diff return,
+    // so a broken configuration fails the run even when nothing is staged
     let repo_root = resolve_repo_root();
-
-    // step 4: build scan context (config + scanner + allowlist)
     let (_project_config, compiled, allowlist) =
         match build_scan_context(overrides, repo_root.as_deref()) {
             Ok(ctx) => ctx,
@@ -850,6 +908,17 @@ fn run_scan(overrides: &CliOverrides) -> i32 {
                 return 2;
             }
         };
+
+    if raw_diff.is_empty() {
+        return 0;
+    }
+
+    // step 3: parse diff into file blocks
+    let mut files = diff::parser::parse_diff(&raw_diff);
+    diff::attach_staged_context(&mut files);
+
+    // step 4: check for blocked .env files
+    let env_check = diff::check_env_files(&files);
 
     // step 5: scan for secrets (exclude .env blocked files to avoid duplicate findings)
     let scannable_files: Vec<_> = files
@@ -1011,6 +1080,47 @@ mod tests {
     #[test]
     fn parse_cli_help_short() {
         let (cmd, _, _, _, _) = parse_cli(&args("-h")).unwrap();
+        assert_eq!(cmd, Command::Help);
+    }
+
+    #[test]
+    fn parse_cli_help_after_any_subcommand() {
+        // subcommands whose own command variant has no dedicated help variant: --help/-h
+        // after them falls through to the same Command::Help outcome as top-level --help
+        for sub in [
+            "scan",
+            "audit",
+            "install pre-commit",
+            "install all",
+            "install agent-hook claude",
+            "install agent-hook codex",
+            "doctor",
+            "check-file",
+            "check-codex",
+            "redact-claude",
+            "entropy",
+        ] {
+            let (cmd, _, _, _, _) = parse_cli(&args(&format!("{sub} --help"))).unwrap();
+            assert_eq!(cmd, Command::Help, "{sub} --help");
+            let (cmd, _, _, _, _) = parse_cli(&args(&format!("{sub} -h"))).unwrap();
+            assert_eq!(cmd, Command::Help, "{sub} -h");
+        }
+    }
+
+    #[test]
+    fn parse_cli_install_agent_hook_bare_help_keeps_dedicated_help_variant() {
+        // "install agent-hook" (missing its claude/codex target) also resolves --help/-h
+        // inside parse_install_subcommand's nested match, same as "install --help" already
+        // covered by parse_cli_install_help_flag / parse_cli_install_help_short_flag
+        let (cmd, _, _, _, _) = parse_cli(&args("install agent-hook --help")).unwrap();
+        assert_eq!(cmd, Command::InstallHelp);
+        let (cmd, _, _, _, _) = parse_cli(&args("install agent-hook -h")).unwrap();
+        assert_eq!(cmd, Command::InstallHelp);
+    }
+
+    #[test]
+    fn parse_cli_help_after_subcommand_with_other_flags() {
+        let (cmd, _, _, _, _) = parse_cli(&args("audit --config x.toml --help")).unwrap();
         assert_eq!(cmd, Command::Help);
     }
 

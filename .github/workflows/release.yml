@@ -12,8 +12,70 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # nothing is built or published unless ci.yml concluded success on the exact tagged commit.
+  # only push runs count: a pull_request run tests a merge commit, not the commit itself,
+  # and ci.yml runs on push to master only, so the tagged commit must have been pushed to master.
+  ci-gate:
+    name: Require green CI for the tagged commit
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    permissions:
+      actions: read
+    steps:
+      - name: Wait for a successful CI run
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -uo pipefail
+          start=$(date +%s)
+          # a run that exists but has not finished is waited for up to 30 minutes;
+          # a run that does not exist at all is given 10 minutes to appear (tag pushed before master)
+          deadline=$(( start + 1800 ))
+          no_run_deadline=$(( start + 600 ))
+          echo "tagged commit: ${SHA}"
+          while :; do
+            if runs=$(gh api -X GET "repos/${REPO}/actions/workflows/ci.yml/runs" \
+                -f head_sha="${SHA}" -f event=push -f per_page=100 \
+                --jq '.workflow_runs[] | select(.head_sha == env.SHA and .event == "push") | "\(.id) \(.status) \(.conclusion // "none") \(.html_url)"'); then
+              success=$(awk 'NF >= 3 && $2 == "completed" && $3 == "success"' <<<"${runs}")
+              pending=$(awk 'NF >= 3 && $2 != "completed"' <<<"${runs}")
+              if [ -n "${success}" ]; then
+                echo "CI succeeded on ${SHA}:"
+                echo "${success}"
+                echo "CI succeeded on \`${SHA}\`: $(awk 'NR == 1 {print $4}' <<<"${success}")" >> "$GITHUB_STEP_SUMMARY"
+                exit 0
+              elif [ -n "${pending}" ]; then
+                state="CI is still running on ${SHA}"
+                echo "${state}:"
+                echo "${pending}"
+              elif [ -n "${runs}" ]; then
+                echo "::error::no successful CI run on ${SHA}; every CI run for it completed without success. Fix or re-run CI, then re-run this workflow."
+                echo "${runs}"
+                exit 1
+              elif [ "$(date +%s)" -ge "${no_run_deadline}" ]; then
+                echo "::error::CI never ran on ${SHA}. CI runs on pushes to master, so only a commit that was pushed to master and passed CI can be released."
+                exit 1
+              else
+                state="no CI run on ${SHA} yet"
+                echo "${state}"
+              fi
+            else
+              state="GitHub API request failed"
+              echo "::warning::${state}; retrying"
+            fi
+            if [ "$(date +%s)" -ge "${deadline}" ]; then
+              echo "::error::gave up after 30 minutes: ${state}"
+              exit 1
+            fi
+            sleep 30
+          done
+
+  # the release-candidate.yml build job mirrors this one; keep the two in sync.
   build:
     name: Build ${{ matrix.target }}
+    needs: ci-gate
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -39,15 +101,17 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install Rust toolchain
-        uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
+        uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f # v2.0.0
         with:
           toolchain: stable
           target: ${{ matrix.target }}
-          # per-target RUSTFLAGS are set on the build steps below; do not override here
+          # per-target RUSTFLAGS are set on the build steps below; do not override here.
+          # no build.warnings=deny (the v2 default): a warning must not fail a release build
           rustflags: ""
+          build-warnings: ""
 
       - name: Install cross-compilation tools
         if: matrix.cross
@@ -99,17 +163,17 @@ jobs:
 
   release:
     name: Create Release
-    needs: build
+    needs: [ci-gate, build]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
       - name: Generate changelog
         id: changelog
-        uses: orhun/git-cliff-action@f50e11560dce63f7c33227798f90b924471a88b5 # v4.8.0
+        uses: orhun/git-cliff-action@a9a95522b26fe6403f7bb24031f21fb573d0f5ff # v4.9.1
         with:
           config: cliff.toml
           args: --latest --strip header
@@ -124,7 +188,7 @@ jobs:
         run: find artifacts/ -type f | sort
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b # v3.0.1
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           body: ${{ steps.changelog.outputs.content }}
           files: |
@@ -135,7 +199,7 @@ jobs:
 
   bump-homebrew:
     name: Update Homebrew Formula
-    needs: release
+    needs: [ci-gate, release]
     runs-on: ubuntu-latest
     steps:
       - name: Download release tarballs

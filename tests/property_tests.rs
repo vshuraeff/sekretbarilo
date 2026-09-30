@@ -181,6 +181,25 @@ fn regex_shape_exemptions_stay_below_ascii_graphic_bound() {
     );
 }
 
+#[test]
+fn opaque_run_proxy_counterexamples_are_not_violations() {
+    // a dotted relative path is word-structured although it holds a 20+ byte non-space run
+    let dotted = b"unittest.mock.patch.object";
+    assert!(has_opaque_run(dotted));
+    assert!(is_word_structured(dotted));
+
+    // a low-entropy run inside a closed call is a valid expression span
+    let call = b"aaaaaaaaaaaaaaaaaaaa()";
+    let range = expression_span(call, 0, call.len()).expect("closed call is an expression");
+    assert!(has_opaque_run(&call[range]));
+
+    // only whitespace resets the opaque run, so an ordinary credential-free url longer than
+    // the run threshold still has one
+    let url = b"https://example.com/index";
+    assert!(has_opaque_run(url));
+    assert!(is_credential_free_url(url));
+}
+
 proptest! {
     #[test]
     fn structured_call_literals_preserve_ranges_and_surroundings(
@@ -316,14 +335,21 @@ proptest! {
         let _ = is_strong_password(&data);
 
         if has_opaque_run(&data) {
-            prop_assert!(!is_word_structured(&data));
-            prop_assert!(!is_credential_free_url(&data));
+            // not an invariant: dotted unittest.mock.patch.object is word-structured
+            let _ = is_word_structured(&data);
+            // not an invariant either: only whitespace resets the opaque run, while an
+            // ordinary url or path (e.g. "https://example.com/index") has none, so a
+            // credential-free url longer than the run threshold still has one. call it
+            // for panic coverage without asserting on the harness's cruder proxy.
+            let _ = is_credential_free_url(&data);
         }
         if let Some(range) = unwrap_markdown_target(&data) {
             let target = &data[range];
             if has_opaque_run(target) {
-                prop_assert!(!is_word_structured(target));
-                prop_assert!(!is_credential_free_url(target));
+                // not an invariant: dotted unittest.mock.patch.object is word-structured
+                let _ = is_word_structured(target);
+                // not an invariant either: see the has_opaque_run(&data) branch above
+                let _ = is_credential_free_url(target);
             }
         }
         if let Some(range) = expression_span(&data, 0, data.len()) {
@@ -334,7 +360,8 @@ proptest! {
             prop_assert!(range.start < range.end);
             prop_assert!(range.end <= newline);
             prop_assert!(range.end <= data.len());
-            prop_assert!(!has_opaque_run(&data[range]));
+            // not an invariant: a low-entropy call such as aaaaaaaaaaaaaaaaaaaa() is a valid span
+            let _ = has_opaque_run(&data[range]);
         }
         if is_hex_policy_candidate(Some(b"key"), &data) {
             let remainder = data

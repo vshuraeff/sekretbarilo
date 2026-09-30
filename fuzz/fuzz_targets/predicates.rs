@@ -11,19 +11,26 @@ use sekretbarilo::scanner::{
     wordshape::is_word_structured,
 };
 
-fn has_opaque_run(value: &[u8]) -> bool {
-    let mut run = 0;
-    for byte in value {
-        if byte.is_ascii_whitespace() {
-            run = 0;
-        } else {
-            run += 1;
-            if run >= 20 {
-                return true;
-            }
-        }
+fn check_expression_bounds(data: &[u8], start: usize, max_scan: usize) {
+    if let Some(range) = expression_span(data, start, max_scan) {
+        let remaining = data.get(start..).expect("span starts inside input");
+        let line_end = start
+            + remaining
+                .iter()
+                .position(|byte| matches!(*byte, b'\r' | b'\n'))
+                .unwrap_or(remaining.len());
+        let line_start = data[..start]
+            .iter()
+            .rposition(|byte| matches!(*byte, b'\r' | b'\n'))
+            .map_or(0, |index| index + 1);
+        // enclosing expressions may start to the left, but must cover the requested byte.
+        assert!(line_start <= range.start);
+        assert!(range.start <= start);
+        assert!(start < range.end);
+        assert!(range.end <= line_end);
+        // the span itself is capped by the scan budget, measured from where it starts.
+        assert!(range.len() <= max_scan);
     }
-    false
 }
 
 pub(crate) fn check_predicates(data: &[u8]) {
@@ -36,22 +43,20 @@ pub(crate) fn check_predicates(data: &[u8]) {
     let _ = is_strong_password(data);
 
     if let Some(range) = unwrap_markdown_target(data) {
+        assert!(range.start <= range.end);
+        assert!(range.end <= data.len());
         let target = &data[range];
         let _ = is_credential_free_url(target);
-        if has_opaque_run(target) {
-            assert!(!is_word_structured(target));
-        }
+        // word structure is valid even in a long whitespace-free markdown target.
+        let _ = is_word_structured(target);
     }
-    if let Some(range) = expression_span(data, 0, data.len()) {
-        let newline = data
-            .iter()
-            .position(|byte| matches!(*byte, b'\r' | b'\n'))
-            .unwrap_or(data.len());
-        assert!(range.start < range.end);
-        assert!(range.end <= newline);
-        assert!(range.end <= data.len());
-        assert!(!has_opaque_run(&data[range]));
-    }
+    // token eligibility depends on private delimiter, entropy and shape rules, not run length.
+    // exercise the public range contract at both full and input-derived scan windows.
+    check_expression_bounds(data, 0, data.len());
+    let start = data.first().map_or(0, |byte| usize::from(*byte)) % (data.len() + 1);
+    let budget = data.get(1).map_or(0, |byte| usize::from(*byte));
+    check_expression_bounds(data, start, budget);
+    assert!(expression_span(data, data.len() + 1, budget).is_none());
     if is_hex_policy_candidate(Some(b"key"), data) {
         let remainder = data
             .strip_prefix(b"0x")
@@ -66,3 +71,25 @@ pub(crate) fn check_predicates(data: &[u8]) {
 fuzz_target!(|data: &[u8]| {
     check_predicates(data);
 });
+
+#[cfg(test)]
+mod tests {
+    use super::{check_expression_bounds, check_predicates};
+
+    #[test]
+    fn weekly_control_byte_crash_is_valid_input() {
+        check_predicates(b"[//hox](https\x1d\0\0\0ost/sample)\n");
+    }
+
+    #[test]
+    fn expression_windows_include_enclosing_calls_and_line_edges() {
+        let data = b"previous\ncall(value)\r\nnext";
+        // starting at the argument's closer widens back to the enclosing callee.
+        assert_eq!(super::expression_span(data, 19, data.len()), Some(9..20));
+        for start in 0..=data.len() + 1 {
+            for budget in [0, 1, 5, data.len(), usize::MAX] {
+                check_expression_bounds(data, start, budget);
+            }
+        }
+    }
+}

@@ -10,6 +10,9 @@ pub fn bin() -> String {
     env!("CARGO_BIN_EXE_sekretbarilo").to_string()
 }
 
+/// user-config fragment that turns the default-off heuristic rule back on.
+pub const ENABLE_HEURISTIC: &str = "[settings.rules]\n\"generic-high-entropy-value\" = true\n";
+
 pub struct IsolatedEnv {
     _root: tempfile::TempDir,
     home: PathBuf,
@@ -35,6 +38,25 @@ impl IsolatedEnv {
         }
     }
 
+    /// an isolated environment whose user config opts in to the heuristic rule
+    /// `generic-high-entropy-value`, which is off by default.
+    pub fn with_heuristic() -> Self {
+        let env = Self::new();
+        env.write_user_config("");
+        env
+    }
+
+    /// write the user-layer config, always prefixed with the heuristic opt-in.
+    pub fn write_user_config(&self, config: &str) {
+        let dir = self.home.join(".config/sekretbarilo");
+        std::fs::create_dir_all(&dir).expect("failed to create config directory");
+        std::fs::write(
+            dir.join("sekretbarilo.toml"),
+            format!("{ENABLE_HEURISTIC}{config}"),
+        )
+        .expect("failed to write user config");
+    }
+
     pub fn root(&self) -> &Path {
         self._root.path()
     }
@@ -57,6 +79,7 @@ impl IsolatedEnv {
             .env("HOME", &self.home)
             .env("CODEX_HOME", &self.codex_home)
             .env("GIT_CONFIG_GLOBAL", &self.git_config_global)
+            .env("XDG_CONFIG_HOME", self.home.join(".config"))
             .env_remove("CLAUDE_CONFIG_DIR");
         command
     }

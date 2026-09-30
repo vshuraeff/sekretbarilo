@@ -1,9 +1,10 @@
 # path-glob: rooted paths, globs and multi-suffix file names.
 # a path is long, opaque-looking and made of segments. it is not a credential.
-# known gap: the same path written bare-relative is reported, so `./` matters:
+# the same path written without `./` after a key reads as a keyed relative path and is exempt too:
 # `artifact: build/dist/widget-1.4.2/lib/widget.core.esm.production.min.js`.
     let manifest = PathBuf::from("/opt/acme/widget/etc/widget.d/40-defaults.conf");
 artifact: ./build/dist/widget-1.4.2/lib/widget.core.esm.production.min.js
+artifact: build/dist/widget-1.4.2/lib/widget.core.esm.production.min.js
 include = ["src/**/*.spec.d.ts", "tests/**/__snapshots__/*.snap"]
 tarball: ./vendor/cache/widget-runtime-1.4.2-linux-aarch64.tar.gz
 exclude: **/node_modules/**/dist/**/*.min.js.map
@@ -20,3 +21,16 @@ $ref: "#/definitions/ScheduleEntry"
 "allOf": [{"$ref": "#/definitions/BaseDocument"}]
 "$ref": "#/components/parameters/OrgIdHeader"
 ref = "#/definitions/Preferences/properties/channel"
+# a json schema keyword may open a pointer segment, and a word-structured segment of 20 bytes or more
+# stays a word in a pointer.
+"$ref": "#/$defs/WebhookRetryPayloadEnvelope"
+$ref: '#/$defs/retryPolicy/properties/backoffMs'
+"$ref": "#/definitions/PaymentMethodDescriptorConfig/properties/identifier"
+# a scheme-less url reads as a rooted path when every part after its host is a word, a number or
+# an abbreviation no longer than a chunk, and no run of short groups crosses its path.
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "//www.example.com/DTDs/PropertyList-1.0.dtd">
+<script src="//cdn.example.com/assets/widget-toolkit/widget.bundle.min.js"></script>
+see //doc.rust-lang.org/std/collections/struct.HashMap.html for the map
+# a leaf of short lowercase words, each with a vowel, is wordy.
+/opt/Vendor/Toolkit-2026/go/is-it-up
+/srv/build/Q4/workspace/oh-my-pi

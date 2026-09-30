@@ -1,0 +1,17 @@
+# value-shapes: an opaque value in the variable position of each value shape the word and template
+# steps recognize stays reported: a chord action or key, an entry flag or name, the literal text
+# beside a hole or conversion, an escaped body, a pattern item and a framework symbol.
+# format: <rule id> TAB <line>. the test expands the placeholder, so no opaque literal is stored here.
+generic-high-entropy-value	keybind = super+shift+t={S32}
+generic-high-entropy-value	keybind = super+shift+{S32}=toggle_quick_terminal
+generic-high-entropy-value	cmd.Env = append(os.Environ(), "GOFLAGS=-mod={S32}")
+generic-high-entropy-value	extra_env = "{S32}=1"
+generic-high-entropy-value	label = "window-detail-\(session.windowIdentifier)-{S32}"
+generic-high-entropy-value	let key = "\(windowID.uuidString):{S32}"
+generic-high-entropy-value	greeting = "#{user.first_name}-{S32}"
+generic-high-entropy-value	label = "$%(default).2f/{S32}" % prices
+generic-high-entropy-value	body = "\"quarterly-budget-review\"\t{S32}\nversion=2"
+generic-high-entropy-value	pattern = "(deprecated|legacy|{S32})(_api|_client)"
+generic-high-entropy-value	PRUNE='(^|/)(target|node_modules|{S32})/'
+generic-high-entropy-value	usage = "NS{S32}"
+generic-high-entropy-value	version_key = "kCF{S32}"

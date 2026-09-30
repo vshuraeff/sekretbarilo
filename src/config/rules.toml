@@ -1,13 +1,17 @@
 # default detection rules for sekretbarilo
-# rules are organized by tier (1 = lowest false positive rate)
+# every rule declares its class: signature (a recognizable credential format),
+# contextual (a credential key, auth header or credential url) or heuristic
+# (value shape and entropy alone). classes and single rules are switched with
+# [settings.rule_classes] and [settings.rules]; heuristic is off by default.
 
-# tier 1: prefix-based rules (very low false positives)
+# provider formats (signature; contextual where the format needs a named key)
 # these tokens have distinctive prefixes that make them highly reliable
 
 [[rules]]
 id = "aws-access-key-id"
+class = "signature"
 description = "AWS access key ID"
-regex = "(AKIA[A-Z0-9]{16})"
+regex = "(?:%[0-9A-Fa-f]{2}|\\[[0-9;:]*[mK]|\\\\(?:u\\{[0-9A-Fa-f]{1,6}\\}|u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8}|x[0-9A-Fa-f]{2}|[0-7]{1,3}|[A-Za-z])|(?-u:\\b))(AKIA[A-Z0-9]{16})"
 secret_group = 1
 keywords = ["akia"]
 
@@ -16,97 +20,111 @@ regexes = ["AKIAIOSFODNN7EXAMPLE"]
 
 [[rules]]
 id = "github-personal-access-token"
+class = "signature"
 description = "GitHub personal access token"
-regex = "(ghp_[0-9a-zA-Z]{36,})"
+regex = "(?:%[0-9A-Fa-f]{2}|\\[[0-9;:]*[mK]|\\\\(?:u\\{[0-9A-Fa-f]{1,6}\\}|u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8}|x[0-9A-Fa-f]{2}|[0-7]{1,3}|[A-Za-z])|(?-u:\\b))(ghp_[0-9a-zA-Z]{36,})"
 secret_group = 1
 keywords = ["ghp_"]
 
 [[rules]]
 id = "github-oauth-token"
+class = "signature"
 description = "GitHub OAuth access token"
-regex = "(gho_[0-9a-zA-Z]{36,})"
+regex = "(?:%[0-9A-Fa-f]{2}|\\[[0-9;:]*[mK]|\\\\(?:u\\{[0-9A-Fa-f]{1,6}\\}|u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8}|x[0-9A-Fa-f]{2}|[0-7]{1,3}|[A-Za-z])|(?-u:\\b))(gho_[0-9a-zA-Z]{36,})"
 secret_group = 1
 keywords = ["gho_"]
 
 [[rules]]
 id = "github-app-token"
+class = "signature"
 description = "GitHub app installation token"
-regex = "(ghs_[0-9a-zA-Z]{36,})"
+regex = "(?:%[0-9A-Fa-f]{2}|\\[[0-9;:]*[mK]|\\\\(?:u\\{[0-9A-Fa-f]{1,6}\\}|u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8}|x[0-9A-Fa-f]{2}|[0-7]{1,3}|[A-Za-z])|(?-u:\\b))(ghs_[0-9a-zA-Z]{36,})"
 secret_group = 1
 keywords = ["ghs_"]
 
 [[rules]]
 id = "github-refresh-token"
+class = "signature"
 description = "GitHub refresh token"
-regex = "(ghr_[0-9a-zA-Z]{36,})"
+regex = "(?:%[0-9A-Fa-f]{2}|\\[[0-9;:]*[mK]|\\\\(?:u\\{[0-9A-Fa-f]{1,6}\\}|u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8}|x[0-9A-Fa-f]{2}|[0-7]{1,3}|[A-Za-z])|(?-u:\\b))(ghr_[0-9a-zA-Z]{36,})"
 secret_group = 1
 keywords = ["ghr_"]
 
 [[rules]]
 id = "github-fine-grained-pat"
+class = "signature"
 description = "GitHub fine-grained personal access token"
-regex = "(github_pat_[0-9a-zA-Z_]{82,})"
+regex = "(?:%[0-9A-Fa-f]{2}|\\[[0-9;:]*[mK]|\\\\(?:u\\{[0-9A-Fa-f]{1,6}\\}|u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8}|x[0-9A-Fa-f]{2}|[0-7]{1,3}|[A-Za-z])|(?-u:\\b))(github_pat_[0-9a-zA-Z_]{82,})"
 secret_group = 1
 keywords = ["github_pat_"]
 
 [[rules]]
 id = "gitlab-personal-access-token"
+class = "signature"
 description = "GitLab personal access token"
-regex = "(glpat-[0-9a-zA-Z_-]{20,})"
+regex = "(?:%[0-9A-Fa-f]{2}|\\[[0-9;:]*[mK]|\\\\(?:u\\{[0-9A-Fa-f]{1,6}\\}|u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8}|x[0-9A-Fa-f]{2}|[0-7]{1,3}|[A-Za-z])|(?-u:\\b))(glpat-[0-9a-zA-Z_-]{20,})"
 secret_group = 1
 keywords = ["glpat-"]
 
 [[rules]]
 id = "slack-bot-token"
+class = "signature"
 description = "Slack bot token"
-regex = "(xoxb-[0-9a-zA-Z-]{24,})"
+regex = "(?:%[0-9A-Fa-f]{2}|\\[[0-9;:]*[mK]|\\\\(?:u\\{[0-9A-Fa-f]{1,6}\\}|u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8}|x[0-9A-Fa-f]{2}|[0-7]{1,3}|[A-Za-z])|(?-u:\\b))(xoxb-[0-9a-zA-Z-]{24,})"
 secret_group = 1
 keywords = ["xoxb-"]
 
 [[rules]]
 id = "slack-user-token"
+class = "signature"
 description = "Slack user token"
-regex = "(xoxp-[0-9a-zA-Z-]{24,})"
+regex = "(?:%[0-9A-Fa-f]{2}|\\[[0-9;:]*[mK]|\\\\(?:u\\{[0-9A-Fa-f]{1,6}\\}|u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8}|x[0-9A-Fa-f]{2}|[0-7]{1,3}|[A-Za-z])|(?-u:\\b))(xoxp-[0-9a-zA-Z-]{24,})"
 secret_group = 1
 keywords = ["xoxp-"]
 
 [[rules]]
 id = "slack-app-token"
+class = "signature"
 description = "Slack app-level token"
-regex = "(xapp-[0-9a-zA-Z-]{24,})"
+regex = "(?:%[0-9A-Fa-f]{2}|\\[[0-9;:]*[mK]|\\\\(?:u\\{[0-9A-Fa-f]{1,6}\\}|u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8}|x[0-9A-Fa-f]{2}|[0-7]{1,3}|[A-Za-z])|(?-u:\\b))(xapp-[0-9a-zA-Z-]{24,})"
 secret_group = 1
 keywords = ["xapp-"]
 
 [[rules]]
 id = "stripe-secret-key-live"
+class = "signature"
 description = "Stripe live secret key"
-regex = "(sk_live_[0-9a-zA-Z]{24,})"
+regex = "(?:%[0-9A-Fa-f]{2}|\\[[0-9;:]*[mK]|\\\\(?:u\\{[0-9A-Fa-f]{1,6}\\}|u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8}|x[0-9A-Fa-f]{2}|[0-7]{1,3}|[A-Za-z])|(?-u:\\b))(sk_live_[0-9a-zA-Z]{24,})"
 secret_group = 1
 keywords = ["sk_live_"]
 
 [[rules]]
 id = "stripe-secret-key-test"
+class = "signature"
 description = "Stripe test secret key"
-regex = "(sk_test_[0-9a-zA-Z]{24,})"
+regex = "(?:%[0-9A-Fa-f]{2}|\\[[0-9;:]*[mK]|\\\\(?:u\\{[0-9A-Fa-f]{1,6}\\}|u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8}|x[0-9A-Fa-f]{2}|[0-7]{1,3}|[A-Za-z])|(?-u:\\b))(sk_test_[0-9a-zA-Z]{24,})"
 secret_group = 1
 keywords = ["sk_test_"]
 
 [[rules]]
 id = "stripe-publishable-key-live"
+class = "signature"
 description = "Stripe live publishable key"
-regex = "(pk_live_[0-9a-zA-Z]{24,})"
+regex = "(?:%[0-9A-Fa-f]{2}|\\[[0-9;:]*[mK]|\\\\(?:u\\{[0-9A-Fa-f]{1,6}\\}|u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8}|x[0-9A-Fa-f]{2}|[0-7]{1,3}|[A-Za-z])|(?-u:\\b))(pk_live_[0-9a-zA-Z]{24,})"
 secret_group = 1
 keywords = ["pk_live_"]
 
 [[rules]]
 id = "sendgrid-api-key"
+class = "signature"
 description = "SendGrid API key"
-regex = "(SG\\.[0-9a-zA-Z_-]{22,}\\.[0-9a-zA-Z_-]{22,})"
+regex = "(?:%[0-9A-Fa-f]{2}|\\[[0-9;:]*[mK]|\\\\(?:u\\{[0-9A-Fa-f]{1,6}\\}|u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8}|x[0-9A-Fa-f]{2}|[0-7]{1,3}|[A-Za-z])|(?-u:\\b))(SG\\.[0-9a-zA-Z_-]{22,}\\.[0-9a-zA-Z_-]{22,})"
 secret_group = 1
 keywords = ["sg."]
 
 [[rules]]
 id = "pem-private-key"
+class = "signature"
 description = "PEM private key"
 regex = "(-----BEGIN[A-Z ]*PRIVATE KEY-----)"
 secret_group = 1
@@ -114,93 +132,106 @@ keywords = ["-----begin", "private key"]
 
 [[rules]]
 id = "jwt-token"
+class = "signature"
 description = "JWT token"
-regex = "(eyJ[A-Za-z0-9_-]{10,}\\.eyJ[A-Za-z0-9_-]{10,}\\.[A-Za-z0-9_-]{10,})"
+regex = "(?:%[0-9A-Fa-f]{2}|\\[[0-9;:]*[mK]|\\\\(?:u\\{[0-9A-Fa-f]{1,6}\\}|u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8}|x[0-9A-Fa-f]{2}|[0-7]{1,3}|[A-Za-z])|(?-u:\\b))(eyJ[A-Za-z0-9_-]{10,}\\.eyJ[A-Za-z0-9_-]{10,}\\.[A-Za-z0-9_-]{10,})"
 secret_group = 1
 keywords = ["eyj"]
 
 [[rules]]
 id = "digitalocean-personal-access-token"
+class = "signature"
 description = "DigitalOcean personal access token"
-regex = "(dop_v1_[0-9a-f]{64})"
+regex = "(?:%[0-9A-Fa-f]{2}|\\[[0-9;:]*[mK]|\\\\(?:u\\{[0-9A-Fa-f]{1,6}\\}|u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8}|x[0-9A-Fa-f]{2}|[0-7]{1,3}|[A-Za-z])|(?-u:\\b))(dop_v1_[0-9a-f]{64})"
 secret_group = 1
 keywords = ["dop_v1_"]
 
 [[rules]]
 id = "digitalocean-oauth-token"
+class = "signature"
 description = "DigitalOcean OAuth token"
-regex = "(doo_v1_[0-9a-f]{64})"
+regex = "(?:%[0-9A-Fa-f]{2}|\\[[0-9;:]*[mK]|\\\\(?:u\\{[0-9A-Fa-f]{1,6}\\}|u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8}|x[0-9A-Fa-f]{2}|[0-7]{1,3}|[A-Za-z])|(?-u:\\b))(doo_v1_[0-9a-f]{64})"
 secret_group = 1
 keywords = ["doo_v1_"]
 
 [[rules]]
 id = "digitalocean-refresh-token"
+class = "signature"
 description = "DigitalOcean refresh token"
-regex = "(dor_v1_[0-9a-f]{64})"
+regex = "(?:%[0-9A-Fa-f]{2}|\\[[0-9;:]*[mK]|\\\\(?:u\\{[0-9A-Fa-f]{1,6}\\}|u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8}|x[0-9A-Fa-f]{2}|[0-7]{1,3}|[A-Za-z])|(?-u:\\b))(dor_v1_[0-9a-f]{64})"
 secret_group = 1
 keywords = ["dor_v1_"]
 
 [[rules]]
 id = "npm-access-token"
+class = "signature"
 description = "npm access token"
-regex = "(npm_[0-9a-zA-Z]{36,})"
+regex = "(?:%[0-9A-Fa-f]{2}|\\[[0-9;:]*[mK]|\\\\(?:u\\{[0-9A-Fa-f]{1,6}\\}|u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8}|x[0-9A-Fa-f]{2}|[0-7]{1,3}|[A-Za-z])|(?-u:\\b))(npm_[0-9a-zA-Z]{36,})"
 secret_group = 1
 keywords = ["npm_"]
 
 [[rules]]
 id = "pypi-api-token"
+class = "signature"
 description = "PyPI API token"
-regex = "(pypi-[0-9a-zA-Z_-]{16,})"
+regex = "(?:%[0-9A-Fa-f]{2}|\\[[0-9;:]*[mK]|\\\\(?:u\\{[0-9A-Fa-f]{1,6}\\}|u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8}|x[0-9A-Fa-f]{2}|[0-7]{1,3}|[A-Za-z])|(?-u:\\b))(pypi-[0-9a-zA-Z_-]{16,})"
 secret_group = 1
 keywords = ["pypi-"]
 
 [[rules]]
 id = "docker-hub-pat"
+class = "signature"
 description = "Docker Hub personal access token"
-regex = "(dckr_pat_[0-9a-zA-Z_-]{24,})"
+regex = "(?:%[0-9A-Fa-f]{2}|\\[[0-9;:]*[mK]|\\\\(?:u\\{[0-9A-Fa-f]{1,6}\\}|u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8}|x[0-9A-Fa-f]{2}|[0-7]{1,3}|[A-Za-z])|(?-u:\\b))(dckr_pat_[0-9a-zA-Z_-]{24,})"
 secret_group = 1
 keywords = ["dckr_pat_"]
 
 [[rules]]
 id = "new-relic-api-key"
+class = "signature"
 description = "New Relic API key"
-regex = "(NRAK-[0-9A-Z]{27})"
+regex = "(?:%[0-9A-Fa-f]{2}|\\[[0-9;:]*[mK]|\\\\(?:u\\{[0-9A-Fa-f]{1,6}\\}|u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8}|x[0-9A-Fa-f]{2}|[0-7]{1,3}|[A-Za-z])|(?-u:\\b))(NRAK-[0-9A-Z]{27})"
 secret_group = 1
 keywords = ["nrak-"]
 
 [[rules]]
 id = "terraform-cloud-token"
+class = "signature"
 description = "Terraform Cloud/Enterprise API token"
-regex = "([0-9a-zA-Z]{14}\\.atlasv1\\.[0-9a-zA-Z_-]{60,})"
+regex = "(?:%[0-9A-Fa-f]{2}|\\[[0-9;:]*[mK]|\\\\(?:u\\{[0-9A-Fa-f]{1,6}\\}|u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8}|x[0-9A-Fa-f]{2}|[0-7]{1,3}|[A-Za-z])|(?-u:\\b{start-half}))([0-9a-zA-Z]{14}\\.atlasv1\\.[0-9a-zA-Z_-]{60,})"
 secret_group = 1
 keywords = [".atlasv1."]
 
 [[rules]]
 id = "anthropic-api-key"
+class = "signature"
 description = "Anthropic API key"
-regex = "(sk-ant-[0-9a-zA-Z_-]{20,})"
+regex = "(?:%[0-9A-Fa-f]{2}|\\[[0-9;:]*[mK]|\\\\(?:u\\{[0-9A-Fa-f]{1,6}\\}|u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8}|x[0-9A-Fa-f]{2}|[0-7]{1,3}|[A-Za-z])|(?-u:\\b))(sk-ant-[0-9a-zA-Z_-]{20,})"
 secret_group = 1
 keywords = ["sk-ant-"]
 
 [[rules]]
 id = "openai-api-key-legacy"
+class = "signature"
 description = "OpenAI API key (legacy format)"
-regex = "(sk-[0-9a-zA-Z]{20,}T3BlbkFJ[0-9a-zA-Z]{20,})"
+regex = "(?:%[0-9A-Fa-f]{2}|\\[[0-9;:]*[mK]|\\\\(?:u\\{[0-9A-Fa-f]{1,6}\\}|u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8}|x[0-9A-Fa-f]{2}|[0-7]{1,3}|[A-Za-z])|(?-u:\\b))(sk-[0-9a-zA-Z]{20,}T3BlbkFJ[0-9a-zA-Z]{20,})"
 secret_group = 1
 keywords = ["t3blbkfj"]
 
 [[rules]]
 id = "openai-api-key"
+class = "signature"
 description = "OpenAI API key (project format)"
-regex = "(sk-proj-[0-9a-zA-Z]{20,})"
+regex = "(?:%[0-9A-Fa-f]{2}|\\[[0-9;:]*[mK]|\\\\(?:u\\{[0-9A-Fa-f]{1,6}\\}|u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8}|x[0-9A-Fa-f]{2}|[0-7]{1,3}|[A-Za-z])|(?-u:\\b))(sk-proj-[0-9A-Za-z_-]{20,})"
 secret_group = 1
 keywords = ["sk-proj-"]
 
-# tier 2: context-needed rules (medium false positives)
+# credential context (contextual)
 # these need keyword context and/or entropy checks
 
 [[rules]]
 id = "aws-secret-access-key"
+class = "contextual"
 description = "AWS secret access key"
 regex = "(?i)(?:aws_secret_access_key|aws_secret|secret_access_key)\\s*[=:]\\s*['\"]?([A-Za-z0-9/+=]{40})['\"]?"
 secret_group = 1
@@ -209,6 +240,7 @@ entropy_threshold = 3.5
 
 [[rules]]
 id = "database-connection-string-postgres"
+class = "contextual"
 description = "PostgreSQL connection string with credentials"
 regex = "postgres(?:ql)?://[^:/?#\\s]+:([^@\\s'\"]{6,})@[^\\s'\"]+"
 secret_group = 1
@@ -216,6 +248,7 @@ keywords = ["postgres://", "postgresql://"]
 
 [[rules]]
 id = "database-connection-string-mysql"
+class = "contextual"
 description = "MySQL connection string with credentials"
 regex = "mysql://[^:/?#\\s]+:([^@\\s'\"]{6,})@[^\\s'\"]+"
 secret_group = 1
@@ -223,6 +256,7 @@ keywords = ["mysql://"]
 
 [[rules]]
 id = "database-connection-string-mongodb"
+class = "contextual"
 description = "MongoDB connection string with credentials"
 regex = "mongodb(?:\\+srv)?://[^:/?#\\s]+:([^@\\s'\"]{6,})@[^\\s'\"]+"
 secret_group = 1
@@ -230,6 +264,7 @@ keywords = ["mongodb://", "mongodb+srv://"]
 
 [[rules]]
 id = "redis-connection-string"
+class = "contextual"
 description = "Redis connection string with password"
 regex = "redis://:([^@\\s'\"]{6,})@[^\\s'\"]+"
 secret_group = 1
@@ -237,6 +272,7 @@ keywords = ["redis://"]
 
 [[rules]]
 id = "generic-password-assignment"
+class = "contextual"
 description = "Quoted or unquoted password assignment in code and configuration"
 # alternative captures keep matching quote pairs and preserve surrounding syntax.
 regex = '''(?ix)
@@ -255,14 +291,44 @@ keywords = ["password", "passwd", "pwd"]
 
 [[rules]]
 id = "generic-secret-assignment"
-description = "Secret assignment in code"
-regex = "(?i)(?:secret|secret_key|api_secret)\\s*[=:]\\s*['\"]([^'\"]{8,})['\"]"
+class = "contextual"
+description = "Secret assignment in code and configuration"
+# the quoted alternative is unchanged. the unquoted alternative (group context_unquoted) reads a
+# credential-named assignment wherever one can start: `NAME=value` (optional horizontal spacing
+# around `=`) after line start, a space or tab (`export`, `env`, `sudo`, `docker run -e`, a yaml
+# `- ` item) or a shell `;` `&` `|` `(`, and yaml `name: value` (whitespace after the colon) only
+# at logical line start or after a yaml `- `. the name, after optional leading `_`, is the key
+# word alone or the key word ending a longer name: snake or kebab words before it
+# (`DJANGO_SECRET_KEY`) or a camel hump (`jwtSecret`), never a name that continues past it
+# (`secret_name`) or glues it to a lowercase word (`xsecret`); a `.` before the name (member
+# access), a `-` (a flag) or another byte outside the start set is no assignment start. the value
+# is the whole run of printable ascii and never starts with `=` (`==`); engine.rs rejects a run
+# that does not end its word at whitespace or end of input, so a quote, backtick or `(` in the
+# word rejects the arm instead of cutting the value short, and drops a word that is a path, is
+# rooted at a variable reference or reads as code or words (`is_source_expression_value`). the
+# pattern keeps its leading `(?i)`, which marks the rule context dependent; `(?x)` ignores the
+# layout whitespace.
+regex = '''(?i)(?x)
+(?:secret|secret_key|api_secret)\s*[=:]\s*['"]([^'"]{8,})['"]
+|(?m:
+  (?:
+    (?:^|[\t\x20;&|(])
+    _*(?:(?:[A-Za-z0-9]+[-_])*(?:api|client)?secret(?:[-_]?key)?|(?-i:(?:[A-Za-z0-9][A-Za-z0-9_-]*)?[a-z0-9]S)ecret(?:[-_]?key)?)
+    [\t\x20]*=[\t\x20]*
+  | ^[\t\x20]*(?:-[\t\x20]+)?
+    _*(?:(?:[A-Za-z0-9]+[-_])*(?:api|client)?secret(?:[-_]?key)?|(?-i:(?:[A-Za-z0-9][A-Za-z0-9_-]*)?[a-z0-9]S)ecret(?:[-_]?key)?)
+    [\t\x20]*:[\t\x20]+
+  )
+  (?P<context_unquoted>[\x21-\x7e&&[^"'`(=]][\x21-\x7e&&[^"'`(]]{7,})
+)'''
 secret_group = 1
+secret_groups = [2]
 keywords = ["secret", "secret_key", "api_secret"]
 entropy_threshold = 3.5
 
 [[rules]]
 id = "password-in-url"
+class = "contextual"
 description = "Password embedded in URL"
 regex = "(?i)://[^:/?#\\s]+:([^@/?#\\s]+)@[^\\s'\"]+"
 secret_group = 1
@@ -270,6 +336,7 @@ keywords = ["://"]
 
 [[rules]]
 id = "http-bearer-token"
+class = "contextual"
 description = "HTTP bearer token"
 regex = "(?i)(?:bearer|authorization)\\s+(?:bearer\\s+)?([a-zA-Z0-9_\\-\\.]{20,})"
 secret_group = 1
@@ -278,6 +345,7 @@ entropy_threshold = 3.5
 
 [[rules]]
 id = "http-basic-auth"
+class = "contextual"
 description = "HTTP basic auth header"
 regex = "(?i)(?:basic|authorization)\\s+(?:basic\\s+)?([A-Za-z0-9+/]{20,}={0,2})"
 secret_group = 1
@@ -286,6 +354,7 @@ entropy_threshold = 3.0
 
 [[rules]]
 id = "webhook-url-with-token"
+class = "signature"
 description = "Webhook URL with embedded token"
 regex = "(?i)(https://hooks\\.slack\\.com/services/T[A-Z0-9]+/B[A-Z0-9]+/[a-zA-Z0-9]+)"
 secret_group = 1
@@ -293,6 +362,7 @@ keywords = ["hooks.slack.com"]
 
 [[rules]]
 id = "azure-storage-account-key"
+class = "contextual"
 description = "Azure storage account key"
 regex = "(?i)AccountKey=([A-Za-z0-9+/]{86}==)"
 secret_group = 1
@@ -300,6 +370,7 @@ keywords = ["accountkey"]
 
 [[rules]]
 id = "cloudflare-api-key"
+class = "contextual"
 description = "Cloudflare API key"
 regex = "(?i)(?:cloudflare|cf)[-_]?(?:api)?[-_]?key\\s*[=:]\\s*['\"]?([0-9a-f]{37})['\"]?"
 secret_group = 1
@@ -308,6 +379,7 @@ entropy_threshold = 3.0
 
 [[rules]]
 id = "datadog-api-key"
+class = "contextual"
 description = "Datadog API key"
 regex = "(?i)(?:datadog|dd)[-_]?(?:api)?[-_]?key\\s*[=:]\\s*['\"]?([0-9a-f]{32})['\"]?"
 secret_group = 1
@@ -316,17 +388,20 @@ entropy_threshold = 3.0
 
 [[rules]]
 id = "heroku-api-key"
+class = "contextual"
 description = "Heroku API key"
 regex = "(?i)heroku[-_]?(?:api)?[-_]?key\\s*[=:]\\s*['\"]?([0-9a-f-]{36})['\"]?"
 secret_group = 1
 keywords = ["heroku"]
 entropy_threshold = 3.0
 
-# tier 3: catch-all rules (highest false positive risk)
+# generic fallbacks: generic-high-entropy-value is the only heuristic rule and is
+# off by default; generic-api-key is contextual
 # assignment or standalone token patterns + high entropy
 
 [[rules]]
 id = "generic-high-entropy-value"
+class = "heuristic"
 description = "High-entropy ASCII token in an assignment or on a bare line"
 # an unquoted identifier followed by : or = introduces an assignment, even without whitespace.
 # whole-line scheme:// values and quoted standalone literals precede assignment matching.
@@ -334,8 +409,12 @@ description = "High-entropy ASCII token in an assignment or on a bare line"
 # the unquoted bare fallback excludes colons and admits equals signs only as trailing padding.
 # env-style unquoted values treat internal ", ', and ` bytes literally after a non-quote first byte.
 # src/scanner/engine.rs::is_env_style_assignment applies the line-start/export and no-`(` gate.
-# trailing , ; ) ] } > delimit syntax; whitespace and end of line end unquoted values.
+# trailing , ; ) ] } > & delimit syntax; whitespace and end of line end unquoted values.
 # a comma or semicolon also separates a following syntactic key assignment.
+# a string prefix (python r b u f t, c/c++ L u U u8 and their R raw forms), a swift raw string
+# `#"..."#` and a shell `&&` list operator stay inside the unquoted value here, the reading a shell
+# gives them; engine.rs::read_unquoted_value narrows that value to the quoted body or cuts it
+# before `&&` only where the surface and the bytes around it prove that reading.
 # capture whole values before applying the byte-length and whitespace checks.
 # consume complete references so their contents are not scanned as assignments.
 # engine.rs applies an exemption layer (import, markdown, path, pin, url, syntax, word-structure) scoped to this rule id and switchable by [settings] exemption_layer.
@@ -371,7 +450,7 @@ regex = '''(?mx)
     | (?P<entropy_unquoted>=*(?:\\[^\r\n]|[^\s"'`\\=]|\\$)(?:\\[^\r\n]|[^\s\\]|\\$)*?)
       (?:
         [,;][\t\x20]*(?:\b[A-Za-z_][A-Za-z0-9_.-]*|"(?:\\[^\r\n]|[^"\\\r\n])+"|'(?:\\[^\r\n]|''|[^'\\\r\n])+')[\t\x20]*[=:]
-        | [,;)\]}>]*(?:[\t\x20\r\n]|$)
+        | [,;)\]}>&]*(?:[\t\x20\r\n]|$)
       )
   )
   | ^[\t\x20]*(?P<entropy_bare>[\x21-\x7e&&[^"'`=:]]+={0,2})[\t\x20]*\r?$
@@ -383,74 +462,98 @@ entropy_threshold = 4.0
 
 [[rules]]
 id = "generic-api-key"
+class = "contextual"
 description = "Generic API key assignment"
-regex = "(?i)(?:api[-_]?key|apikey|api[-_]?token)\\s*[=:]\\s*['\"]([^'\"]{16,})['\"]"
+# quoted and unquoted alternatives as in generic-secret-assignment.
+regex = '''(?i)(?x)
+(?:api[-_]?key|apikey|api[-_]?token)\s*[=:]\s*['"]([^'"]{16,})['"]
+|(?m:
+  (?:
+    (?:^|[\t\x20;&|(])
+    _*(?:(?:[A-Za-z0-9]+[-_])*api[-_]?(?:key|token)|(?-i:(?:[A-Za-z0-9][A-Za-z0-9_-]*)?[a-z0-9]A)pi[-_]?(?:key|token))
+    [\t\x20]*=[\t\x20]*
+  | ^[\t\x20]*(?:-[\t\x20]+)?
+    _*(?:(?:[A-Za-z0-9]+[-_])*api[-_]?(?:key|token)|(?-i:(?:[A-Za-z0-9][A-Za-z0-9_-]*)?[a-z0-9]A)pi[-_]?(?:key|token))
+    [\t\x20]*:[\t\x20]+
+  )
+  (?P<context_unquoted>[\x21-\x7e&&[^"'`(=]][\x21-\x7e&&[^"'`(]]{15,})
+)'''
 secret_group = 1
-keywords = ["api_key", "apikey", "api-key", "api_token", "api-token"]
+secret_groups = [2]
+keywords = ["api_key", "apikey", "api-key", "api_token", "apitoken", "api-token"]
 entropy_threshold = 4.0
 
 # ============================================================================
-# additional tier 1: prefix-based rules (very low false positives)
+# more provider formats (signature; contextual where the format needs a named key)
 # ============================================================================
 
 [[rules]]
 id = "gcp-api-key"
+class = "signature"
 description = "GCP API key starting with AIza"
-regex = "(AIza[0-9A-Za-z_-]{35})"
+regex = "(?:%[0-9A-Fa-f]{2}|\\[[0-9;:]*[mK]|\\\\(?:u\\{[0-9A-Fa-f]{1,6}\\}|u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8}|x[0-9A-Fa-f]{2}|[0-7]{1,3}|[A-Za-z])|(?-u:\\b))(AIza[0-9A-Za-z_-]{35})"
 secret_group = 1
 keywords = ["aiza"]
 
 [[rules]]
 id = "gcp-oauth-client-secret"
+class = "signature"
 description = "GCP OAuth client secret"
-regex = "(GOCSPX-[0-9a-zA-Z_-]{28})"
+regex = "(?:%[0-9A-Fa-f]{2}|\\[[0-9;:]*[mK]|\\\\(?:u\\{[0-9A-Fa-f]{1,6}\\}|u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8}|x[0-9A-Fa-f]{2}|[0-7]{1,3}|[A-Za-z])|(?-u:\\b))(GOCSPX-[0-9a-zA-Z_-]{28})"
 secret_group = 1
 keywords = ["gocspx-"]
 
 [[rules]]
 id = "alibaba-access-key-id"
+class = "signature"
 description = "Alibaba Cloud access key ID"
-regex = "(LTAI[0-9A-Za-z]{12,20})"
+regex = "(?:%[0-9A-Fa-f]{2}|\\[[0-9;:]*[mK]|\\\\(?:u\\{[0-9A-Fa-f]{1,6}\\}|u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8}|x[0-9A-Fa-f]{2}|[0-7]{1,3}|[A-Za-z])|(?-u:\\b))(LTAI[0-9A-Za-z]{12,20})"
 secret_group = 1
 keywords = ["ltai"]
 
 [[rules]]
 id = "gitlab-pipeline-trigger-token"
+class = "signature"
 description = "GitLab pipeline trigger token"
-regex = "(glptt-[0-9a-zA-Z_-]{20,})"
+regex = "(?:%[0-9A-Fa-f]{2}|\\[[0-9;:]*[mK]|\\\\(?:u\\{[0-9A-Fa-f]{1,6}\\}|u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8}|x[0-9A-Fa-f]{2}|[0-7]{1,3}|[A-Za-z])|(?-u:\\b))(glptt-[0-9a-zA-Z_-]{20,})"
 secret_group = 1
 keywords = ["glptt-"]
 
 [[rules]]
 id = "gitlab-runner-registration-token"
+class = "signature"
 description = "GitLab runner registration token"
-regex = "(glrt-[0-9a-zA-Z_-]{20,})"
+regex = "(?:%[0-9A-Fa-f]{2}|\\[[0-9;:]*[mK]|\\\\(?:u\\{[0-9A-Fa-f]{1,6}\\}|u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8}|x[0-9A-Fa-f]{2}|[0-7]{1,3}|[A-Za-z])|(?-u:\\b))(glrt-[0-9a-zA-Z_-]{20,})"
 secret_group = 1
 keywords = ["glrt-"]
 
 [[rules]]
 id = "gitlab-ci-job-token"
+class = "signature"
 description = "GitLab CI job token"
-regex = "(glcbt-[0-9a-zA-Z_-]{20,})"
+regex = "(?:%[0-9A-Fa-f]{2}|\\[[0-9;:]*[mK]|\\\\(?:u\\{[0-9A-Fa-f]{1,6}\\}|u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8}|x[0-9A-Fa-f]{2}|[0-7]{1,3}|[A-Za-z])|(?-u:\\b))(glcbt-[0-9a-zA-Z_-]{20,})"
 secret_group = 1
 keywords = ["glcbt-"]
 
 [[rules]]
 id = "huggingface-access-token"
+class = "signature"
 description = "HuggingFace access token"
-regex = "(hf_[0-9a-zA-Z]{34,})"
+regex = "(?:%[0-9A-Fa-f]{2}|\\[[0-9;:]*[mK]|\\\\(?:u\\{[0-9A-Fa-f]{1,6}\\}|u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8}|x[0-9A-Fa-f]{2}|[0-7]{1,3}|[A-Za-z])|(?-u:\\b))(hf_[0-9a-zA-Z]{34,})"
 secret_group = 1
 keywords = ["hf_"]
 
 [[rules]]
 id = "replicate-api-token"
+class = "signature"
 description = "Replicate API token"
-regex = "(r8_[0-9a-zA-Z]{38,})"
+regex = "(?:%[0-9A-Fa-f]{2}|\\[[0-9;:]*[mK]|\\\\(?:u\\{[0-9A-Fa-f]{1,6}\\}|u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8}|x[0-9A-Fa-f]{2}|[0-7]{1,3}|[A-Za-z])|(?-u:\\b))(r8_[0-9a-zA-Z]{38,})"
 secret_group = 1
 keywords = ["r8_"]
 
 [[rules]]
 id = "discord-bot-token"
+class = "contextual"
 description = "Discord bot token"
 regex = "(?i)(?:discord|bot)[-_]?(?:token)?\\s*[=:]\\s*['\"]?([0-9]{17,20}\\.[A-Za-z0-9_-]{6}\\.[A-Za-z0-9_-]{27,})['\"]?"
 secret_group = 1
@@ -459,6 +562,7 @@ entropy_threshold = 3.0
 
 [[rules]]
 id = "discord-webhook-url"
+class = "signature"
 description = "Discord webhook URL"
 regex = "(https://discord(?:app)?\\.com/api/webhooks/[0-9]+/[A-Za-z0-9_-]+)"
 secret_group = 1
@@ -466,6 +570,7 @@ keywords = ["discord.com/api/webhooks", "discordapp.com/api/webhooks"]
 
 [[rules]]
 id = "telegram-bot-token"
+class = "contextual"
 description = "Telegram bot token"
 regex = "(?i)(?:telegram|tg|bot)[-_]?(?:token)?\\s*[=:]\\s*['\"]?([0-9]{8,10}:[A-Za-z0-9_-]{35})['\"]?"
 secret_group = 1
@@ -474,126 +579,144 @@ entropy_threshold = 3.0
 
 [[rules]]
 id = "stripe-restricted-key-live"
+class = "signature"
 description = "Stripe live restricted key"
-regex = "(rk_live_[0-9a-zA-Z]{24,})"
+regex = "(?:%[0-9A-Fa-f]{2}|\\[[0-9;:]*[mK]|\\\\(?:u\\{[0-9A-Fa-f]{1,6}\\}|u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8}|x[0-9A-Fa-f]{2}|[0-7]{1,3}|[A-Za-z])|(?-u:\\b))(rk_live_[0-9a-zA-Z]{24,})"
 secret_group = 1
 keywords = ["rk_live_"]
 
 [[rules]]
 id = "stripe-restricted-key-test"
+class = "signature"
 description = "Stripe test restricted key"
-regex = "(rk_test_[0-9a-zA-Z]{24,})"
+regex = "(?:%[0-9A-Fa-f]{2}|\\[[0-9;:]*[mK]|\\\\(?:u\\{[0-9A-Fa-f]{1,6}\\}|u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8}|x[0-9A-Fa-f]{2}|[0-7]{1,3}|[A-Za-z])|(?-u:\\b))(rk_test_[0-9a-zA-Z]{24,})"
 secret_group = 1
 keywords = ["rk_test_"]
 
 [[rules]]
 id = "square-access-token"
+class = "signature"
 description = "Square access token"
-regex = "(sq0atp-[0-9a-zA-Z_-]{22,})"
+regex = "(?:%[0-9A-Fa-f]{2}|\\[[0-9;:]*[mK]|\\\\(?:u\\{[0-9A-Fa-f]{1,6}\\}|u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8}|x[0-9A-Fa-f]{2}|[0-7]{1,3}|[A-Za-z])|(?-u:\\b))(sq0atp-[0-9a-zA-Z_-]{22,})"
 secret_group = 1
 keywords = ["sq0atp-"]
 
 [[rules]]
 id = "square-oauth-secret"
+class = "signature"
 description = "Square OAuth secret"
-regex = "(sq0csp-[0-9a-zA-Z_-]{40,})"
+regex = "(?:%[0-9A-Fa-f]{2}|\\[[0-9;:]*[mK]|\\\\(?:u\\{[0-9A-Fa-f]{1,6}\\}|u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8}|x[0-9A-Fa-f]{2}|[0-7]{1,3}|[A-Za-z])|(?-u:\\b))(sq0csp-[0-9a-zA-Z_-]{40,})"
 secret_group = 1
 keywords = ["sq0csp-"]
 
 [[rules]]
 id = "planetscale-password"
+class = "signature"
 description = "PlanetScale database password"
-regex = "(pscale_pw_[0-9a-zA-Z_-]{30,})"
+regex = "(?:%[0-9A-Fa-f]{2}|\\[[0-9;:]*[mK]|\\\\(?:u\\{[0-9A-Fa-f]{1,6}\\}|u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8}|x[0-9A-Fa-f]{2}|[0-7]{1,3}|[A-Za-z])|(?-u:\\b))(pscale_pw_[0-9a-zA-Z_-]{30,})"
 secret_group = 1
 keywords = ["pscale_pw_"]
 
 [[rules]]
 id = "planetscale-api-token"
+class = "signature"
 description = "PlanetScale API token"
-regex = "(pscale_tkn_[0-9a-zA-Z_-]{30,})"
+regex = "(?:%[0-9A-Fa-f]{2}|\\[[0-9;:]*[mK]|\\\\(?:u\\{[0-9A-Fa-f]{1,6}\\}|u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8}|x[0-9A-Fa-f]{2}|[0-7]{1,3}|[A-Za-z])|(?-u:\\b))(pscale_tkn_[0-9a-zA-Z_-]{30,})"
 secret_group = 1
 keywords = ["pscale_tkn_"]
 
 [[rules]]
 id = "mailgun-private-api-token"
+class = "signature"
 description = "Mailgun private API token"
-regex = "(key-[0-9a-f]{32})"
+regex = "(?:%[0-9A-Fa-f]{2}|\\[[0-9;:]*[mK]|\\\\(?:u\\{[0-9A-Fa-f]{1,6}\\}|u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8}|x[0-9A-Fa-f]{2}|[0-7]{1,3}|[A-Za-z])|(?-u:\\b))(key-[0-9a-f]{32})"
 secret_group = 1
 keywords = ["key-"]
 
 [[rules]]
 id = "mailchimp-api-key"
+class = "signature"
 description = "Mailchimp API key"
-regex = "([0-9a-f]{32}-us[0-9]{1,2})"
+regex = "(?:%[0-9A-Fa-f]{2}|\\[[0-9;:]*[mK]|\\\\(?:u\\{[0-9A-Fa-f]{1,6}\\}|u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8}|x[0-9A-Fa-f]{2}|[0-7]{1,3}|[A-Za-z])|(?-u:\\b{start-half}))([0-9a-f]{32}-us[0-9]{1,2})"
 secret_group = 1
 keywords = ["-us"]
 entropy_threshold = 3.5
 
 [[rules]]
 id = "sendinblue-api-key"
+class = "signature"
 description = "Brevo (Sendinblue) API key"
-regex = "(xkeysib-[0-9a-f]{64}-[0-9a-zA-Z]{16})"
+regex = "(?:%[0-9A-Fa-f]{2}|\\[[0-9;:]*[mK]|\\\\(?:u\\{[0-9A-Fa-f]{1,6}\\}|u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8}|x[0-9A-Fa-f]{2}|[0-7]{1,3}|[A-Za-z])|(?-u:\\b))(xkeysib-[0-9a-f]{64}-[0-9a-zA-Z]{16})"
 secret_group = 1
 keywords = ["xkeysib-"]
 
 [[rules]]
 id = "buildkite-api-token"
+class = "signature"
 description = "Buildkite API token"
-regex = "(bkua_[0-9a-f]{40})"
+regex = "(?:%[0-9A-Fa-f]{2}|\\[[0-9;:]*[mK]|\\\\(?:u\\{[0-9A-Fa-f]{1,6}\\}|u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8}|x[0-9A-Fa-f]{2}|[0-7]{1,3}|[A-Za-z])|(?-u:\\b))(bkua_[0-9a-f]{40})"
 secret_group = 1
 keywords = ["bkua_"]
 
 [[rules]]
 id = "grafana-cloud-api-token"
+class = "signature"
 description = "Grafana Cloud API token"
-regex = "(glc_[0-9a-zA-Z+/=-]{32,})"
+regex = "(?:%[0-9A-Fa-f]{2}|\\[[0-9;:]*[mK]|\\\\(?:u\\{[0-9A-Fa-f]{1,6}\\}|u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8}|x[0-9A-Fa-f]{2}|[0-7]{1,3}|[A-Za-z])|(?-u:\\b))(glc_[0-9a-zA-Z+/=-]{32,})"
 secret_group = 1
 keywords = ["glc_"]
 
 [[rules]]
 id = "grafana-service-account-token"
+class = "signature"
 description = "Grafana service account token"
-regex = "(glsa_[0-9a-zA-Z_]{32,})"
+regex = "(?:%[0-9A-Fa-f]{2}|\\[[0-9;:]*[mK]|\\\\(?:u\\{[0-9A-Fa-f]{1,6}\\}|u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8}|x[0-9A-Fa-f]{2}|[0-7]{1,3}|[A-Za-z])|(?-u:\\b))(glsa_[0-9a-zA-Z_]{32,})"
 secret_group = 1
 keywords = ["glsa_"]
 
 [[rules]]
 id = "sentry-auth-token"
+class = "signature"
 description = "Sentry auth token"
-regex = "(sntrys_[0-9a-zA-Z_-]{36,})"
+regex = "(?:%[0-9A-Fa-f]{2}|\\[[0-9;:]*[mK]|\\\\(?:u\\{[0-9A-Fa-f]{1,6}\\}|u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8}|x[0-9A-Fa-f]{2}|[0-7]{1,3}|[A-Za-z])|(?-u:\\b))(sntrys_[0-9a-zA-Z_-]{36,})"
 secret_group = 1
 keywords = ["sntrys_"]
 
 [[rules]]
 id = "dynatrace-api-token"
+class = "signature"
 description = "Dynatrace API token"
-regex = "(dt0c01\\.[0-9A-Z]{24}\\.[0-9A-Z]{64})"
+regex = "(?:%[0-9A-Fa-f]{2}|\\[[0-9;:]*[mK]|\\\\(?:u\\{[0-9A-Fa-f]{1,6}\\}|u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8}|x[0-9A-Fa-f]{2}|[0-7]{1,3}|[A-Za-z])|(?-u:\\b))(dt0c01\\.[0-9A-Z]{24}\\.[0-9A-Z]{64})"
 secret_group = 1
 keywords = ["dt0c01."]
 
 [[rules]]
 id = "rubygems-api-key"
+class = "signature"
 description = "RubyGems API key"
-regex = "(rubygems_[0-9a-f]{48})"
+regex = "(?:%[0-9A-Fa-f]{2}|\\[[0-9;:]*[mK]|\\\\(?:u\\{[0-9A-Fa-f]{1,6}\\}|u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8}|x[0-9A-Fa-f]{2}|[0-7]{1,3}|[A-Za-z])|(?-u:\\b))(rubygems_[0-9a-f]{48})"
 secret_group = 1
 keywords = ["rubygems_"]
 
 [[rules]]
 id = "nuget-api-key"
+class = "signature"
 description = "NuGet API key"
-regex = "(oy2[0-9a-z]{43})"
+regex = "(?:%[0-9A-Fa-f]{2}|\\[[0-9;:]*[mK]|\\\\(?:u\\{[0-9A-Fa-f]{1,6}\\}|u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8}|x[0-9A-Fa-f]{2}|[0-7]{1,3}|[A-Za-z])|(?-u:\\b))(oy2[0-9a-z]{43})"
 secret_group = 1
 keywords = ["oy2"]
 
 [[rules]]
 id = "age-secret-key"
+class = "signature"
 description = "age encryption secret key"
-regex = "(AGE-SECRET-KEY-1[0-9a-z]{58})"
+regex = "(?:%[0-9A-Fa-f]{2}|\\[[0-9;:]*[mK]|\\\\(?:u\\{[0-9A-Fa-f]{1,6}\\}|u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8}|x[0-9A-Fa-f]{2}|[0-7]{1,3}|[A-Za-z])|(?-u:\\b))(AGE-SECRET-KEY-1[02-9AC-HJ-NP-Z]{58})"
 secret_group = 1
 keywords = ["age-secret-key-"]
 
 [[rules]]
 id = "pgp-private-key-block"
+class = "signature"
 description = "PGP private key block"
 regex = "(-----BEGIN PGP PRIVATE KEY BLOCK-----)"
 secret_group = 1
@@ -601,27 +724,31 @@ keywords = ["-----begin pgp", "private key block"]
 
 [[rules]]
 id = "fly-io-api-token"
+class = "signature"
 description = "Fly.io API token"
-regex = "(fo1_[0-9a-zA-Z_-]{40,})"
+regex = "(?:%[0-9A-Fa-f]{2}|\\[[0-9;:]*[mK]|\\\\(?:u\\{[0-9A-Fa-f]{1,6}\\}|u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8}|x[0-9A-Fa-f]{2}|[0-7]{1,3}|[A-Za-z])|(?-u:\\b))(fo1_[0-9a-zA-Z_-]{40,})"
 secret_group = 1
 keywords = ["fo1_"]
 
 [[rules]]
 id = "pulumi-access-token"
+class = "signature"
 description = "Pulumi access token"
-regex = "(pul-[0-9a-f]{40})"
+regex = "(?:%[0-9A-Fa-f]{2}|\\[[0-9;:]*[mK]|\\\\(?:u\\{[0-9A-Fa-f]{1,6}\\}|u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8}|x[0-9A-Fa-f]{2}|[0-7]{1,3}|[A-Za-z])|(?-u:\\b))(pul-[0-9a-f]{40})"
 secret_group = 1
 keywords = ["pul-"]
 
 [[rules]]
 id = "linear-api-key"
+class = "signature"
 description = "Linear API key"
-regex = "(lin_api_[0-9a-zA-Z]{40,})"
+regex = "(?:%[0-9A-Fa-f]{2}|\\[[0-9;:]*[mK]|\\\\(?:u\\{[0-9A-Fa-f]{1,6}\\}|u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8}|x[0-9A-Fa-f]{2}|[0-7]{1,3}|[A-Za-z])|(?-u:\\b))(lin_api_[0-9a-zA-Z]{40,})"
 secret_group = 1
 keywords = ["lin_api_"]
 
 [[rules]]
 id = "airtable-api-key"
+class = "contextual"
 description = "Airtable API key"
 regex = "(?i)(?:airtable)[-_]?(?:api)?[-_]?key\\s*[=:]\\s*['\"]?(key[0-9a-zA-Z]{14})['\"]?"
 secret_group = 1
@@ -629,78 +756,89 @@ keywords = ["airtable"]
 
 [[rules]]
 id = "shopify-access-token-admin"
+class = "signature"
 description = "Shopify admin API access token"
-regex = "(shpat_[0-9a-fA-F]{32})"
+regex = "(?:%[0-9A-Fa-f]{2}|\\[[0-9;:]*[mK]|\\\\(?:u\\{[0-9A-Fa-f]{1,6}\\}|u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8}|x[0-9A-Fa-f]{2}|[0-7]{1,3}|[A-Za-z])|(?-u:\\b))(shpat_[0-9a-fA-F]{32})"
 secret_group = 1
 keywords = ["shpat_"]
 
 [[rules]]
 id = "shopify-access-token-custom-app"
+class = "signature"
 description = "Shopify custom app access token"
-regex = "(shpca_[0-9a-fA-F]{32})"
+regex = "(?:%[0-9A-Fa-f]{2}|\\[[0-9;:]*[mK]|\\\\(?:u\\{[0-9A-Fa-f]{1,6}\\}|u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8}|x[0-9A-Fa-f]{2}|[0-7]{1,3}|[A-Za-z])|(?-u:\\b))(shpca_[0-9a-fA-F]{32})"
 secret_group = 1
 keywords = ["shpca_"]
 
 [[rules]]
 id = "shopify-access-token-private-app"
+class = "signature"
 description = "Shopify private app access token"
-regex = "(shppa_[0-9a-fA-F]{32})"
+regex = "(?:%[0-9A-Fa-f]{2}|\\[[0-9;:]*[mK]|\\\\(?:u\\{[0-9A-Fa-f]{1,6}\\}|u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8}|x[0-9A-Fa-f]{2}|[0-7]{1,3}|[A-Za-z])|(?-u:\\b))(shppa_[0-9a-fA-F]{32})"
 secret_group = 1
 keywords = ["shppa_"]
 
 [[rules]]
 id = "facebook-access-token"
+class = "signature"
 description = "Facebook access token"
-regex = "(EAA[0-9a-zA-Z]{20,})"
+regex = "(?:%[0-9A-Fa-f]{2}|\\[[0-9;:]*[mK]|\\\\(?:u\\{[0-9A-Fa-f]{1,6}\\}|u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8}|x[0-9A-Fa-f]{2}|[0-7]{1,3}|[A-Za-z])|(?-u:\\b))(EAA[0-9a-zA-Z]{20,})"
 secret_group = 1
 keywords = ["eaa"]
 entropy_threshold = 3.5
 
 [[rules]]
 id = "hashicorp-vault-service-token"
+class = "signature"
 description = "HashiCorp Vault service token"
-regex = "(hvs\\.[0-9a-zA-Z_-]{24,})"
+regex = "(?:%[0-9A-Fa-f]{2}|\\[[0-9;:]*[mK]|\\\\(?:u\\{[0-9A-Fa-f]{1,6}\\}|u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8}|x[0-9A-Fa-f]{2}|[0-7]{1,3}|[A-Za-z])|(?-u:\\b))(hvs\\.[0-9a-zA-Z_-]{24,})"
 secret_group = 1
 keywords = ["hvs."]
 
 [[rules]]
 id = "hashicorp-vault-batch-token"
+class = "signature"
 description = "HashiCorp Vault batch token"
-regex = "(hvb\\.[0-9a-zA-Z_-]{24,})"
+regex = "(?:%[0-9A-Fa-f]{2}|\\[[0-9;:]*[mK]|\\\\(?:u\\{[0-9A-Fa-f]{1,6}\\}|u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8}|x[0-9A-Fa-f]{2}|[0-7]{1,3}|[A-Za-z])|(?-u:\\b))(hvb\\.[0-9a-zA-Z_-]{24,})"
 secret_group = 1
 keywords = ["hvb."]
 
 [[rules]]
 id = "sourcegraph-access-token"
+class = "signature"
 description = "Sourcegraph access token"
-regex = "(sgp_[0-9a-fA-F]{40,})"
+regex = "(?:%[0-9A-Fa-f]{2}|\\[[0-9;:]*[mK]|\\\\(?:u\\{[0-9A-Fa-f]{1,6}\\}|u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8}|x[0-9A-Fa-f]{2}|[0-7]{1,3}|[A-Za-z])|(?-u:\\b))(sgp_[0-9a-fA-F]{40,})"
 secret_group = 1
 keywords = ["sgp_"]
 
 [[rules]]
 id = "figma-personal-access-token"
+class = "signature"
 description = "Figma personal access token"
-regex = "(figd_[0-9a-zA-Z_-]{40,})"
+regex = "(?:%[0-9A-Fa-f]{2}|\\[[0-9;:]*[mK]|\\\\(?:u\\{[0-9A-Fa-f]{1,6}\\}|u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8}|x[0-9A-Fa-f]{2}|[0-7]{1,3}|[A-Za-z])|(?-u:\\b))(figd_[0-9a-zA-Z_-]{40,})"
 secret_group = 1
 keywords = ["figd_"]
 
 [[rules]]
 id = "mapbox-api-token"
+class = "signature"
 description = "Mapbox API token"
-regex = "(pk\\.[0-9a-zA-Z_-]{60,}\\.[0-9a-zA-Z_-]{20,})"
+regex = "(?:%[0-9A-Fa-f]{2}|\\[[0-9;:]*[mK]|\\\\(?:u\\{[0-9A-Fa-f]{1,6}\\}|u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8}|x[0-9A-Fa-f]{2}|[0-7]{1,3}|[A-Za-z])|(?-u:\\b))(pk\\.[0-9a-zA-Z_-]{60,}\\.[0-9a-zA-Z_-]{20,})"
 secret_group = 1
 keywords = ["pk."]
 
 [[rules]]
 id = "dropbox-api-token"
+class = "signature"
 description = "Dropbox API token"
-regex = "(sl\\.[0-9a-zA-Z_-]{100,})"
+regex = "(?:%[0-9A-Fa-f]{2}|\\[[0-9;:]*[mK]|\\\\(?:u\\{[0-9A-Fa-f]{1,6}\\}|u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8}|x[0-9A-Fa-f]{2}|[0-7]{1,3}|[A-Za-z])|(?-u:\\b))(sl\\.[0-9a-zA-Z_-]{100,})"
 secret_group = 1
 keywords = ["sl."]
 entropy_threshold = 3.5
 
 [[rules]]
 id = "sentry-dsn"
+class = "signature"
 description = "Sentry DSN URL"
 regex = "(https://[0-9a-f]{32}@[a-z0-9.-]*\\.ingest\\.sentry\\.io/[0-9]+)"
 secret_group = 1
@@ -708,39 +846,44 @@ keywords = ["ingest.sentry.io"]
 
 [[rules]]
 id = "launchdarkly-sdk-key"
+class = "signature"
 description = "LaunchDarkly SDK key"
-regex = "(sdk-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})"
+regex = "(?:%[0-9A-Fa-f]{2}|\\[[0-9;:]*[mK]|\\\\(?:u\\{[0-9A-Fa-f]{1,6}\\}|u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8}|x[0-9A-Fa-f]{2}|[0-7]{1,3}|[A-Za-z])|(?-u:\\b))(sdk-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})"
 secret_group = 1
 keywords = ["sdk-"]
 entropy_threshold = 3.0
 
 [[rules]]
 id = "notion-api-token"
+class = "signature"
 description = "Notion API token"
-regex = "(ntn_[0-9a-zA-Z]{40,})"
+regex = "(?:%[0-9A-Fa-f]{2}|\\[[0-9;:]*[mK]|\\\\(?:u\\{[0-9A-Fa-f]{1,6}\\}|u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8}|x[0-9A-Fa-f]{2}|[0-7]{1,3}|[A-Za-z])|(?-u:\\b))(ntn_[0-9a-zA-Z]{40,})"
 secret_group = 1
 keywords = ["ntn_"]
 
 [[rules]]
 id = "databricks-api-token"
+class = "signature"
 description = "Databricks API token"
-regex = "(dapi[0-9a-f]{32})"
+regex = "(?:%[0-9A-Fa-f]{2}|\\[[0-9;:]*[mK]|\\\\(?:u\\{[0-9A-Fa-f]{1,6}\\}|u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8}|x[0-9A-Fa-f]{2}|[0-7]{1,3}|[A-Za-z])|(?-u:\\b))(dapi[0-9a-f]{32})"
 secret_group = 1
 keywords = ["dapi"]
 
 [[rules]]
 id = "twilio-api-key"
+class = "contextual"
 description = "Twilio API key"
-regex = "(?i)(?:twilio)\\s*.*?(SK[0-9a-fA-F]{32})"
+regex = "(?i)(?:twilio)\\s*.*?(?:%[0-9A-Fa-f]{2}|\\[[0-9;:]*[mK]|\\\\(?:u\\{[0-9A-Fa-f]{1,6}\\}|u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8}|x[0-9A-Fa-f]{2}|[0-7]{1,3}|[A-Za-z])|(?-u:\\b))(SK[0-9a-fA-F]{32})"
 secret_group = 1
 keywords = ["twilio"]
 
 # ============================================================================
-# additional tier 2: context-based rules (with entropy)
+# more credential context (contextual, with entropy)
 # ============================================================================
 
 [[rules]]
 id = "azure-ad-client-secret"
+class = "contextual"
 description = "Azure AD client secret"
 regex = "(?i)(?:azure|client_secret|client[-_]?secret)\\s*[=:]\\s*['\"]?([0-9a-zA-Z~._-]{34,})['\"]?"
 secret_group = 1
@@ -749,6 +892,7 @@ entropy_threshold = 3.5
 
 [[rules]]
 id = "azure-devops-pat"
+class = "contextual"
 description = "Azure DevOps personal access token"
 regex = "(?i)(?:azure|devops)[-_]?(?:pat|token)\\s*[=:]\\s*['\"]?([0-9a-z]{52})['\"]?"
 secret_group = 1
@@ -757,6 +901,7 @@ entropy_threshold = 3.5
 
 [[rules]]
 id = "alibaba-secret-key"
+class = "contextual"
 description = "Alibaba Cloud secret key"
 regex = "(?i)(?:alibaba|aliyun)[-_]?(?:secret|access)[-_]?(?:key)?\\s*[=:]\\s*['\"]?([0-9a-zA-Z]{30})['\"]?"
 secret_group = 1
@@ -765,6 +910,7 @@ entropy_threshold = 3.5
 
 [[rules]]
 id = "mssql-connection-string"
+class = "contextual"
 description = "MSSQL connection string with password"
 regex = "(?i)(?:Server|Data Source)\\s*=\\s*[^;]+;\\s*.*?(?:Password|Pwd)\\s*=\\s*([^;'\"]{8,})"
 secret_group = 1
@@ -773,6 +919,7 @@ entropy_threshold = 3.0
 
 [[rules]]
 id = "pagerduty-api-key"
+class = "contextual"
 description = "PagerDuty API key"
 regex = "(?i)(?:pagerduty)[-_]?(?:api)?[-_]?(?:key|token)\\s*[=:]\\s*['\"]?([0-9a-zA-Z+/=-]{20,})['\"]?"
 secret_group = 1
@@ -781,6 +928,7 @@ entropy_threshold = 3.0
 
 [[rules]]
 id = "circleci-api-token"
+class = "contextual"
 description = "CircleCI API token"
 regex = "(?i)(?:circleci|circle)[-_]?(?:api)?[-_]?(?:key|token)\\s*[=:]\\s*['\"]?([0-9a-f]{40})['\"]?"
 secret_group = 1
@@ -789,6 +937,7 @@ entropy_threshold = 3.0
 
 [[rules]]
 id = "vercel-api-token"
+class = "contextual"
 description = "Vercel API token"
 regex = "(?i)(?:vercel)[-_]?(?:api)?[-_]?(?:key|token)\\s*[=:]\\s*['\"]?([0-9a-zA-Z]{24,})['\"]?"
 secret_group = 1
@@ -797,6 +946,7 @@ entropy_threshold = 3.5
 
 [[rules]]
 id = "netlify-access-token"
+class = "contextual"
 description = "Netlify access token"
 regex = "(?i)(?:netlify)[-_]?(?:api)?[-_]?(?:key|token|auth)\\s*[=:]\\s*['\"]?([0-9a-zA-Z_-]{40,})['\"]?"
 secret_group = 1
@@ -805,6 +955,7 @@ entropy_threshold = 3.5
 
 [[rules]]
 id = "atlassian-api-token"
+class = "contextual"
 description = "Atlassian/Jira API token"
 regex = "(?i)(?:atlassian|jira)[-_]?(?:api)?[-_]?(?:key|token)\\s*[=:]\\s*['\"]?([0-9a-zA-Z]{24,})['\"]?"
 secret_group = 1
@@ -813,6 +964,7 @@ entropy_threshold = 3.5
 
 [[rules]]
 id = "twitter-bearer-token"
+class = "contextual"
 description = "Twitter/X bearer token"
 regex = "(?i)(?:twitter|tweet)[-_]?(?:bearer)?[-_]?(?:token)\\s*[=:]\\s*['\"]?([0-9a-zA-Z%]{50,})['\"]?"
 secret_group = 1
@@ -821,6 +973,7 @@ entropy_threshold = 3.5
 
 [[rules]]
 id = "okta-api-token"
+class = "contextual"
 description = "Okta API token"
 regex = "(?i)(?:okta)[-_]?(?:api)?[-_]?(?:key|token)\\s*[=:]\\s*['\"]?([0-9a-zA-Z_-]{30,})['\"]?"
 secret_group = 1
@@ -829,6 +982,7 @@ entropy_threshold = 3.0
 
 [[rules]]
 id = "algolia-api-key"
+class = "contextual"
 description = "Algolia API key"
 regex = "(?i)(?:algolia)[-_]?(?:api)?[-_]?(?:key)\\s*[=:]\\s*['\"]?([0-9a-f]{32})['\"]?"
 secret_group = 1
@@ -837,6 +991,7 @@ entropy_threshold = 3.0
 
 [[rules]]
 id = "elastic-api-key"
+class = "contextual"
 description = "Elastic API key"
 regex = "(?i)(?:elastic|elasticsearch|kibana)[-_]?(?:api)?[-_]?(?:key|token)\\s*[=:]\\s*['\"]?([0-9a-zA-Z_-]{30,})['\"]?"
 secret_group = 1
@@ -845,6 +1000,7 @@ entropy_threshold = 3.5
 
 [[rules]]
 id = "splunk-hec-token"
+class = "contextual"
 description = "Splunk HEC token"
 regex = "(?i)(?:splunk)[-_]?(?:hec)?[-_]?(?:token)\\s*[=:]\\s*['\"]?([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})['\"]?"
 secret_group = 1
@@ -853,6 +1009,7 @@ entropy_threshold = 3.0
 
 [[rules]]
 id = "postmark-server-token"
+class = "contextual"
 description = "Postmark server token"
 regex = "(?i)(?:postmark)[-_]?(?:server)?[-_]?(?:token|key)\\s*[=:]\\s*['\"]?([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})['\"]?"
 secret_group = 1
@@ -861,6 +1018,7 @@ entropy_threshold = 3.0
 
 [[rules]]
 id = "gitlab-deploy-token"
+class = "contextual"
 description = "GitLab deploy token"
 regex = "(?i)(?:gitlab)[-_]?(?:deploy)?[-_]?(?:token)\\s*[=:]\\s*['\"]?([0-9a-zA-Z_-]{20,})['\"]?"
 secret_group = 1
@@ -869,6 +1027,7 @@ entropy_threshold = 3.0
 
 [[rules]]
 id = "cohere-api-key"
+class = "contextual"
 description = "Cohere API key"
 regex = "(?i)(?:cohere)[-_]?(?:api)?[-_]?(?:key|token)\\s*[=:]\\s*['\"]?([0-9a-zA-Z]{40})['\"]?"
 secret_group = 1
@@ -876,15 +1035,32 @@ keywords = ["cohere"]
 entropy_threshold = 3.5
 
 # ============================================================================
-# additional tier 3: catch-all rules (highest false positive risk)
+# generic credential assignments (contextual) and public-key blocks (signature)
 # ============================================================================
 
 [[rules]]
 id = "generic-token-assignment"
+class = "contextual"
 description = "Generic token assignment"
-regex = "(?i)(?:auth_token|access_token|secret_token)\\s*[=:]\\s*['\"]([^'\"]{16,})['\"]"
+# quoted and unquoted alternatives as in generic-secret-assignment; only the unquoted one reads a
+# bare `token` key and names ending in it (`GITHUB_TOKEN`, `HF_TOKEN`, `accessToken`), so the
+# prefilter keyword is `token`.
+regex = '''(?i)(?x)
+(?:auth_token|access_token|secret_token)\s*[=:]\s*['"]([^'"]{16,})['"]
+|(?m:
+  (?:
+    (?:^|[\t\x20;&|(])
+    _*(?:(?:[A-Za-z0-9]+[-_])*(?:auth|access|secret|github)?token|(?-i:(?:[A-Za-z0-9][A-Za-z0-9_-]*)?[a-z0-9]T)oken)
+    [\t\x20]*=[\t\x20]*
+  | ^[\t\x20]*(?:-[\t\x20]+)?
+    _*(?:(?:[A-Za-z0-9]+[-_])*(?:auth|access|secret|github)?token|(?-i:(?:[A-Za-z0-9][A-Za-z0-9_-]*)?[a-z0-9]T)oken)
+    [\t\x20]*:[\t\x20]+
+  )
+  (?P<context_unquoted>[\x21-\x7e&&[^"'`(=]][\x21-\x7e&&[^"'`(]]{15,})
+)'''
 secret_group = 1
-keywords = ["auth_token", "access_token", "secret_token"]
+secret_groups = [2]
+keywords = ["token"]
 entropy_threshold = 4.0
 
 # ============================================================================
@@ -893,6 +1069,7 @@ entropy_threshold = 4.0
 
 [[rules]]
 id = "pem-public-key"
+class = "signature"
 description = "PEM public key"
 regex = "(-----BEGIN[A-Z ]*PUBLIC KEY-----)"
 secret_group = 1
@@ -900,6 +1077,7 @@ keywords = ["-----begin", "public key"]
 
 [[rules]]
 id = "pgp-public-key-block"
+class = "signature"
 description = "PGP public key block"
 regex = "(-----BEGIN PGP PUBLIC KEY BLOCK-----)"
 secret_group = 1
@@ -907,6 +1085,7 @@ keywords = ["-----begin pgp", "public key block"]
 
 [[rules]]
 id = "openssh-public-key"
+class = "signature"
 description = "OpenSSH public key"
 regex = "((?:ssh-(?:rsa|ed25519|dss)|ecdsa-sha2-nistp(?:256|384|521)|sk-(?:ssh-ed25519|ecdsa-sha2-nistp256)@openssh\\.com)\\s+AAAA[A-Za-z0-9+/=]{20,})"
 secret_group = 1

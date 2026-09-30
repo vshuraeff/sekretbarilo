@@ -1,0 +1,33 @@
+# template-hole-payloads: an opaque value inside an interpolation hole stays reported, as the
+# hole's operand, member, call argument, label, optional or unwrapped member, and an opaque value
+# as the name of a currency conversion, of a placeholder beside a hole or of a posix class, as a
+# chord's key, as an entry's name before a flag, and after an escaped quoted body. a token cut
+# into short identifiers is generated at runtime by tests/valueshape_tests.rs, since a
+# placeholder here stands for one whole value.
+# format: <rule id> TAB <line>. the test expands the placeholder, so no opaque literal is stored here.
+generic-high-entropy-value	label = "\({S32})"
+generic-high-entropy-value	label = "\(item.{S32})"
+generic-high-entropy-value	label = "\(make({S32}))"
+generic-high-entropy-value	label = "\(make(for:{S32}))"
+generic-high-entropy-value	label = "\(item?.{S32})"
+generic-high-entropy-value	label = "\(item!.{S32})"
+generic-high-entropy-value	label = "\(make().{S32})"
+generic-high-entropy-value	label = "\#({S32})"
+generic-high-entropy-value	label = "\#(item.{S32})"
+generic-high-entropy-value	label = "\#(make(for:{S32}))"
+generic-high-entropy-value	label = "${item.{S32}}"
+generic-high-entropy-value	label = "${make({S32})}"
+generic-high-entropy-value	label = "${item?.{S32}}"
+generic-high-entropy-value	label = "($item.{S32})"
+generic-high-entropy-value	label = "($make({S32}))"
+generic-high-entropy-value	label = "\(item.{HEX40})"
+generic-high-entropy-value	label = "${item.{HEX40}}"
+generic-high-entropy-value	label = "($item.{HEX40})"
+generic-high-entropy-value	label = "$%({S32}).2f/gb/month"
+generic-high-entropy-value	label = "\(item.size){{S32}}"
+generic-high-entropy-value	label = "\(item.size)${{S32}}"
+generic-high-entropy-value	pattern = "(deprecated|legacy|obsolete)[[:{S32}:]]"
+generic-high-entropy-value	keybind = ctrl+shift+{S32}=toggle_split
+generic-high-entropy-value	extra_env = "{S32}=--mod=readonly"
+generic-high-entropy-value	body = "\"release-notes-summary\"\n{S32}"
+generic-high-entropy-value	usage = "NSUser{S32}"

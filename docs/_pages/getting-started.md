@@ -6,30 +6,7 @@ nav_order: 1
 
 # Getting Started
 
-## What is sekretbarilo?
-
-**sekretbarilo** (Esperanto for "secret keeper") is a high-performance secret scanner designed for git workflows and AI coding agents. Written in Rust, it protects your codebase by:
-
-- **Preventing secret leaks** in git commits through pre-commit hooks
-- **Auditing repositories** for existing secrets in commit history
-- **Protecting AI agent file reads** by blocking access to files containing secrets
-
-Whether you're working solo or in a team, sekretbarilo acts as an automated guard against accidentally committing API keys, passwords, tokens, and other sensitive data.
-
-## Why you need it
-
-Secrets in version control are a critical security risk:
-
-- Once committed, secrets remain in git history even if removed later
-- Public repositories expose secrets to the entire internet
-- AI coding agents may inadvertently leak secrets when accessing files
-- Automated scanning catches what manual code review misses
-
-sekretbarilo provides multiple layers of defense:
-
-1. **Pre-commit scanning** blocks secrets before they enter your repository
-2. **History auditing** finds secrets already in your git history
-3. **Agent hooks** prevent AI tools from reading files with secrets
+In this tutorial you install sekretbarilo, set up its pre-commit hook in a project, and see what happens when a commit carries a secret. What the tool is and why it exists are covered in [What sekretbarilo is for]({{ '/what-sekretbarilo-is-for/' | relative_url }}).
 
 ## Quick 3-step setup
 
@@ -116,38 +93,4 @@ Now that you understand the basics:
 - **[CLI Reference]({{ '/cli-reference/' | relative_url }})** - complete command reference for scanning, auditing, and configuration
 - **[Agent Hooks]({{ '/agent-hooks/' | relative_url }})** - block Claude Code file reads or mask secrets in tool results; protect Codex patches and shell commands
 - **[Configuration]({{ '/configuration/' | relative_url }})** - customize detection rules, ignore patterns, and output formats
-
-## Quick reference
-
-Common commands you'll use:
-
-```sh
-# install pre-commit hook (local project)
-sekretbarilo install pre-commit
-
-# scan current directory
-sekretbarilo scan
-
-# audit git history
-sekretbarilo audit
-
-# check if a specific file contains secrets
-sekretbarilo check-file path/to/file.py
-
-# install hooks for claude code (ai agent protection)
-sekretbarilo install agent-hook claude
-
-# mask claude Bash/Read/Grep results (requires claude >= 2.1.121)
-sekretbarilo install agent-hook claude --mode redact
-
-# install all hooks at once
-sekretbarilo install all
-```
-
-For help with any command:
-
-```sh
-sekretbarilo --help
-sekretbarilo scan --help
-sekretbarilo audit --help
-```
+- **[Common commands]({{ '/common-commands/' | relative_url }})** - the commands you will use day to day, and where to get help

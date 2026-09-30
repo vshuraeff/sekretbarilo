@@ -1,0 +1,25 @@
+# hole-and-prefix-ownership: a token inside a structural position a value reader accepts.
+# a python f-string hole keeps its literal text (a quoted string with escaped quotes, a format
+# spec, the spec of a nested replacement field), a hole off a python file is literal data, a shell
+# reads `b"x"<word>` as one word, and a misread key or a `&&` command word gives the token back
+# when it is no code of words.
+# format: <rule id> TAB <line>.
+generic-high-entropy-value	value=f"{'a\'{S32}\'b'}"
+generic-high-entropy-value	value=f"{'\'{S32}\''}"
+generic-high-entropy-value	value=f"{name:{S32}}"
+generic-high-entropy-value	value=f"{name!r:{S40}}"
+generic-high-entropy-value	value = f"{x:{y}{S32}}"
+generic-high-entropy-value	value = f"{name.label:{S36}}"
+generic-high-entropy-value	value = f"{lookup('{S36}')}"
+generic-high-entropy-value	VALUE=f"{{S32}}"
+generic-high-entropy-value	VALUE=b"short"{S32}
+generic-high-entropy-value	VALUE=r"short"{S32}
+generic-high-entropy-value	VALUE=f"short"{S32}
+generic-high-entropy-value	VALUE=b""{S32}
+generic-high-entropy-value	export VALUE=rb'x'{S36}
+generic-high-entropy-value	VALUE=u8"x"{S40}
+generic-high-entropy-value	KEY=short&&{S32}
+generic-high-entropy-value	tr -d '[[:alnum:]]{S32}'
+generic-high-entropy-value	printf 'a\n: {S32}'
+generic-high-entropy-value	Acquire::{S32}=true
+generic-high-entropy-value	X::{S40}

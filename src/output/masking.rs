@@ -23,6 +23,15 @@ pub fn mask_secret(secret: &[u8]) -> String {
 mod tests {
     use super::*;
 
+    fn token_body(len: u8) -> String {
+        (0..len)
+            .map(|index| {
+                let base = if index % 2 == 0 { b'A' } else { b'a' };
+                char::from(base + (index * 7 % 26))
+            })
+            .collect()
+    }
+
     #[test]
     fn mask_empty_secret() {
         assert_eq!(mask_secret(b""), "");
@@ -68,9 +77,11 @@ mod tests {
 
     #[test]
     fn mask_never_exposes_full_secret() {
+        let github = format!("ghp_{}", token_body(36));
+        let anthropic = format!("sk-ant-{}", token_body(25));
         let secrets: &[&[u8]] = &[
-            b"ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij",
-            b"sk-ant-api03-something-very-long",
+            github.as_bytes(),
+            anthropic.as_bytes(),
             b"xoxb-token-value",
             b"password123",
         ];

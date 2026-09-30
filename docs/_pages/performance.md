@@ -220,7 +220,7 @@ sekretbarilo audit
 Bottlenecks, in order:
 - File I/O (reading from disk)
 - Regex evaluation (for lines with keyword matches)
-- Entropy calculation (for tier 2+ rules)
+- Entropy calculation (for rules with entropy thresholds)
 
 Runtime tracks file count, file sizes, filesystem speed and core count. No figure is published here because none of those are properties of sekretbarilo — time it on the repository you care about:
 ```sh
@@ -267,6 +267,13 @@ Fast-path filters (applied before reading file content):
 `check-codex` never reads a file at all. It scans the tool payload the agent is about to execute — the added lines of an `apply_patch`, or a `Bash` command string — so its scanning cost is proportional to that payload, which is small.
 
 **Timeout**: both hooks are installed with a 10-second timeout, far above what either needs.
+
+## Rule selection in 0.9.0
+
+The measurements on this page predate the default-off heuristic rule and are not
+a benchmark of the new defaults. Disabled rules are excluded before scanning;
+enabling `generic-high-entropy-value` adds keywordless candidate evaluation.
+Compare default and opt-in configurations separately when measuring performance.
 
 ## Performance Tuning
 
