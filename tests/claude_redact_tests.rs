@@ -1,7 +1,7 @@
 mod common;
 
 use std::io::{Read, Write};
-use std::process::{Output, Stdio};
+use std::process::{Command, Output, Stdio};
 
 use common::IsolatedEnv;
 use serde_json::{Value, json};
@@ -129,8 +129,11 @@ fn digest_records_keep_malformed_and_credential_values_redacted() {
 }
 
 fn run_bytes(env: &IsolatedEnv, bytes: &[u8]) -> Output {
-    let mut child = env
-        .command()
+    run_command(env.command(), env, bytes)
+}
+
+fn run_command(mut command: Command, env: &IsolatedEnv, bytes: &[u8]) -> Output {
+    let mut child = command
         .args(["redact-claude", "--stdin-json"])
         .env("XDG_CONFIG_HOME", env.home().join(".config"))
         .current_dir(env.home())
@@ -723,4 +726,212 @@ fn closed_stdout_and_stderr_do_not_abort_the_binary() {
         }
     }
     assert_eq!(code, Some(1));
+}
+
+#[test]
+fn vanished_cwd_uses_its_nearest_existing_ancestor() {
+    // `git worktree remove` run inside the worktree reports the removed directory as cwd.
+    let env = IsolatedEnv::with_heuristic();
+    let cwd = env.root().join("worktrees/repo/unit-1");
+    std::fs::create_dir_all(&cwd).unwrap();
+    std::fs::remove_dir(&cwd).unwrap();
+    let listing = format!(
+        "/work/.worktrees/repo/unit-1  {} [task/unit-1]\n",
+        synthetic_hex(40, 11)
+    );
+    let payload = json!({"hook_event_name": "PostToolUse", "tool_name": "Bash", "cwd": cwd,
+        "tool_response": {"stdout": format!("{listing}{SECRET}\n"), "stderr": "", "interrupted": false}});
+    let output = run_bytes(&env, &serde_json::to_vec(&payload).unwrap());
+    let envelope: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(
+        envelope.get("continue").is_none(),
+        "unexpected fail-closed envelope"
+    );
+    assert_eq!(
+        replacement(&output)["stdout"],
+        format!("{listing}[REDACTED]\n")
+    );
+}
+
+#[test]
+fn relative_empty_non_string_and_non_directory_cwd_still_stop() {
+    let env = IsolatedEnv::with_heuristic();
+    // run_bytes starts the binary in HOME, where the relative value names a real directory.
+    std::fs::create_dir_all(env.home().join("workspace")).unwrap();
+    let file = env.home().join("workspace/file.txt");
+    std::fs::write(&file, "").unwrap();
+    for cwd in [
+        json!("workspace"),
+        json!(""),
+        json!(17),
+        json!(file),
+        json!(file.join("gone")),
+    ] {
+        let payload = json!({"hook_event_name": "PostToolUse", "tool_name": "Bash", "cwd": cwd,
+            "tool_response": {"stdout": "clean\n", "stderr": "", "interrupted": false}});
+        let output = run_bytes(&env, &serde_json::to_vec(&payload).unwrap());
+        let envelope: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(envelope["continue"], false, "{cwd}");
+        assert_eq!(replacement(&output)["stdout"], "[REDACTED]\n", "{cwd}");
+    }
+}
+
+/// a rule no built-in matches, so only the layer carrying it can mask the payload below.
+const CUSTOM_RULE: &str = "[[rules]]\nid='custom'\ndescription='synthetic custom value'\nregex='CUSTOM=([A-Z0-9]+)'\nkeywords=['CUSTOM']\nsecret_group=1\n";
+const ALLOW_CUSTOM: &str = "[[allowlist.rules]]\nid='custom'\nregexes=['^Z9X4T2P7V8Q3$']\n";
+
+fn custom_value_payload(cwd: &std::path::Path) -> Vec<u8> {
+    serde_json::to_vec(
+        &json!({"hook_event_name": "PostToolUse", "tool_name": "Bash", "cwd": cwd,
+        "tool_response": {"stdout": "CUSTOM=Z9X4T2P7V8Q3", "stderr": "", "interrupted": false}}),
+    )
+    .unwrap()
+}
+
+/// masked by the custom rule itself, not by a fail-closed stop that erases everything.
+fn assert_custom_value_masked(output: &Output) {
+    assert!(
+        !output.stdout.is_empty(),
+        "the custom rule's layer was dropped"
+    );
+    let envelope: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(
+        envelope.get("continue").is_none(),
+        "unexpected fail-closed envelope"
+    );
+    assert_eq!(replacement(output)["stdout"], "CUSTOM=[REDACTED]");
+}
+
+#[test]
+fn vanished_cwd_keeps_the_user_layer_of_a_non_git_home() {
+    // the nearest existing ancestor is HOME, which holds the XDG layer.
+    let env = IsolatedEnv::new();
+    env.write_user_config(CUSTOM_RULE);
+    let output = run_bytes(&env, &custom_value_payload(&env.home().join("gone")));
+    assert_custom_value_masked(&output);
+}
+
+#[test]
+fn vanished_cwd_keeps_the_layer_of_a_non_git_parent() {
+    let env = IsolatedEnv::new();
+    let parent = env.home().join("work");
+    std::fs::create_dir_all(&parent).unwrap();
+    std::fs::write(parent.join(".sekretbarilo.toml"), CUSTOM_RULE).unwrap();
+    let output = run_bytes(&env, &custom_value_payload(&parent.join("repo-gone")));
+    assert_custom_value_masked(&output);
+}
+
+#[test]
+fn vanished_cwd_stops_on_an_uncommitted_layer_of_the_ancestor_repository() {
+    // a removed nested checkout would have trusted this layer and a removed plain subdirectory
+    // would not, so neither reading is safe.
+    let env = IsolatedEnv::new();
+    let repo = env.home().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    let init = std::process::Command::new("git")
+        .args(["init", "-q"])
+        .current_dir(&repo)
+        .env("GIT_CONFIG_GLOBAL", env.git_config_global())
+        .status()
+        .unwrap();
+    assert!(init.success());
+    std::fs::write(repo.join(".sekretbarilo.toml"), CUSTOM_RULE).unwrap();
+    let output = run_bytes(&env, &custom_value_payload(&repo.join(".worktrees/gone")));
+    let envelope: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(envelope["continue"], false);
+    assert_eq!(replacement(&output)["stdout"], "[REDACTED]");
+}
+
+#[test]
+fn vanished_cwd_outside_home_never_reads_its_ancestor_layer() {
+    // outside HOME discovery reads only the start directory's own layer, so the vanished path
+    // never read the allowlist its ancestor holds.
+    let env = IsolatedEnv::new();
+    env.write_user_config(CUSTOM_RULE);
+    let outside = env.root().join("outside");
+    std::fs::create_dir_all(&outside).unwrap();
+    std::fs::write(outside.join(".sekretbarilo.toml"), ALLOW_CUSTOM).unwrap();
+    let payload = custom_value_payload(&outside.join("gone"));
+    assert_custom_value_masked(&run_bytes(&env, &payload));
+    // control: the same allowlist in a trusted layer lets the value through.
+    env.write_user_config(&format!("{CUSTOM_RULE}{ALLOW_CUSTOM}"));
+    assert!(run_bytes(&env, &payload).stdout.is_empty());
+}
+
+fn clean_payload(cwd: &std::path::Path) -> Vec<u8> {
+    serde_json::to_vec(
+        &json!({"hook_event_name": "PostToolUse", "tool_name": "Bash", "cwd": cwd,
+        "tool_response": {"stdout": "clean\n", "stderr": "", "interrupted": false}}),
+    )
+    .unwrap()
+}
+
+fn assert_stopped(output: &Output, cwd: &std::path::Path) {
+    let envelope: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(envelope["continue"], false, "{}", cwd.display());
+    assert_eq!(
+        replacement(output)["stdout"],
+        "[REDACTED]\n",
+        "{}",
+        cwd.display()
+    );
+}
+
+#[test]
+fn vanished_cwd_without_home_stops() {
+    // the loader's fallback home would be the ancestor, whose layers the vanished path never read.
+    let env = IsolatedEnv::new();
+    let parent = env.root().join("w");
+    std::fs::create_dir_all(&parent).unwrap();
+    let without_home = || {
+        let mut command = env.command();
+        command.env_remove("HOME");
+        command
+    };
+    let cwd = parent.join("gone");
+    assert_stopped(
+        &run_command(without_home(), &env, &clean_payload(&cwd)),
+        &cwd,
+    );
+    // control: without HOME an existing cwd still passes clean output through.
+    let output = run_command(without_home(), &env, &clean_payload(&parent));
+    assert!(
+        output.stdout.is_empty(),
+        "{:?}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+}
+
+#[test]
+fn vanished_cwd_spelled_with_dot_segments_stops() {
+    // the walk is lexical: from `gone/..` it lands on `proj`, whose layer the boundary would
+    // then judge to lie outside the workspace.
+    let env = IsolatedEnv::new();
+    let proj = env.home().join("proj");
+    std::fs::create_dir_all(proj.join("sub")).unwrap();
+    for cwd in [
+        proj.join("gone/.."),
+        proj.join("gone/."),
+        proj.join("./gone"),
+    ] {
+        assert_stopped(&run_bytes(&env, &clean_payload(&cwd)), &cwd);
+    }
+    // control: an existing cwd spelled with `..` is used as it is.
+    let output = run_bytes(&env, &clean_payload(&proj.join("sub/..")));
+    assert!(
+        output.stdout.is_empty(),
+        "{:?}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+}
+
+#[test]
+fn vanished_cwd_through_a_dangling_symlink_stops() {
+    // walking past `alias` would land on HOME and never read the layers above its target.
+    let env = IsolatedEnv::new();
+    let alias = env.home().join("alias");
+    std::os::unix::fs::symlink(env.home().join("work/gone"), &alias).unwrap();
+    for cwd in [alias.clone(), alias.join("sub")] {
+        assert_stopped(&run_bytes(&env, &clean_payload(&cwd)), &cwd);
+    }
 }

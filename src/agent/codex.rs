@@ -511,30 +511,61 @@ fn env_policy_reason(path: &str) -> String {
 pub(crate) fn load_trusted_project_config(
     base_dir: &Path,
 ) -> Result<config::ProjectConfig, String> {
-    load_trusted_config(base_dir, false)
+    load_trusted_config(base_dir, None, false)
 }
 
 /// use the same trust boundary and strict parsing, and name no path in the warning about an
 /// untrusted layer.
-pub(crate) fn load_trusted_redact_config(base_dir: &Path) -> Result<config::ProjectConfig, String> {
-    load_trusted_config(base_dir, true)
+///
+/// `vanished` is a cwd that no longer exists and `base_dir` its nearest existing ancestor. the
+/// result is never looser than the original path's surviving layers: every surviving layer it
+/// would have trusted is trusted, and where that cannot be established the load fails closed.
+/// layers inside the removed directory are lost with it.
+pub(crate) fn load_trusted_redact_config(
+    base_dir: &Path,
+    vanished: Option<&Path>,
+) -> Result<config::ProjectConfig, String> {
+    load_trusted_config(base_dir, vanished, true)
 }
 
-fn load_trusted_config(base_dir: &Path, redact: bool) -> Result<config::ProjectConfig, String> {
-    let home = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| base_dir.to_path_buf());
-    let config_paths = config::discovery::discover_configs(base_dir, &home);
+fn load_trusted_config(
+    base_dir: &Path,
+    vanished: Option<&Path>,
+    redact: bool,
+) -> Result<config::ProjectConfig, String> {
+    let home = match (std::env::var_os("HOME"), vanished) {
+        (Some(home), _) => PathBuf::from(home),
+        // the fallback home would be the ancestor, whose layers the vanished path never read.
+        (None, Some(_)) => return Err("could not establish configuration trust".to_string()),
+        (None, None) => base_dir.to_path_buf(),
+    };
+    let config_paths = match vanished {
+        // the vanished path's own discovery: from a missing start `discover_configs` returns
+        // only the fixed system and XDG layers, and the home hierarchy above it is walked from
+        // the ancestor. the ancestor's own layer, which discovery outside HOME adds for a
+        // start directory, is one the vanished path never read.
+        Some(vanished) => {
+            let mut paths = config::discovery::discover_configs(vanished, &home);
+            paths.extend(config::discovery::discover_hierarchy(base_dir, &home));
+            paths
+        }
+        None => config::discovery::discover_configs(base_dir, &home),
+    };
     if config_paths.is_empty() {
         return Ok(config::ProjectConfig::default());
     }
 
     let repo_root = resolve_git_repo_root(base_dir);
-    let workspace_boundary = repo_root.clone().unwrap_or_else(|| {
-        base_dir
-            .canonicalize()
-            .unwrap_or_else(|_| base_dir.to_path_buf())
-    });
+    // with no repository above the ancestor, the vanished path's workspace lay below it, so the
+    // missing path itself is the boundary and every existing layer stays outside it.
+    let workspace_boundary = repo_root
+        .clone()
+        .or_else(|| vanished.map(Path::to_path_buf))
+        .unwrap_or_else(|| {
+            base_dir
+                .canonicalize()
+                .unwrap_or_else(|_| base_dir.to_path_buf())
+        });
     let mut trusted = Vec::new();
 
     for path in config_paths {
@@ -547,6 +578,12 @@ fn load_trusted_config(base_dir: &Path, redact: bool) -> Result<config::ProjectC
         } else {
             false
         };
+        if !is_trusted && vanished.is_some() {
+            // only reachable through the ancestor's repository, which may not have been the
+            // vanished path's own: a removed nested checkout would have trusted this layer.
+            // dropping it can lose a rule and keeping it can admit an allowlist.
+            return Err("could not establish configuration trust".to_string());
+        }
 
         if is_trusted {
             // untrusted layers are never read; trusted ones never skip an error.

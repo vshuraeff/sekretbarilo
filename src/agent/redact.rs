@@ -1,6 +1,6 @@
 //! in-memory replacement of successful Claude tool output; never edits a file.
 
-use std::io::{Read, Write};
+use std::io::{ErrorKind, Read, Write};
 use std::path::PathBuf;
 
 use serde_json::{Value, json};
@@ -86,12 +86,35 @@ fn evaluate(payload: &mut Value) -> Result<bool, ()> {
     if !matches!(tool.as_str(), "Bash" | "Read" | "Grep") {
         return Ok(false);
     }
-    let base = match payload.get("cwd") {
+    let cwd = match payload.get("cwd") {
         Some(Value::String(cwd)) if !cwd.is_empty() => PathBuf::from(cwd),
         None => std::env::current_dir().map_err(|_| ())?,
         _ => return Err(()),
     };
-    if !base.is_absolute() || !base.is_dir() {
+    if !cwd.is_absolute() {
+        return Err(());
+    }
+    // a Bash call that removes its own cwd (`git worktree remove` inside the
+    // worktree) reports the vanished path. discovery and git run from its
+    // nearest existing ancestor, while trust is judged for the vanished path
+    // (see `load_trusted_redact_config`). the walk passes only absent
+    // components: a dangling symlink or an unreadable entry stops it.
+    let base = cwd
+        .ancestors()
+        .find(|path| !matches!(path.symlink_metadata(), Err(e) if e.kind() == ErrorKind::NotFound))
+        .filter(|path| path.is_dir())
+        .ok_or(())?
+        .to_path_buf();
+    let vanished = (base != cwd).then_some(cwd.as_path());
+    // the walk is lexical, so a vanished path spelled with `.` or `..` is
+    // refused; `components()` hides a `.`, hence the raw segments.
+    if vanished.is_some()
+        && cwd
+            .as_os_str()
+            .as_encoded_bytes()
+            .split(|byte| *byte == b'/')
+            .any(|segment| segment == b"." || segment == b"..")
+    {
         return Err(());
     }
     let response = payload.get_mut("tool_response").ok_or(())?;
@@ -105,7 +128,7 @@ fn evaluate(payload: &mut Value) -> Result<bool, ()> {
         return Ok(false);
     }
     visit_text(&tool, response, &mut |text| text.to_owned())?;
-    let project = super::codex::load_trusted_redact_config(&base).map_err(|_| ())?;
+    let project = super::codex::load_trusted_redact_config(&base, vanished).map_err(|_| ())?;
     let rules = config::load_rules_with_config(&project).map_err(|_| ())?;
     let allowlist = config::build_allowlist(&project, &rules).map_err(|_| ())?;
     let scanner = compile_rules(&rules).map_err(|_| ())?;
