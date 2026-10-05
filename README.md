@@ -17,7 +17,7 @@ High-performance secret scanner for git workflows and AI coding agents. Catches 
 - **Low false positives**: entropy analysis, stopword filtering, hash/variable detection, template-aware, public key suppression
 - **Pre-commit hook**: scans staged changes on every commit
 - **Working tree & history audit**: scan tracked files or full git history with deduplication and branch resolution
-- **Agent hooks**: blocks Claude Code file reads or masks secrets in `Bash`, `Read`, and `Grep` results; blocks Codex CLI from writing secrets via `apply_patch` or `Bash`
+- **Agent hooks**: blocks Claude Code file reads or masks secrets in `Bash`, `Read`, and `Grep` results; blocks Codex CLI from writing secrets via `apply_patch` or `Bash` and withholds completed `Bash` output that contains secrets
 - **Health diagnostics**: `doctor` command checks hooks, config, and binary availability
 - **Hierarchical config**: `.sekretbarilo.toml` at system, user, and project levels
 - **Zero config needed**: works out of the box with sensible defaults
@@ -134,11 +134,22 @@ sekretbarilo install agent-hook codex --global
 
 Adds a `PreToolUse` hook on the `apply_patch` and `Bash` tools. For `apply_patch` sekretbarilo scans the lines being added and blocks patches targeting `.env` files outright; for `Bash` it scans the command string, catching exported credentials, tokens in `curl -H` headers, and heredocs that write secrets to a file. A block is an exit code 2 with a masked reason on stderr, which Codex surfaces to the model. The reason renders at most 20 findings (the closing `total findings: N.` line still carries the true count), and file paths and rule names taken from the patch are stripped of control characters before printing.
 
+Since 0.10.0 the installer also adds a `PostToolUse` hook on `Bash`. Codex has no Read tool and reads files through shell commands, so this is where a `cat config/deploy.env` would hand a secret to the model. When a completed `Bash` result contains a secret, the hook exits 2 and Codex gives the model the hook's reason instead of the original output: a note that sekretbarilo withheld the output and that the command already ran, followed by the output with every detected value replaced by `[REDACTED]`. An output that is still over 64 KiB after redaction is withheld whole and replaced by a masked list of at most 20 findings. Clean output passes unchanged. The output hook uses the same detectors and trusted configuration layers as the Claude `redact-claude` hook. An unexpected payload shape or an internal error withholds the output too.
+
+Re-running `sekretbarilo install agent-hook codex` upgrades an existing installation: the `PostToolUse` group is appended without moving the hooks Codex has already approved.
+
 `check-codex` requires `--stdin-json` — the bare command exits 2. The installer already writes the flag, so existing installations are unaffected.
 
-**Codex will not run a newly installed hook until you approve it** — run `/hooks` in the Codex TUI. An unapproved hook is skipped silently. sekretbarilo does not write the trust state itself: the trust hash is an internal Codex detail, and a security tool that grants itself trust defeats the point of the trust model. For non-interactive use, Codex offers `--dangerously-bypass-hook-trust`, which disables the check for every hook in the session.
+**Codex will not run a newly installed hook until you approve it** — run `/hooks` in the Codex TUI and approve both sekretbarilo hooks, the `PreToolUse` one and the `PostToolUse` one. An unapproved hook is skipped silently. sekretbarilo does not write the trust state itself: the trust hash is an internal Codex detail, and a security tool that grants itself trust defeats the point of the trust model. For non-interactive use, Codex offers `--dangerously-bypass-hook-trust`, which disables the check for every hook in the session.
 
-Verified on codex-cli `0.145.0`; older releases may not deliver `PreToolUse` for `apply_patch`. Note two limits: Codex has no Read-equivalent tool, so the hook cannot stop the agent from *reading* a file with secrets, and the `Bash` check is a text scan — a guardrail against accidental leakage, not a sandbox. See the [agent hooks docs](https://vshuraeff.github.io/sekretbarilo/agent-hooks/) for details.
+Verified on codex-cli `0.145.0` (`PreToolUse`) and `0.159.3` (`PostToolUse`). Limits of the output hook:
+
+- **Streaming output is not covered.** Codex runs `PostToolUse` only when a command has finished. Output it hands the model while a command is still running, including each intermediate `write_stdin` poll, never passes through the hook.
+- **Codex fails open.** If the hook is not approved, times out, crashes or prints something Codex cannot parse, Codex keeps the original output.
+- **Codex's local logs.** The original output can remain in Codex's own local session logs.
+- **The command has already run.** The hook hides output from the model; it does not undo the command's side effects.
+
+The `Bash` checks are text scans, a guardrail against accidental leakage rather than a sandbox. See the [agent hooks docs](https://vshuraeff.github.io/sekretbarilo/agent-hooks/) for details.
 
 `sekretbarilo install all` sets up the pre-commit hook plus every agent hook at once. `--mode block|redact` selects the Claude mode; omitted, it preserves the installed mode or chooses `block` for a new installation. Selecting `redact` requires a supported Claude version. `--settings <path>` applies only to the Claude step; the pre-commit and Codex steps keep their normal local/global behavior. The Codex step is skipped when `codex` is neither on `PATH` nor has a `$CODEX_HOME` directory.
 
@@ -199,10 +210,10 @@ Checks pre-commit hooks (local/global), Claude Code hooks, Codex CLI hooks, conf
 |---------|---|---|---|
 | `scan`, `audit`, `doctor` | Clean | Secrets found | Error |
 | `check-file` | Clean / skipped | — | Secrets found or error |
-| `check-codex` | Allow tool call | — | Block tool call (secrets, `.env` target, or error) |
+| `check-codex` | Allow tool call / pass output through | — | Block tool call or withhold output (secrets, `.env` target, or error) |
 | `redact-claude` | No change, replacement JSON, or stop JSON on error | Output delivery failed | Not used to remove output |
 
-`check-file` and `check-codex` use exit 2 for both secrets and errors to block the tool call. `redact-claude` normally exits 0: clean output has no stdout; masking returns `hookSpecificOutput.updatedToolOutput`. Errors and the 10 MiB input/output limits return `continue: false` with a fixed safe reason and, when possible, a replacement hiding all supported text. Failed stdout delivery exits 1. A PostToolUse exit 2 does not remove a result that already exists.
+`check-file` and `check-codex` use exit 2 for both secrets and errors to block the tool call; on a Codex `PostToolUse` payload the same exit 2 makes Codex replace the `Bash` output with the reason. `redact-claude` normally exits 0: clean output has no stdout; masking returns `hookSpecificOutput.updatedToolOutput`. Errors and the 10 MiB input/output limits return `continue: false` with a fixed safe reason and, when possible, a replacement hiding all supported text. Failed stdout delivery exits 1. In Claude Code a PostToolUse exit 2 does not remove a result that already exists.
 
 ## Configuration
 
@@ -220,7 +231,7 @@ Create `.sekretbarilo.toml` in your repo root, or use `--config <path>` to skip 
 
 ### Agent hooks require an in-repo config to be committed
 
-`check-file`, `check-codex`, and `redact-claude` honour a `.sekretbarilo.toml` located inside the git working tree only when it is **git-tracked and unmodified relative to `HEAD`**. Otherwise the whole layer is dropped with a warning on stderr. Layers above the repo root, the user config, and the system config are unaffected, and `scan`/`audit` are not affected at all.
+`check-file`, `check-codex`, and `redact-claude` honour a `.sekretbarilo.toml` located inside the git working tree only when it is **git-tracked and unmodified relative to `HEAD`**. Otherwise the whole layer is dropped with a warning on stderr. A layer that is a symlink inside the working tree is dropped even when committed, since git vouches only for the link text. Layers above the repo root are unaffected, the user config and the system config are trusted wherever the hook runs, and `scan`/`audit` are not affected at all.
 
 The reason: an agent that can write files can write a permissive config, and that patch carries no secret, so it passes — after which every later check is neutered. A dropped layer is dropped whole rather than partially, because a `[[rules]]` entry reusing a built-in `id` replaces that rule. `sekretbarilo doctor` flags any in-workspace config the hooks will ignore. The fix is to commit it.
 

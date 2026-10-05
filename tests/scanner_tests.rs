@@ -204,15 +204,16 @@ mod high_entropy_values {
             captures,
             vec![
                 ("entropy_reference", 1),
-                ("entropy_bare_double", 2),
-                ("entropy_bare_single", 3),
-                ("entropy_url", 4),
-                ("entropy_key", 5),
-                ("entropy_double", 6),
-                ("entropy_single", 7),
-                ("entropy_bracket", 8),
-                ("entropy_unquoted", 9),
-                ("entropy_bare", 10),
+                ("entropy_default", 2),
+                ("entropy_bare_double", 3),
+                ("entropy_bare_single", 4),
+                ("entropy_url", 5),
+                ("entropy_key", 6),
+                ("entropy_double", 7),
+                ("entropy_single", 8),
+                ("entropy_bracket", 9),
+                ("entropy_unquoted", 10),
+                ("entropy_bare", 11),
             ]
         );
 
@@ -221,9 +222,11 @@ mod high_entropy_values {
             .filter(|(name, _)| *name != "entropy_key")
             .map(|(_, index)| *index)
             .collect();
-        let configured_groups: Vec<_> = std::iter::once(rule.secret_group)
+        assert_eq!(rule.secret_group, 2);
+        let mut configured_groups: Vec<_> = std::iter::once(rule.secret_group)
             .chain(rule.secret_groups.iter().copied())
             .collect();
+        configured_groups.sort_unstable();
         assert_eq!(configured_groups, value_indices);
     }
 
@@ -831,7 +834,6 @@ mod high_entropy_values {
             format!("{{{{{token}}}}}"),
             format!("${{var.{token}}}"),
             format!("process.env.{token}"),
-            format!("${{LONG_NAME:-{token}}}"),
             format!("{{{{lookup('ALPHA={token}')}}}}"),
             format!("{token} prose"),
             format!("{token}\tmore"),
@@ -849,7 +851,6 @@ mod high_entropy_values {
         }
         for input in [
             format!("{token}=short"),
-            format!("ALPHA=${{LONG_NAME:-{token}}}"),
             format!("ALPHA={token}é"),
             format!("ALPHA={token}\\ more"),
             format!("ALPHA=`{token}`"),
@@ -861,6 +862,12 @@ mod high_entropy_values {
             "PATHLIKE=/usr/local/bin/tooling".into(),
         ] {
             assert_values("config.txt", &input, &[], &scanner, &al);
+        }
+        for input in [
+            format!("ALPHA=\"${{LONG_NAME:-{token}}}\""),
+            format!("ALPHA=${{LONG_NAME:-{token}}}"),
+        ] {
+            assert_values("config.txt", &input, &[&token], &scanner, &al);
         }
         // reclassified per g1: opaque call-argument literals are tier-3 candidates (s19b).
         let call_body = format!("BRAVO={token}");

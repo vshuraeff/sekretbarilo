@@ -293,10 +293,10 @@ keywords = ["password", "passwd", "pwd"]
 id = "generic-secret-assignment"
 class = "contextual"
 description = "Secret assignment in code and configuration"
-# the quoted alternative is unchanged. the unquoted alternative (group context_unquoted) reads a
+# the quoted alternative reads quoted json/dict keys too. the unquoted alternative (group context_unquoted) reads a
 # credential-named assignment wherever one can start: `NAME=value` (optional horizontal spacing
 # around `=`) after line start, a space or tab (`export`, `env`, `sudo`, `docker run -e`, a yaml
-# `- ` item) or a shell `;` `&` `|` `(`, and yaml `name: value` (whitespace after the colon) only
+# `- ` item) or a shell `;` `&` `|` `(`, a quote, comma or nul, and yaml `name: value` (whitespace after the colon) only
 # at logical line start or after a yaml `- `. the name, after optional leading `_`, is the key
 # word alone or the key word ending a longer name: snake or kebab words before it
 # (`DJANGO_SECRET_KEY`) or a camel hump (`jwtSecret`), never a name that continues past it
@@ -309,15 +309,18 @@ description = "Secret assignment in code and configuration"
 # pattern keeps its leading `(?i)`, which marks the rule context dependent; `(?x)` ignores the
 # layout whitespace.
 regex = '''(?i)(?x)
-(?:secret|secret_key|api_secret)\s*[=:]\s*['"]([^'"]{8,})['"]
+(?:secret|secret[-_]?key(?:[-_]?base)?|(?:api|client)[-_]?secret)["'`]?\]?\s*(?::=|[=:])\s*['"]([^'"]{8,})['"]
 |(?m:
   (?:
-    (?:^|[\t\x20;&|(])
-    _*(?:(?:[A-Za-z0-9]+[-_])*(?:api|client)?secret(?:[-_]?key)?|(?-i:(?:[A-Za-z0-9][A-Za-z0-9_-]*)?[a-z0-9]S)ecret(?:[-_]?key)?)
-    [\t\x20]*=[\t\x20]*
+    (?:^|[\x00\t\x20;&|(",])
+    _*(?:(?:[A-Za-z0-9]+[-_])*(?:api|client)?secret(?:[-_]?key(?:[-_]?base)?)?|(?-i:(?:[A-Za-z0-9][A-Za-z0-9_-]*)?[a-z0-9]S)ecret(?:[-_]?key(?:[-_]?base)?)?)
+    [\t\x20]*(?::=|=)[\t\x20]*
   | ^[\t\x20]*(?:-[\t\x20]+)?
-    _*(?:(?:[A-Za-z0-9]+[-_])*(?:api|client)?secret(?:[-_]?key)?|(?-i:(?:[A-Za-z0-9][A-Za-z0-9_-]*)?[a-z0-9]S)ecret(?:[-_]?key)?)
+    _*(?:(?:[A-Za-z0-9]+[-_])*(?:api|client)?secret(?:[-_]?key(?:[-_]?base)?)?|(?-i:(?:[A-Za-z0-9][A-Za-z0-9_-]*)?[a-z0-9]S)ecret(?:[-_]?key(?:[-_]?base)?)?)
     [\t\x20]*:[\t\x20]+
+  | ^[\t\x20]*ENV[\t\x20]+
+    _*(?:(?:[A-Za-z0-9]+[-_])*(?:api|client)?secret(?:[-_]?key(?:[-_]?base)?)?|(?-i:(?:[A-Za-z0-9][A-Za-z0-9_-]*)?[a-z0-9]S)ecret(?:[-_]?key(?:[-_]?base)?)?)
+    [\t\x20]+
   )
   (?P<context_unquoted>[\x21-\x7e&&[^"'`(=]][\x21-\x7e&&[^"'`(]]{7,})
 )'''
@@ -416,7 +419,7 @@ description = "High-entropy ASCII token in an assignment or on a bare line"
 # gives them; engine.rs::read_unquoted_value narrows that value to the quoted body or cuts it
 # before `&&` only where the surface and the bytes around it prove that reading.
 # capture whole values before applying the byte-length and whitespace checks.
-# consume complete references so their contents are not scanned as assignments.
+# consume complete references; evaluate `:-` and `:=` default operands on their own.
 # engine.rs applies an exemption layer (import, markdown, path, pin, url, syntax, word-structure) scoped to this rule id and switchable by [settings] exemption_layer.
 # exact 32/40/64-hex assignment values bypass the Shannon gate under the key-token exclusion in hash_detect.rs.
 regex = '''(?mx)
@@ -426,7 +429,7 @@ regex = '''(?mx)
   )?
   (?P<entropy_reference>
     \$\{\{[\t\x20]*[A-Za-z_.][^}\r\n]*\}\}
-    | \$\{[A-Za-z_]\w*(?::[+\-=?][^}\r\n]*)?\}
+    | \$\{[A-Za-z_]\w*(?::(?:[-=](?P<entropy_default>[^}\r\n]*)|[+?][^}\r\n]*))?\}
     | \$\{(?:var|data|local|module)\.\w[\w.]*\}|\$!\{[\w.]+\}
     | \{\{\{[\t\x20]*[\w.]+[\t\x20]*\}\}\}
     | \{\{-?[\t\x20]*[A-Za-z_.][^}\r\n]*\}\}
@@ -437,7 +440,7 @@ regex = '''(?mx)
   | ^[\t\x20]*(?:
     "(?P<entropy_bare_double>[\x21-\x7e&&[^"'`=]]+={0,2}|[A-Za-z][A-Za-z0-9+.-]*://[\x21-\x7e&&[^"'`]]+)"
     | '(?P<entropy_bare_single>[\x21-\x7e&&[^"'`=]]+={0,2}|[A-Za-z][A-Za-z0-9+.-]*://[\x21-\x7e&&[^"'`]]+)'
-  )[\t\x20]*\r?$
+  )[\t\x20]*,?[\t\x20]*\r?$
   | ^[\t\x20]*(?P<entropy_url>[A-Za-z][A-Za-z0-9+.-]*://[\x21-\x7e&&[^"'`]]+)[\t\x20]*\r?$
   | (?P<entropy_key>
     \b[A-Za-z_][A-Za-z0-9_.-]*
@@ -455,8 +458,8 @@ regex = '''(?mx)
   )
   | ^[\t\x20]*(?P<entropy_bare>[\x21-\x7e&&[^"'`=:]]+={0,2})[\t\x20]*\r?$
 '''
-secret_group = 1
-secret_groups = [2, 3, 4, 6, 7, 8, 9, 10]
+secret_group = 2
+secret_groups = [1, 3, 4, 5, 7, 8, 9, 10, 11]
 keywords = []
 entropy_threshold = 4.0
 
@@ -466,15 +469,18 @@ class = "contextual"
 description = "Generic API key assignment"
 # quoted and unquoted alternatives as in generic-secret-assignment.
 regex = '''(?i)(?x)
-(?:api[-_]?key|apikey|api[-_]?token)\s*[=:]\s*['"]([^'"]{16,})['"]
+(?:api[-_]?key|apikey|api[-_]?token)["'`]?\]?\s*(?::=|[=:])\s*['"]([^'"]{16,})['"]
 |(?m:
   (?:
-    (?:^|[\t\x20;&|(])
+    (?:^|[\x00\t\x20;&|(",])
     _*(?:(?:[A-Za-z0-9]+[-_])*api[-_]?(?:key|token)|(?-i:(?:[A-Za-z0-9][A-Za-z0-9_-]*)?[a-z0-9]A)pi[-_]?(?:key|token))
-    [\t\x20]*=[\t\x20]*
+    [\t\x20]*(?::=|=)[\t\x20]*
   | ^[\t\x20]*(?:-[\t\x20]+)?
     _*(?:(?:[A-Za-z0-9]+[-_])*api[-_]?(?:key|token)|(?-i:(?:[A-Za-z0-9][A-Za-z0-9_-]*)?[a-z0-9]A)pi[-_]?(?:key|token))
     [\t\x20]*:[\t\x20]+
+  | ^[\t\x20]*ENV[\t\x20]+
+    _*(?:(?:[A-Za-z0-9]+[-_])*api[-_]?(?:key|token)|(?-i:(?:[A-Za-z0-9][A-Za-z0-9_-]*)?[a-z0-9]A)pi[-_]?(?:key|token))
+    [\t\x20]+
   )
   (?P<context_unquoted>[\x21-\x7e&&[^"'`(=]][\x21-\x7e&&[^"'`(]]{15,})
 )'''
@@ -1042,19 +1048,22 @@ entropy_threshold = 3.5
 id = "generic-token-assignment"
 class = "contextual"
 description = "Generic token assignment"
-# quoted and unquoted alternatives as in generic-secret-assignment; only the unquoted one reads a
-# bare `token` key and names ending in it (`GITHUB_TOKEN`, `HF_TOKEN`, `accessToken`), so the
-# prefilter keyword is `token`.
+# quoted and unquoted alternatives as in generic-secret-assignment; both read a bare `token`
+# key, and the unquoted one reads names ending in it (`GITHUB_TOKEN`, `HF_TOKEN`, `accessToken`).
+# the prefilter keyword is `token`.
 regex = '''(?i)(?x)
-(?:auth_token|access_token|secret_token)\s*[=:]\s*['"]([^'"]{16,})['"]
+(?:auth_token|access_token|secret_token|token)["'`]?\]?\s*(?::=|[=:])\s*['"]([^'"]{16,})['"]
 |(?m:
   (?:
-    (?:^|[\t\x20;&|(])
+    (?:^|[\x00\t\x20;&|(",])
     _*(?:(?:[A-Za-z0-9]+[-_])*(?:auth|access|secret|github)?token|(?-i:(?:[A-Za-z0-9][A-Za-z0-9_-]*)?[a-z0-9]T)oken)
-    [\t\x20]*=[\t\x20]*
+    [\t\x20]*(?::=|=)[\t\x20]*
   | ^[\t\x20]*(?:-[\t\x20]+)?
     _*(?:(?:[A-Za-z0-9]+[-_])*(?:auth|access|secret|github)?token|(?-i:(?:[A-Za-z0-9][A-Za-z0-9_-]*)?[a-z0-9]T)oken)
     [\t\x20]*:[\t\x20]+
+  | ^[\t\x20]*ENV[\t\x20]+
+    _*(?:(?:[A-Za-z0-9]+[-_])*(?:auth|access|secret|github)?token|(?-i:(?:[A-Za-z0-9][A-Za-z0-9_-]*)?[a-z0-9]T)oken)
+    [\t\x20]+
   )
   (?P<context_unquoted>[\x21-\x7e&&[^"'`(=]][\x21-\x7e&&[^"'`(]]{15,})
 )'''

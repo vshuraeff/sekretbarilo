@@ -800,7 +800,7 @@ fn syntax_forms_and_adjacent_secrets() {
         );
         check(
             &format!("let token = \"{secret}\";"),
-            &[(ENTROPY, &secret)],
+            &[(ENTROPY, &secret), ("generic-token-assignment", &secret)],
             &al,
         );
     }
@@ -1625,7 +1625,11 @@ fn hex_hash_context_veto_handles_optional_prefixes() {
     for prefix in ["", "0x", "0X"] {
         let value = format!("{prefix}{}", hex(64, 211));
         check(&format!("token = \"{value}\" # sha256"), &[], &al);
-        check(&format!("token = \"{value}\""), &[(ENTROPY, &value)], &al);
+        check(
+            &format!("token = \"{value}\""),
+            &[(ENTROPY, &value), ("generic-token-assignment", &value)],
+            &al,
+        );
     }
 }
 

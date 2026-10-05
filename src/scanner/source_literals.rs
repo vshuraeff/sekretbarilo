@@ -1166,7 +1166,7 @@ mod tests {
     }
 
     #[test]
-    fn every_grammar_obeys_tiny_oversized_and_deadline_controls() {
+    fn every_grammar_obeys_tiny_oversized_and_callback_budget_controls() {
         let oversized = vec![b' '; MAX_BYTES + 1];
         for dialect in [
             Dialect::C,

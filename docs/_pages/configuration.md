@@ -63,6 +63,10 @@ The agent hooks — `check-file`, `check-codex`, and `redact-claude` — apply o
 
 > A `.sekretbarilo.toml` located **inside the git working tree** is honored only when it is **git-tracked and unmodified relative to `HEAD`**. Otherwise the entire layer is dropped.
 
+Outside a git repository the workspace is the hook's working directory, and a `.sekretbarilo.toml` there is always dropped, because nothing vouches for it.
+
+A layer reached through a symlink inside the workspace is dropped even when the symlink is committed. Git records only the link text, so a clean `git status` says nothing about the file the link points to, which may sit anywhere the agent can write. The test uses the path where discovery found the layer, not its resolved target. A symlink outside the workspace that points into it is judged by its target, which must then be committed. `sekretbarilo doctor` does not report symlinked layers yet; the hook's warning below does.
+
 When a layer is dropped, the hook writes one line to stderr and carries on with the remaining layers:
 
 ```
@@ -81,12 +85,15 @@ Why the rule exists, and why it drops the whole layer rather than only its allow
 |-------|---------------------------|
 | `.sekretbarilo.toml` at the repo root | Yes |
 | `.sekretbarilo.toml` in any subdirectory of the working tree | Yes |
+| `.sekretbarilo.toml` symlink inside the working tree, committed or not | Always dropped |
 | `.sekretbarilo.toml` in a parent directory above the repo root | No |
-| `~/.sekretbarilo.toml` | No |
-| `$XDG_CONFIG_HOME/sekretbarilo/sekretbarilo.toml` | No |
-| `/etc/sekretbarilo.toml` | No |
+| `~/.sekretbarilo.toml` | Only when `$HOME` is the workspace itself: a dotfiles repository at `$HOME`, or `$HOME` as the working directory outside git |
+| `$XDG_CONFIG_HOME/sekretbarilo/sekretbarilo.toml` (or `~/.config/sekretbarilo/sekretbarilo.toml`) | No, wherever the working directory is |
+| `/etc/sekretbarilo.toml` | No, wherever the working directory is |
 
 The layers outside the working tree are outside the agent's reach in the same session, so they are loaded normally.
+
+The user and system configs are trusted even when the workspace contains them, symlinked or not, because they are your configuration rather than the project's. Two setups put them inside: running the agent with `$HOME` as its working directory outside git, and a dotfiles repository checked out at `$HOME`. In the dotfiles case an uncommitted edit to `~/.config/sekretbarilo/sekretbarilo.toml` takes effect in the hooks, as it does from any other directory. The exemption needs the location to come from an absolute `HOME` or `XDG_CONFIG_HOME`; a user config path derived without one is checked like a project layer.
 
 To make the hooks honour an in-workspace config, commit it; the steps and the `doctor` warning are in [Troubleshoot the agent hooks]({{ '/troubleshoot-agent-hooks/#the-hook-ignores-your-in-workspace-config' | relative_url }}).
 

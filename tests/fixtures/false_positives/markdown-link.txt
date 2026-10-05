@@ -16,6 +16,7 @@ The layer is described in [ADR 0002](https://github.example.internal/acme/widget
 [ADR 0001](https://github.example.internal/acme/widget/blob/master/docs/adr/0001-entropy-baseline-8-char-password.md) explains the baseline.
 The baseline is described in [ADR 0001](https://github.example.internal/acme/widget/blob/master/docs/adr/0001-entropy-baseline-8-char-password.md).
 [ADR 0003](https://github.example.internal/acme/widget/blob/master/docs/adr/0003-source-posture-for-literals.md): literals posture for source files.
+See [the release notes](https://github.com/acme/widget/blob/master/docs/2026-09-10-release-notes.md) for the current behavior.
 Is the layer still the one in [the tagged ADR](https://github.example.internal/acme/widget/blob/v0.8.0/docs/adr/0002-tier3-exemption-layer.md)?
 Browse the corpus in [the fixtures tree](https://github.example.internal/acme/widget/tree/master/tests/fixtures/false_positives).
 The canonical copy lives at <https://github.example.internal/acme/widget/blob/master/docs/adr/0001-entropy-baseline-8-char-password.md>.

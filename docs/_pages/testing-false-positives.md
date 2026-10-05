@@ -59,9 +59,11 @@ An opaque value is written as a placeholder that the test expands from a determi
 | Placeholder | Expands to |
 |-------------|------------|
 | `{S32}` `{S36}` `{S40}` | alternating A-Z / a-z with a digit at every fifth index |
-| `{HEX32}` `{HEX40}` `{HEX64}` | lower-case hex from a seeded xorshift64* |
-| `{B64_44}` | a 44-character base64 body ending in `=` |
+| `{HEX32}` `{HEX36}` `{HEX40}` `{HEX48}` `{HEX56}` `{HEX64}` `{HEX128}` | lower-case hex from a seeded xorshift64* |
+| `{B64_44}` | a canonical 44-character base64 body ending in `=` |
 | `{UUID}` | a dashed 8-4-4-4-12 identifier |
+| `{DECIMAL_BYTES_32}` | 32 seeded byte values written as comma-separated decimal groups |
+| `{X_ESCAPED_BYTES_32}` | 32 seeded byte values written as `\xNN` escapes |
 
 A brace group that is not one of these, such as `${TOKEN}` or `{{ secrets.API_TOKEN }}`, is
 ordinary fixture text and is left alone. A group that looks like a placeholder but is unknown, say
@@ -69,8 +71,8 @@ ordinary fixture text and is left alone. A group that looks like a placeholder b
 
 A false positive needs no placeholder, because a false positive is by definition not an opaque
 token. The exceptions are the shapes whose safety comes from their surroundings rather than from
-their content: a pinned commit sha, a recorded checksum or etag, and a generated identifier such as
-a tenant `{UUID}` in an environment file.
+their content: a pinned commit sha, a recorded checksum or etag, a generated identifier such as
+a tenant `{UUID}` in an environment file, a generated decimal lookup table, or an escaped regex pattern.
 
 ## Expected findings
 

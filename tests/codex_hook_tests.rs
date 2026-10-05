@@ -679,6 +679,15 @@ fn install_codex_hook_exact_shape_on_fresh_codex_home() {
                         "timeout": 10,
                         "statusMessage": "Scanning tool input for secrets..."
                     }]
+                }],
+                "PostToolUse": [{
+                    "matcher": "^Bash$",
+                    "hooks": [{
+                        "type": "command",
+                        "command": current_codex_hook_command(),
+                        "timeout": 10,
+                        "statusMessage": "Scanning tool output for secrets..."
+                    }]
                 }]
             }
         })
@@ -860,4 +869,370 @@ fn install_codex_hook_local_default_path_in_git_repo() {
         groups[0]["hooks"][0]["command"],
         current_codex_hook_command()
     );
+}
+
+/// a PostToolUse Bash payload in the shape codex-cli 0.159.3 sends: tool_response is the
+/// model-facing output as one string.
+fn post_tool_use_payload(output: &str, cwd: &Path) -> Vec<u8> {
+    serde_json::to_vec(&json!({
+        "session_id": "session-post",
+        "turn_id": "turn-post",
+        "cwd": cwd,
+        "hook_event_name": "PostToolUse",
+        "model": "gpt-test",
+        "permission_mode": "default",
+        "tool_name": "Bash",
+        "tool_input": {"command": "cat config/deploy.env"},
+        "tool_response": output,
+        "tool_use_id": "exec-post"
+    }))
+    .expect("failed to serialize PostToolUse payload")
+}
+
+fn generated_github_token() -> String {
+    let body: String = "q7Wm2Kx9Rt4Lp8Vz3Nc6".chars().cycle().take(36).collect();
+    format!("ghp_{body}")
+}
+
+#[test]
+fn check_codex_post_tool_use_withholds_secret_bash_output() {
+    let env = IsolatedEnv::new();
+    let token = generated_github_token();
+    let output = format!("APP_ENV=prod\nGITHUB_TOKEN={token}\n");
+    let result = run_check_codex_in(
+        &env,
+        &post_tool_use_payload(&output, env.home()),
+        env.home(),
+    );
+
+    assert_eq!(result.status.code(), Some(2));
+    assert!(
+        result.stdout.is_empty(),
+        "check-codex must not write stdout"
+    );
+    let stderr = String::from_utf8_lossy(&result.stderr);
+    assert!(!stderr.contains(&token), "the raw token reached the reason");
+    assert!(stderr.contains("withheld this Bash output"));
+    assert!(stderr.contains("APP_ENV=prod\nGITHUB_TOKEN=[REDACTED]\n"));
+}
+
+#[test]
+fn check_codex_post_tool_use_counts_one_value_caught_by_two_rules_once() {
+    let env = IsolatedEnv::new();
+    let token = generated_github_token();
+    let result = run_check_codex_in(
+        &env,
+        &post_tool_use_payload(&format!("GITHUB_TOKEN={token}\n"), env.home()),
+        env.home(),
+    );
+
+    assert_eq!(result.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&result.stderr);
+    assert!(
+        stderr.contains(": 1 secret finding(s)."),
+        "one token must be one finding: {stderr}"
+    );
+}
+
+#[test]
+fn check_codex_post_tool_use_whole_withhold_lists_one_value_once() {
+    let env = IsolatedEnv::new();
+    let token = generated_github_token();
+    let filler = "x".repeat(70 * 1024);
+    let result = run_check_codex_in(
+        &env,
+        &post_tool_use_payload(&format!("GITHUB_TOKEN={token}\n{filler}\n"), env.home()),
+        env.home(),
+    );
+
+    assert_eq!(result.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&result.stderr);
+    assert!(stderr.contains("withheld whole"), "{stderr}");
+    assert!(stderr.contains(": 1 secret finding(s)."), "{stderr}");
+    assert_eq!(stderr.matches("  match: ").count(), 1, "{stderr}");
+    assert!(!stderr.contains(&token));
+}
+
+#[test]
+fn check_codex_post_tool_use_allows_clean_bash_output_silently() {
+    let env = IsolatedEnv::new();
+    let result = run_check_codex_in(
+        &env,
+        &post_tool_use_payload("APP_ENV=prod\nLOG_LEVEL=info\n", env.home()),
+        env.home(),
+    );
+
+    assert_eq!(result.status.code(), Some(0));
+    assert!(result.stdout.is_empty());
+    assert!(result.stderr.is_empty());
+}
+
+#[test]
+fn check_codex_post_tool_use_withholds_output_whose_cwd_vanished_above_a_secret() {
+    let env = IsolatedEnv::new();
+    let token = generated_github_token();
+    let vanished = env.home().join("removed-worktree");
+    let result = run_check_codex_in(
+        &env,
+        &post_tool_use_payload(&format!("GITHUB_TOKEN={token}\n"), &vanished),
+        env.home(),
+    );
+
+    assert_eq!(result.status.code(), Some(2));
+    assert!(!String::from_utf8_lossy(&result.stderr).contains(&token));
+}
+
+fn bash_payload(command: &str, cwd: &Path) -> Vec<u8> {
+    serde_json::to_vec(&json!({
+        "session_id": "session-pre",
+        "cwd": cwd,
+        "hook_event_name": "PreToolUse",
+        "tool_name": "Bash",
+        "tool_input": {"command": command},
+    }))
+    .expect("failed to serialize PreToolUse payload")
+}
+
+/// disables the built-in rule that catches `generated_github_token`.
+const DISABLE_GITHUB_PAT: &str = "[settings.rules]\n\"github-personal-access-token\" = false\n";
+
+/// a rule no built-in matches, so only the layer carrying it can block its canary.
+const CANARY_RULE: &str = "[[rules]]\nid = \"fixture-canary\"\ndescription = \"synthetic canary\"\nregex = 'CANARY=([A-Z0-9]+)'\nkeywords = [\"CANARY=\"]\nsecret_group = 1\n";
+
+fn generated_canary() -> String {
+    let body: String = "Q7W2K9R4L8V3".chars().cycle().take(12).collect();
+    format!("CANARY={body}")
+}
+
+fn write_xdg_layer(env: &IsolatedEnv, content: &str) {
+    let dir = env.home().join(".config/sekretbarilo");
+    std::fs::create_dir_all(&dir).expect("failed to create the XDG config directory");
+    std::fs::write(dir.join("sekretbarilo.toml"), content).expect("failed to write the XDG layer");
+}
+
+#[test]
+fn check_codex_inworkspace_config_symlink_is_not_trusted_even_when_committed() {
+    let env = IsolatedEnv::new();
+    let repo = env.git_repo();
+    let outside = env.root().join("outside");
+    std::fs::create_dir_all(&outside).unwrap();
+    let target = outside.join("permissive.toml");
+    std::fs::write(&target, DISABLE_GITHUB_PAT).unwrap();
+    std::os::unix::fs::symlink(&target, repo.join(".sekretbarilo.toml")).unwrap();
+    let token = generated_github_token();
+    let pre = bash_payload(&format!("echo {token}"), &repo);
+    let post = post_tool_use_payload(&format!("{token}\n"), &repo);
+
+    for state in ["untracked", "committed"] {
+        if state == "committed" {
+            git_success(&env, &repo, &["add", ".sekretbarilo.toml"]);
+            git_success(
+                &env,
+                &repo,
+                &["commit", "--no-verify", "-m", "add fixture config symlink"],
+            );
+        }
+        for (event, payload) in [("PreToolUse", &pre), ("PostToolUse", &post)] {
+            let output = run_check_codex_in(&env, payload, &repo);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert_eq!(output.status.code(), Some(2), "{state} {event}: {stderr}");
+            assert!(
+                stderr.contains("ignoring untrusted in-workspace config"),
+                "{state} {event}: {stderr}"
+            );
+            assert!(!stderr.contains(&token), "{state} {event}: raw token");
+        }
+    }
+
+    // control: the same file as a trusted layer does disable the rule.
+    std::fs::remove_file(repo.join(".sekretbarilo.toml")).unwrap();
+    write_xdg_layer(&env, DISABLE_GITHUB_PAT);
+    for payload in [&pre, &post] {
+        assert_eq!(
+            run_check_codex_in(&env, payload, &repo).status.code(),
+            Some(0)
+        );
+    }
+}
+
+/// both events catch the canary from `cwd`, so the layer carrying its rule was trusted.
+fn assert_canary_rule_applies(env: &IsolatedEnv, cwd: &Path) {
+    let canary = generated_canary();
+
+    let pre = run_check_codex_in(env, &bash_payload(&format!("echo {canary}"), cwd), cwd);
+    let stderr = String::from_utf8_lossy(&pre.stderr);
+    assert_eq!(pre.status.code(), Some(2), "{stderr}");
+    assert!(stderr.contains("rule: fixture-canary"), "{stderr}");
+    assert!(!stderr.contains("ignoring untrusted"), "{stderr}");
+
+    let post = run_check_codex_in(env, &post_tool_use_payload(&canary, cwd), cwd);
+    let stderr = String::from_utf8_lossy(&post.stderr);
+    assert_eq!(post.status.code(), Some(2), "{stderr}");
+    assert!(stderr.contains("CANARY=[REDACTED]"), "{stderr}");
+    assert!(!stderr.contains("ignoring untrusted"), "{stderr}");
+}
+
+#[test]
+fn check_codex_keeps_the_user_layer_when_cwd_is_home() {
+    let env = IsolatedEnv::new();
+    write_xdg_layer(&env, CANARY_RULE);
+    assert_canary_rule_applies(&env, env.home());
+}
+
+#[test]
+fn check_codex_keeps_the_user_layer_when_xdg_config_home_is_under_a_non_git_cwd() {
+    // the cwd is the isolated root, which holds HOME and with it XDG_CONFIG_HOME: the shape
+    // of a probe whose isolated config sits under the non-git $TMPDIR it scans from.
+    let env = IsolatedEnv::new();
+    write_xdg_layer(&env, CANARY_RULE);
+    assert_canary_rule_applies(&env, env.root());
+}
+
+#[test]
+fn check_codex_keeps_a_symlinked_user_layer_when_cwd_is_home() {
+    // a dotfiles layout: the XDG file links to a file elsewhere in HOME, all inside the
+    // workspace when the cwd is HOME.
+    let env = IsolatedEnv::new();
+    let dotfiles = env.home().join("dotfiles");
+    std::fs::create_dir_all(&dotfiles).unwrap();
+    let target = dotfiles.join("sekretbarilo.toml");
+    std::fs::write(&target, CANARY_RULE).unwrap();
+    let dir = env.home().join(".config/sekretbarilo");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::os::unix::fs::symlink(&target, dir.join("sekretbarilo.toml")).unwrap();
+    assert_canary_rule_applies(&env, env.home());
+}
+
+#[test]
+fn check_codex_cwd_through_a_symlinked_workspace_directory_ignores_its_target_layer() {
+    let env = IsolatedEnv::new();
+    let repo = env.git_repo();
+    let outside = env.root().join("outside");
+    std::fs::create_dir_all(&outside).unwrap();
+    std::fs::write(outside.join(".sekretbarilo.toml"), DISABLE_GITHUB_PAT).unwrap();
+    let linked = repo.join("linked");
+    std::os::unix::fs::symlink(&outside, &linked).unwrap();
+    let token = generated_github_token();
+
+    for (event, payload) in [
+        (
+            "PreToolUse",
+            bash_payload(&format!("echo {token}"), &linked),
+        ),
+        (
+            "PostToolUse",
+            post_tool_use_payload(&format!("{token}\n"), &linked),
+        ),
+    ] {
+        let output = run_check_codex_in(&env, &payload, &linked);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(output.status.code(), Some(2), "{event}: {stderr}");
+        assert!(
+            stderr.contains("ignoring untrusted in-workspace config"),
+            "{event}: {stderr}"
+        );
+    }
+}
+
+#[test]
+fn check_codex_still_drops_the_home_hierarchy_layer_when_cwd_is_home() {
+    // ~/.sekretbarilo.toml is a hierarchy layer: with cwd = HOME outside git it lies inside
+    // the workspace and stays untrusted.
+    let env = IsolatedEnv::new();
+    write_xdg_layer(&env, CANARY_RULE);
+    let canary = generated_canary();
+    let body = canary.trim_start_matches("CANARY=");
+    std::fs::write(
+        env.home().join(".sekretbarilo.toml"),
+        format!("[[allowlist.rules]]\nid = \"fixture-canary\"\nregexes = ['^{body}$']\n"),
+    )
+    .unwrap();
+    let payload = |cwd: &Path| bash_payload(&format!("echo {canary}"), cwd);
+
+    let at_home = run_check_codex_in(&env, &payload(env.home()), env.home());
+    let stderr = String::from_utf8_lossy(&at_home.stderr);
+    assert_eq!(at_home.status.code(), Some(2), "{stderr}");
+    assert!(
+        stderr.contains("ignoring untrusted in-workspace config"),
+        "{stderr}"
+    );
+
+    // control: from a subdirectory the same layer lies above the workspace and is honoured.
+    let sub = env.home().join("sub");
+    std::fs::create_dir_all(&sub).unwrap();
+    assert_eq!(
+        run_check_codex_in(&env, &payload(&sub), &sub).status.code(),
+        Some(0)
+    );
+}
+
+#[test]
+fn check_codex_pre_tool_use_relative_empty_or_file_cwd_fails_closed() {
+    let env = IsolatedEnv::new();
+    // the process starts in HOME, where the relative value names a real directory.
+    std::fs::create_dir_all(env.home().join("relative/dir")).unwrap();
+    let file = env.home().join("file.txt");
+    std::fs::write(&file, "").unwrap();
+    let patch = "*** Begin Patch\n*** Add File: clean.rs\n+let clean = true;\n*** End Patch\n";
+    for cwd in [json!("relative/dir"), json!(""), json!(file)] {
+        for (tool, command) in [("Bash", "echo hello"), ("apply_patch", patch)] {
+            let payload = serde_json::to_vec(&json!({
+                "hook_event_name": "PreToolUse",
+                "tool_name": tool,
+                "tool_input": {"command": command},
+                "cwd": cwd,
+            }))
+            .unwrap();
+            let output = run_check_codex_in(&env, &payload, env.home());
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert_eq!(output.status.code(), Some(2), "{tool} {cwd}: {stderr}");
+            assert!(
+                stderr.contains(&format!("Codex {tool} scanner setup failed")),
+                "{tool} {cwd}: {stderr}"
+            );
+        }
+    }
+}
+
+#[test]
+fn check_codex_pre_tool_use_vanished_cwd_uses_its_nearest_existing_ancestor() {
+    // the layer of the vanished cwd's parent applies, not the layers of the process cwd.
+    let env = IsolatedEnv::new();
+    let parent = env.home().join("work");
+    std::fs::create_dir_all(&parent).unwrap();
+    std::fs::write(parent.join(".sekretbarilo.toml"), CANARY_RULE).unwrap();
+    let process_cwd = env.root().join("elsewhere");
+    std::fs::create_dir_all(&process_cwd).unwrap();
+    let vanished = parent.join("removed-worktree");
+    let canary = generated_canary();
+
+    let bash = run_check_codex_in(
+        &env,
+        &bash_payload(&format!("echo {canary}"), &vanished),
+        &process_cwd,
+    );
+    let stderr = String::from_utf8_lossy(&bash.stderr);
+    assert_eq!(bash.status.code(), Some(2), "{stderr}");
+    assert!(stderr.contains("rule: fixture-canary"), "{stderr}");
+
+    let patch = apply_patch_payload(
+        format!("*** Begin Patch\n*** Add File: notes.txt\n+{canary}\n*** End Patch\n"),
+        &vanished,
+    );
+    let apply = run_check_codex_in(&env, &patch, &process_cwd);
+    let stderr = String::from_utf8_lossy(&apply.stderr);
+    assert_eq!(apply.status.code(), Some(2), "{stderr}");
+    assert!(stderr.contains("rule: fixture-canary"), "{stderr}");
+}
+
+#[test]
+fn check_codex_post_tool_use_structured_response_fails_closed() {
+    let env = IsolatedEnv::new();
+    let mut payload: Value =
+        serde_json::from_slice(&post_tool_use_payload("ignored", env.home())).unwrap();
+    payload["tool_response"] = json!({"stdout": "x", "stderr": ""});
+    let result = run_check_codex_in(&env, &serde_json::to_vec(&payload).unwrap(), env.home());
+
+    assert_eq!(result.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&result.stderr).contains("tool_response schema mismatch"));
 }

@@ -408,7 +408,7 @@ This installs the hook in `~/.claude/settings.json` instead of `.claude/settings
 
 ## Setting Up Codex CLI Protection
 
-The Codex hook works in the other direction from the Claude hook: instead of checking a file the agent is about to *read*, it checks what the agent is about to *write* or *run*, before it happens.
+The Codex integration installs two hooks. The `PreToolUse` hook checks what the agent is about to *write* or *run*, before it happens. The `PostToolUse` hook checks the output of a finished `Bash` command before the model sees it: Codex reads files through shell commands, so this is where a `cat` of a secret file is caught and the output withheld.
 
 ### Step-by-step installation
 
@@ -420,13 +420,13 @@ sekretbarilo install agent-hook codex
 Output:
 ```
 [OK] created codex cli hook configuration
-[WARN] IMPORTANT: Codex will silently skip this hook until you approve it.
-       In the Codex TUI, run /hooks and approve the sekretbarilo hook.
+[WARN] IMPORTANT: Codex will silently skip these hooks until you approve them.
+       In the Codex TUI, run /hooks and approve both sekretbarilo hooks (PreToolUse and PostToolUse).
        For non-interactive automation only, --dangerously-bypass-hook-trust bypasses this protection.
 [INFO] detected Codex version: codex-cli 0.145.0
 ```
 
-**Do not skip the approval step.** Codex ignores hooks it has not been asked to trust, and it does so silently — an unapproved hook looks exactly like a working one until a secret slips through. Run `/hooks` in the Codex TUI and approve the sekretbarilo entry.
+**Do not skip the approval step.** Codex ignores hooks it has not been asked to trust, and it does so silently — an unapproved hook looks exactly like a working one until a secret slips through. Run `/hooks` in the Codex TUI and approve both sekretbarilo entries.
 
 ### Global installation
 
@@ -451,8 +451,8 @@ installing claude code agent hook...
 [OK] created claude code hook configuration
 installing codex cli agent hook...
 [OK] created codex cli hook configuration
-[WARN] IMPORTANT: Codex will silently skip this hook until you approve it.
-       In the Codex TUI, run /hooks and approve the sekretbarilo hook.
+[WARN] IMPORTANT: Codex will silently skip these hooks until you approve them.
+       In the Codex TUI, run /hooks and approve both sekretbarilo hooks (PreToolUse and PostToolUse).
        For non-interactive automation only, --dangerously-bypass-hook-trust bypasses this protection.
 [INFO] detected Codex version: codex-cli 0.145.0
 ```

@@ -156,6 +156,26 @@ pub(crate) fn compile_patterns(patterns: &[String]) -> Result<Vec<regex::Regex>,
         .collect()
 }
 
+/// compile exclude patterns for the hook path. the regex compiler quotes the offending pattern,
+/// which is config content, so the error carries a fixed category and the pattern index only.
+pub(crate) fn compile_patterns_redacted(patterns: &[String]) -> Result<Vec<regex::Regex>, String> {
+    patterns
+        .iter()
+        .enumerate()
+        .map(|(index, p)| {
+            RegexBuilder::new(p)
+                .size_limit(1 << 20)
+                .build()
+                .map_err(|_| {
+                    format!(
+                        "an audit exclude pattern is invalid (exclude_patterns entry {})",
+                        index + 1
+                    )
+                })
+        })
+        .collect()
+}
+
 /// result of attempting to read a file for scanning
 pub enum ReadFileResult {
     /// file was read and converted to a DiffFile

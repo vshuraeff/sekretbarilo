@@ -13,6 +13,7 @@ refreshGateway.noteLifecycleChangeHappened();
 runtime.environment["ACME_WIDGET_SERVICE_ACCOUNT"],
 value = CompiledAllowlist::from_config(&config, &rules).unwrap()
 assert!(is_hex_policy_candidate(Some(b"value"), &bytes))
+#[test_case(0x9e37_79b9_7f4a_7c15)]
 # a capture that starts inside a group and closes it is read from the unmatched opener on its left.
     var isEnabled: Bool { preferences.value(forKey: configurationKey).boolValue }
             try await store.update(workspace: activeWorkspace)?.refreshSessions()

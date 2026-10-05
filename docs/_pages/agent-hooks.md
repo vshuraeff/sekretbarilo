@@ -15,6 +15,7 @@ This page is the reference for the agent hooks: what each hook intercepts, how i
 | Claude Code `block` | blocks file reads | `PreToolUse` / `Read` | `<absolute-path-to-running-sekretbarilo> check-file --stdin-json` |
 | Claude Code `redact` | masks successful text results | `PostToolUse` / `Bash`, `Read`, `Grep` | `<absolute-path-to-running-sekretbarilo> redact-claude --stdin-json` |
 | Codex CLI | blocks patches and shell commands | `PreToolUse` / `apply_patch`, `Bash` | `sekretbarilo check-codex --stdin-json` |
+| Codex CLI | withholds completed shell output that contains secrets | `PostToolUse` / `Bash` | `sekretbarilo check-codex --stdin-json` |
 
 In Claude `redact` mode, the tool executes normally and sekretbarilo edits its result in memory before it reaches the model. Coverage depends on the selected tools, detectors, and the hook runtime; see the limitations for each integration below.
 
@@ -114,17 +115,16 @@ To confirm redaction end to end on your own machine, see [Verify redaction with 
 
 ## Codex CLI Integration
 
-Codex CLI is OpenAI's terminal coding agent. It has a hooks system of its own, and sekretbarilo integrates with it through a `PreToolUse` hook:
+Codex CLI is OpenAI's terminal coding agent. It has a hooks system of its own, and sekretbarilo integrates with it through two hooks that run the same command:
 
 **Hook Configuration:**
-- **Hook type**: `PreToolUse` (triggered before the matched tool executes)
-- **Tool matcher**: `^(apply_patch|Bash)$` — the matcher is a regex, not a literal tool name
-- **Command**: `sekretbarilo check-codex --stdin-json`
+- **`PreToolUse`** (before the matched tool executes): matcher `^(apply_patch|Bash)$`, status message "Scanning tool input for secrets..."
+- **`PostToolUse`** (after a `Bash` command has finished, before its output reaches the model): matcher `^Bash$`, status message "Scanning tool output for secrets..."
+- **Command**: `sekretbarilo check-codex --stdin-json` for both; the matcher is a regex, not a literal tool name
 - **Timeout**: 10 seconds
-- **Status message**: "Scanning tool input for secrets..."
 - **Config file**: `hooks.json`, global or project-local (see [Where the Configuration Lives](#where-the-configuration-lives))
 
-Where the Claude Code hook guards the read direction, the Codex hook guards the write direction: it inspects the changes the agent is about to apply and the shell commands it is about to run. You never invoke `check-codex` yourself — Codex calls it and sends the `PreToolUse` payload on stdin.
+The `PreToolUse` hook guards the write direction: it inspects the changes the agent is about to apply and the shell commands it is about to run. The `PostToolUse` hook guards the read direction. Codex has no Read tool and reads files through shell commands, so the output of a finished `Bash` call is where a secret would reach the model. You never invoke `check-codex` yourself — Codex calls it and sends the hook payload on stdin. The `PostToolUse` hook arrived in sekretbarilo 0.10.0.
 
 `--stdin-json` is **mandatory** for `check-codex`. The bare command has no other input to read, so it refuses rather than guessing:
 
@@ -135,7 +135,7 @@ $ sekretbarilo check-codex
 
 The command the installer writes already includes the flag, so an existing installation needs no change.
 
-Two things about this integration are easy to get wrong, and both are covered below: **an installed hook does not run until you approve it** (see [Hook Trust](#hook-trust)), and the hook **cannot stop Codex from reading a file** (see [Limitations](#limitations)).
+Two things about this integration are easy to get wrong, and both are covered below: **an installed hook does not run until you approve it** (see [Hook Trust](#hook-trust)), and the output hook **only sees output from commands that have finished** (see [Limitations](#limitations)).
 
 ### What the Hook Covers
 
@@ -160,14 +160,25 @@ api_key: ...
 EOF
 ```
 
+**`Bash` output** (`PostToolUse`) — when a `Bash` command finishes, Codex hands the hook the output it is about to give the model. sekretbarilo scans it with the detectors and trusted configuration layers that Claude [redact mode](#redact-mode-output-editor) uses. Clean output passes unchanged. If the output contains a secret, the hook exits 2 and Codex gives the model the hook's reason **instead of** the output. The reason says that sekretbarilo withheld the output and that the command already ran, and then shows the output with every detected value replaced by `[REDACTED]`:
+
+```
+[AGENT] sekretbarilo withheld this Bash output: 1 secret finding(s). The command already ran.
+Output with secret values replaced by [REDACTED]:
+APP_ENV=prod
+GITHUB_TOKEN=[REDACTED]
+```
+
+Line breaks and tabs are kept, and other control and bidirectional characters are stripped, as in every block reason. The stripped text is redacted and scanned again as it will be shown, because removing a control character can join two halves of a value; if anything is still detected, the output is withheld whole with the masked findings list. An output that is still over 64 KiB after redaction is withheld whole, and the reason lists at most 20 masked findings (line, rule, masked value) in place of the text. A value that several rules detect is one finding, counted and listed once with its rule ids joined by commas. A payload whose `tool_response` is not a plain string, a configuration that cannot be loaded, and any other internal error also withhold the output. Codex itself would keep the original output on a hook failure, so sekretbarilo fails closed on its own side.
+
 ### Blocking
 
 The hook blocks by exiting with code 2 and writing the reason to stderr. Codex surfaces that reason to the model, so the agent learns why the patch or command was refused and can correct itself instead of retrying blindly. Secret values in the reason are masked (first two and last two characters), exactly as in every other sekretbarilo output.
 
 | Exit Code | Meaning | Codex Action |
 |-----------|---------|--------------|
-| 0 | no secrets in the patch or command | Allow the tool call |
-| 2 | secrets found, `.env` target, or error | Block the tool call |
+| 0 | no secrets in the patch, command or output | Allow the tool call, or pass the output through |
+| 2 | secrets found, `.env` target, or error | Block the tool call (`PreToolUse`), or replace the output with the reason (`PostToolUse`) |
 
 A secret block looks like this:
 
@@ -212,7 +223,7 @@ Why this matters more here than elsewhere is explained in [How the agent hooks w
 
 #### Payload Size
 
-The hook reads at most 10 MiB from stdin. An oversized `PreToolUse` payload is rejected and the tool call blocked, rather than scanned in part — the same fail-closed choice made everywhere else:
+The hook reads at most 10 MiB from stdin. An oversized payload is rejected, blocking the tool call or withholding the output, rather than scanned in part — the same fail-closed choice made everywhere else:
 
 ```
 Codex hook payload truncated: input exceeds 10485760 bytes
@@ -248,15 +259,30 @@ This is what sekretbarilo writes:
           }
         ]
       }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "^Bash$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sekretbarilo check-codex --stdin-json",
+            "timeout": 10,
+            "statusMessage": "Scanning tool output for secrets..."
+          }
+        ]
+      }
     ]
   }
 }
 ```
 
+The installer writes the absolute path of the running binary in place of the bare `sekretbarilo`, so Codex does not depend on its own `PATH`. Re-running the installer on an older installation that has only the `PreToolUse` group appends the `PostToolUse` group and leaves every existing group where it was.
+
 Points worth knowing if you ever hand-edit the file:
 
 - The root object accepts exactly two keys, `hooks` and `description`, and **rejects anything else**. An unrecognised top-level key makes Codex drop that layer's hooks entirely — with only a log warning and nothing visible at the point of use. A typo at the root silently disarms every hook in that file.
-- Event keys are PascalCase (`PreToolUse`).
+- Event keys are PascalCase (`PreToolUse`, `PostToolUse`).
 - `timeout` is in **seconds**, and defaults to 600 when omitted.
 - `statusMessage` is camelCase.
 - `matcher` is a regex and is optional; omitting it matches every tool.
@@ -270,7 +296,7 @@ Codex also accepts a second, equivalent representation of the same hooks — a `
 
 **Codex does not run a newly installed hook until you approve it.** An unapproved hook is skipped silently — no error, no warning at the point of use — so the installation looks complete while nothing is actually being scanned. This is the single most common reason for "I installed the hook and it never fires".
 
-Approve the hook from the Codex TUI:
+Approve the hooks from the Codex TUI. sekretbarilo installs two, the `PreToolUse` one and the `PostToolUse` one, and each needs its own approval:
 
 ```
 /hooks
@@ -284,15 +310,18 @@ For non-interactive environments where no one can answer a prompt — CI jobs, c
 
 ### Version Requirements
 
-The integration is verified against codex-cli `0.145.0`. Older releases may not deliver `PreToolUse` for `apply_patch`. If patches are being applied without ever reaching sekretbarilo, upgrade Codex CLI before debugging anything else.
+The `PreToolUse` hook is verified against codex-cli `0.145.0`, and the `PostToolUse` output hook against `0.159.3`. Older releases may not deliver `PreToolUse` for `apply_patch`, or `PostToolUse` for `Bash`. If patches are being applied, or secrets shown, without ever reaching sekretbarilo, upgrade Codex CLI before debugging anything else.
 
 ### Limitations
 
-The Codex hook is a narrower instrument than the Claude Code hook. Know what it does not do:
+Know what the Codex hooks do not do:
 
-- **No read protection.** Codex's hook surface has no equivalent of Claude Code's `Read` tool, so there is no way to stop the agent from *reading* a file that contains a secret. This is an upstream capability gap, not a sekretbarilo choice.
-- **The `Bash` check is textual.** The command string is scanned as text. sekretbarilo does not parse shell syntax, does not expand variables, and does not analyse redirect targets, so the check can be circumvented deliberately. Treat it as a guardrail against accidental leakage, not as a sandbox.
-- **Write direction only.** Coverage is `apply_patch` and `Bash`. Nothing else Codex does is intercepted.
+- **Streaming output is not covered.** Codex runs `PostToolUse` only when a command has finished. Output it hands the model while a command is still running, including each intermediate `write_stdin` poll of an interactive or long-running process, never passes through the hook. A command that prints a secret and keeps running leaks that chunk.
+- **Codex fails open.** If the output hook is not approved, times out, crashes, or prints something Codex cannot parse, Codex keeps the original output. sekretbarilo fails closed on every error it can see, but it cannot cover a hook that never ran.
+- **Codex's local logs.** Replacing the result for the model does not remove the original output from Codex's own local session logs.
+- **The command has already run.** The output hook hides output from the model; it does not undo the command or anything the command sent elsewhere.
+- **The `Bash` checks are textual.** The command string and the output are scanned as text. sekretbarilo does not parse shell syntax, does not expand variables, and does not analyse redirect targets, so the checks can be circumvented deliberately. Treat them as a guardrail against accidental leakage, not as a sandbox.
+- **`apply_patch` and `Bash` only.** Nothing else Codex does is intercepted, including MCP tool results.
 
 ## Claude Code Block Pipeline
 
@@ -635,11 +664,15 @@ The agent hooks — and only the agent hooks — require a `.sekretbarilo.toml` 
 
 The reason for the rule is explained in [How the agent hooks work]({{ '/how-agent-hooks-work/#why-in-workspace-config-must-be-committed' | relative_url }}).
 
-Layers above the repo root — a parent directory, `~/.sekretbarilo.toml`, the XDG user config, `/etc/sekretbarilo.toml` — are loaded normally, and `scan`/`audit` are not affected at all. If a value exception works under `sekretbarilo audit` but the hook still detects it, check whether the config is committed. Full detail in [Configuration]({{ '/configuration/#in-workspace-config-trust-agent-hooks-only' | relative_url }}).
+A `.sekretbarilo.toml` that is a symlink inside the working tree is dropped the same way even when committed, because git vouches for the link text and not for the file it points to. Outside a git repository the workspace is the working directory, and a layer there is always dropped.
+
+Layers above the repo root — a parent directory, `~/.sekretbarilo.toml` — are loaded normally. The XDG user config and `/etc/sekretbarilo.toml` are loaded wherever the working directory is, `$HOME` included. `scan`/`audit` are not affected at all. If a value exception works under `sekretbarilo audit` but the hook still detects it, check whether the config is committed and is not a symlink. Full detail in [Configuration]({{ '/configuration/#in-workspace-config-trust-agent-hooks-only' | relative_url }}).
+
+`check-codex` finds the configuration from the payload's `cwd` for both events. A `cwd` that is empty, relative, or not a directory blocks the tool call, or withholds its output, with a scanner setup error, rather than falling back to the process directory, whose layers belong to another workspace. A `cwd` that no longer exists, such as a worktree a command removed, is resolved to its nearest existing parent, as in Claude redact mode. Only an absent `cwd` uses the process directory.
 
 ### Path Allowlists and Tool Text
 
-**Path allowlists do not apply to Codex `Bash` command text or any Claude `redact` output.** `[allowlist] paths` and per-rule `paths` cannot suppress findings in those text modes. Stopwords, per-rule value regexes, entropy thresholds, and `detect_public_keys` still apply. Path allowlists work normally for `apply_patch` target paths and `check-file`. Redaction also ignores audit path exclusions and documentation-specific relaxations.
+**Path allowlists do not apply to Codex `Bash` command text, Codex `Bash` output, or any Claude `redact` output.** `[allowlist] paths` and per-rule `paths` cannot suppress findings in those text modes. Stopwords, per-rule value regexes, entropy thresholds, and `detect_public_keys` still apply. Path allowlists work normally for `apply_patch` target paths and `check-file`. Redaction also ignores audit path exclusions and documentation-specific relaxations.
 
 ### Hierarchical Config Discovery
 
@@ -749,13 +782,13 @@ The Codex installer has the same three outcomes, worded for its own target:
 ```sh
 $ sekretbarilo install agent-hook codex
 [OK] created codex cli hook configuration
-[WARN] IMPORTANT: Codex will silently skip this hook until you approve it.
-       In the Codex TUI, run /hooks and approve the sekretbarilo hook.
+[WARN] IMPORTANT: Codex will silently skip these hooks until you approve them.
+       In the Codex TUI, run /hooks and approve both sekretbarilo hooks (PreToolUse and PostToolUse).
        For non-interactive automation only, --dangerously-bypass-hook-trust bypasses this protection.
-[INFO] detected Codex version: codex-cli 0.145.0
+[INFO] detected Codex version: codex-cli 0.159.3
 ```
 
-Re-running it reports `[OK] sekretbarilo already installed in codex cli hooks`; finding an older command in `hooks.json` produces `[OK] updated codex cli hook configuration`. Existing hooks in the file are preserved either way, as with Claude Code — a `PreToolUse` group of your own stays where it is, and sekretbarilo's group is appended after it.
+Re-running it reports `[OK] sekretbarilo already installed in codex cli hooks` when both hooks are present; finding an older command in `hooks.json`, or an installation from before 0.10.0 without the `PostToolUse` hook, produces `[OK] updated codex cli hook configuration`. Existing hooks in the file are preserved either way, as with Claude Code — a `PreToolUse` or `PostToolUse` group of your own stays where it is, and sekretbarilo's group is appended after it.
 
 The trust reminder is printed on **every** run, including the already-installed one, because installing and approving are separate steps and only the first is something sekretbarilo can do (see [Hook Trust](#hook-trust)).
 
@@ -872,15 +905,16 @@ For both local (`./.codex/hooks.json`) and global (`$CODEX_HOME/hooks.json`, by 
 3. **PreToolUse entry exists**: the hooks structure is present under the `hooks` root key
 4. **Matcher covers the tools**: the entry matches `apply_patch` and `Bash`
 5. **Command matches**: the command is `sekretbarilo check-codex --stdin-json`
-6. **Unrecognised root key**: warns if `hooks.json` has a top-level key other than `hooks` or `description`, which makes Codex discard that file's hooks entirely
-7. **Approval entry**: looks for the `[hooks.state]` entry Codex writes when you approve the hook
-8. **Codex on PATH**: reports the `codex` binary and its version
+6. **Output hook**: the same command under `PostToolUse` with the matcher `^Bash$`, reported as `codex cli output hook`; a missing one is a warning to re-run the installer, because without it `Bash` output reaches the model unscanned
+7. **Unrecognised root key**: warns if `hooks.json` has a top-level key other than `hooks` or `description`, which makes Codex discard that file's hooks entirely
+8. **Approval entries**: looks for the `[hooks.state]` entry Codex writes when you approve each hook
+9. **Codex on PATH**: reports the `codex` binary and its version
 
 Doctor also reports, in the **configuration** group, any in-workspace `.sekretbarilo.toml` that is untracked or has uncommitted changes — the agent hooks ignore such a layer entirely. See [Config Inside the Repository Must Be Committed](#config-inside-the-repository-must-be-committed).
 
 #### The Approval Check Is Positional
 
-Codex keys its approval by source file, event, and **index** — `<path>:pre_tool_use:<group>:<handler>`. Doctor looks for the key matching the position sekretbarilo's hook actually occupies. That distinction matters on a machine that already has Codex hooks of its own: sekretbarilo's group is appended after them, so it sits at a non-zero group index and needs its **own** approval. Approving somebody else's hook, or approving ours before the indices shifted, does not count:
+Codex keys its approval by source file, event, and **index** — `<path>:pre_tool_use:<group>:<handler>` for the input hook and `<path>:post_tool_use:<group>:<handler>` for the output hook, so approving one never approves the other. Doctor looks for the key matching the position sekretbarilo's hook actually occupies. That distinction matters on a machine that already has Codex hooks of its own: sekretbarilo's group is appended after them, so it sits at a non-zero group index and needs its **own** approval. Approving somebody else's hook, or approving ours before the indices shifted, does not count:
 
 ```
   [WARN] local codex cli hook: an approval entry exists in ~/.codex/config.toml but not for this hook's position (group 1, handler 0); codex silently skips unapproved hooks; the indices may have shifted; re-approve with /hooks in the Codex TUI

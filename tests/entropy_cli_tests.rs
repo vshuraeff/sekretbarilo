@@ -39,6 +39,18 @@ fn stderr(output: &Output) -> String {
 }
 
 #[test]
+fn exempt_alternation_reports_the_words_its_verdict_rests_on() {
+    let output = run_entropy(&["entropy"], b"^(ERROR|WARNING|FATAL|panicked|timeout)$\n");
+
+    assert_eq!(output.status.code(), Some(0));
+    let stderr = stderr(&output);
+    assert!(
+        stderr.contains("word_structure: exempt words=5 "),
+        "counts must match the exempt verdict: {stderr}"
+    );
+}
+
+#[test]
 fn reports_passing_length_and_entropy_gates_for_mixed_case_token() {
     let output = run_entropy(&["entropy"], &alphabetic_token(32));
 

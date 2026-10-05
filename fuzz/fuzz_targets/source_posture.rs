@@ -10,10 +10,21 @@ use sekretbarilo::scanner::engine::{Finding, scan};
 use sekretbarilo::scanner::rules::{CompiledScanner, compile_rules, load_default_rules};
 
 static SCANNER: OnceLock<CompiledScanner> = OnceLock::new();
+static SETTINGS: OnceLock<(CompiledAllowlist, CompiledAllowlist)> = OnceLock::new();
 
 fn scanner() -> &'static CompiledScanner {
     SCANNER.get_or_init(|| {
         compile_rules(&load_default_rules().expect("default rules")).expect("scanner")
+    })
+}
+
+fn settings() -> &'static (CompiledAllowlist, CompiledAllowlist) {
+    SETTINGS.get_or_init(|| {
+        let mut all = CompiledAllowlist::default_allowlist().expect("allowlist");
+        all.source_posture = Some(SourcePosture::All);
+        let mut literals = CompiledAllowlist::default_allowlist().expect("allowlist");
+        literals.source_posture = Some(SourcePosture::Literals);
+        (all, literals)
     })
 }
 
@@ -63,12 +74,9 @@ fuzz_target!(|data: &[u8]| {
             })
             .collect(),
     };
-    let mut all_settings = CompiledAllowlist::default_allowlist().expect("allowlist");
-    all_settings.source_posture = Some(SourcePosture::All);
-    let mut literals_settings = CompiledAllowlist::default_allowlist().expect("allowlist");
-    literals_settings.source_posture = Some(SourcePosture::Literals);
-    let all = scan(std::slice::from_ref(&file), scanner(), &all_settings);
-    let narrowed = scan(&[file], scanner(), &literals_settings);
+    let (all_settings, literals_settings) = settings();
+    let all = scan(std::slice::from_ref(&file), scanner(), all_settings);
+    let narrowed = scan(&[file], scanner(), literals_settings);
 
     for finding in all.iter().chain(narrowed.iter()) {
         assert_eq!(finding.file, path);

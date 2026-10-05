@@ -168,21 +168,25 @@ fn collected_arguments_never_hide_regex_candidates() {
 fn line_breaks_carry_only_balanced_call_context() {
     let s = token(17);
     let t = token(19);
-    for text in [
+    for (text, reported) in [
         // an unclosed literal resets the open call, so the next line starts outside it.
-        format!("build(\"{t}\n, \"{s}\")"),
-        format!("it's (\n, \"{s}\")"),
-        // brackets and braces open no call, whether or not the literal shares their line.
-        format!("[\n    \"safe\",\n    \"{s}\",\n]"),
-        format!("{{\n    \"safe\",\n    \"{s}\",\n}}"),
+        (format!("build(\"{t}\n, \"{s}\")"), false),
+        (format!("it's (\n, \"{s}\")"), false),
+        // comma-terminated standalone literals are now direct regex candidates, even without
+        // call context; a following argument prevents that direct reading.
+        (format!("[\n    \"safe\",\n    \"{s}\",\n]"), true),
+        (format!("{{\n    \"safe\",\n    \"{s}\",\n}}"), true),
+        (format!("[\n    \"safe\",\n    \"{s}\", next\n]"), false),
         // a closed call carries nothing into the next line.
-        format!("build(\"safe\")\n, \"{s}\""),
-        format!("build(\"safe\"),\n    \"{s}\","),
+        (format!("build(\"safe\")\n, \"{s}\""), false),
+        (format!("build(\"safe\"),\n    \"{s}\","), true),
     ] {
-        assert!(
-            scan_text(&text, &SCANNER, &allowlist()).is_empty(),
-            "{text:?}"
-        );
+        let expected = if reported {
+            vec![(ENTROPY.to_owned(), 0..s.len())]
+        } else {
+            Vec::new()
+        };
+        assert_eq!(body_matches(&text, &s, &allowlist()), expected, "{text:?}");
     }
 }
 
@@ -198,7 +202,7 @@ fn call_context_crosses_lines_only_within_the_span_and_depth_bounds() {
     let s = token(23);
     let filler = "    another_positional_argument,\n";
     for (lines, reported) in [(100, true), (200, false)] {
-        let text = format!("build(\n{}    \"{s}\",\n)", filler.repeat(lines));
+        let text = format!("build(\n{}    \"{s}\", next\n)", filler.repeat(lines));
         assert_eq!(
             text.find(&s).unwrap() <= 4096,
             reported,
@@ -208,7 +212,7 @@ fn call_context_crosses_lines_only_within_the_span_and_depth_bounds() {
     }
     for (depth, reported) in [(16, true), (17, false)] {
         let text = format!(
-            "{}\n    \"{s}\",\n{}",
+            "{}\n    \"{s}\", next\n{}",
             "call(".repeat(depth),
             ")".repeat(depth)
         );
@@ -292,12 +296,18 @@ fn diff_surface_carries_multiline_calls_through_the_literal_tracker() {
 #[test]
 fn diff_surface_without_a_literal_tracker_sees_one_line_at_a_time() {
     let s = token(31);
-    let text = format!("build(\n    \"{s}\",\n)");
+    let direct = format!("build(\n    \"{s}\",\n)");
+    let contextual = format!("build(\n    \"{s}\", another\n)");
     for path in ["notes/shapes.txt", "config/settings.yaml"] {
         for with_context in [false, true] {
+            assert_eq!(
+                diff_values(path, &direct, with_context, &allowlist()),
+                [format!("{ENTROPY} {s}")],
+                "direct {path} context={with_context}"
+            );
             assert!(
-                diff_values(path, &text, with_context, &allowlist()).is_empty(),
-                "{path} context={with_context}"
+                diff_values(path, &contextual, with_context, &allowlist()).is_empty(),
+                "contextual {path} context={with_context}"
             );
         }
         assert_eq!(

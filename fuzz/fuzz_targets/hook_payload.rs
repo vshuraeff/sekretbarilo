@@ -51,17 +51,27 @@ fn check_claude(text: &str) {
     assert_eq!(parse_hook_payload(&rebuilt), Ok((file_path, cwd)));
 }
 
-fn check_codex_fields(payload: &Map<String, Value>, scanned: Option<(&str, &str, Option<&str>)>) {
+fn check_codex_fields(
+    payload: &Map<String, Value>,
+    scanned: Option<(&str, &str, &str, Option<&str>)>,
+) {
     let text = |name: &str| payload.get(name).and_then(Value::as_str);
     let (Some(event), Some(tool)) = (text("hook_event_name"), text("tool_name")) else {
         panic!("an accepted payload names its event and its tool");
     };
     assert!(payload.contains_key("tool_input"));
     match scanned {
-        None => assert!(event != "PreToolUse" || !matches!(tool, "apply_patch" | "Bash")),
-        Some((scanned_tool, command, cwd)) => {
-            assert_eq!((event, tool), ("PreToolUse", scanned_tool));
-            assert_eq!(payload["tool_input"]["command"].as_str(), Some(command));
+        None => assert!(
+            !(event == "PreToolUse" && matches!(tool, "apply_patch" | "Bash")
+                || event == "PostToolUse" && tool == "Bash")
+        ),
+        Some((scanned_event, scanned_tool, scanned_text, cwd)) => {
+            assert_eq!((event, tool), (scanned_event, scanned_tool));
+            if scanned_event == "PostToolUse" {
+                assert_eq!(text("tool_response"), Some(scanned_text));
+            } else {
+                assert_eq!(payload["tool_input"]["command"].as_str(), Some(scanned_text));
+            }
             assert_eq!(text("cwd"), cwd);
         }
     }
@@ -87,24 +97,39 @@ fn check_codex(data: &[u8]) {
     let scanned = match &call {
         CodexToolCall::Unscanned => None,
         CodexToolCall::ApplyPatch { command, cwd } => {
-            Some(("apply_patch", command.as_str(), cwd.as_deref()))
+            Some(("PreToolUse", "apply_patch", command.as_str(), cwd.as_deref()))
         }
-        CodexToolCall::Bash { command, cwd } => Some(("Bash", command.as_str(), cwd.as_deref())),
+        CodexToolCall::Bash { command, cwd } => {
+            Some(("PreToolUse", "Bash", command.as_str(), cwd.as_deref()))
+        }
+        CodexToolCall::BashOutput { output, cwd } => {
+            Some(("PostToolUse", "Bash", output.as_str(), cwd.as_deref()))
+        }
     };
     // serde's derived structs also take positional arrays; the named checks read objects
     if let Value::Object(payload) = &value {
         check_codex_fields(payload, scanned);
     }
 
-    let Some((tool, command, cwd)) = scanned else {
+    let Some((event, tool, text, cwd)) = scanned else {
         return;
     };
-    let rebuilt = json!({
-        "hook_event_name": "PreToolUse",
-        "tool_name": tool,
-        "tool_input": {"command": command},
-        "cwd": cwd,
-    });
+    let rebuilt = if event == "PostToolUse" {
+        json!({
+            "hook_event_name": event,
+            "tool_name": tool,
+            "tool_input": {},
+            "tool_response": text,
+            "cwd": cwd,
+        })
+    } else {
+        json!({
+            "hook_event_name": event,
+            "tool_name": tool,
+            "tool_input": {"command": text},
+            "cwd": cwd,
+        })
+    };
     let rebuilt = serde_json::to_vec(&rebuilt).expect("a json value serializes");
     assert_eq!(parse_codex_payload(&rebuilt), Ok(call));
 }

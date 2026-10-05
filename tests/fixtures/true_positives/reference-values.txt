@@ -3,6 +3,8 @@
 # so each value stays reported in every position the path recognizers read.
 # format: <rule id> TAB <line>.
 generic-high-entropy-value	cache_dir="${STATE_DIR:-{S32}}/settings.log"
+generic-high-entropy-value	${VAR:-{S32}}
+generic-high-entropy-value	${VAR:={B64_44}}
 generic-high-entropy-value	cache_dir="$HOME/{S32}"
 generic-high-entropy-value	cache_dir="$HOME/{S32}/settings.log"
 generic-high-entropy-value	message_log="${STATE_DIR:?{S32}}/run.log"

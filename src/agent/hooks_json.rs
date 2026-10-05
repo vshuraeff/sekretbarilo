@@ -34,9 +34,14 @@ pub(crate) struct HookSearch {
     pub(crate) exact_hook: Option<(usize, usize)>,
 }
 
-/// find a hook group and sekretbarilo handler without mutating the config.
-pub(crate) fn find_hook(root: &serde_json::Value, matcher: &str, command: &str) -> HookSearch {
-    find_hook_for_event_matching(root, "PreToolUse", matcher, command, |found_command| {
+/// find a codex hook group and sekretbarilo handler under one event without mutating the config.
+pub(crate) fn find_hook(
+    root: &serde_json::Value,
+    event: &str,
+    matcher: &str,
+    command: &str,
+) -> HookSearch {
+    find_hook_for_event_matching(root, event, matcher, command, |found_command| {
         sekretbarilo_subcommand_executable(found_command, "check-codex").is_some()
     })
 }
@@ -162,7 +167,12 @@ mod tests {
             ]
         }});
         let original = config.clone();
-        let codex = find_hook(&config, "Bash", "sekretbarilo check-codex --stdin-json");
+        let codex = find_hook(
+            &config,
+            "PreToolUse",
+            "Bash",
+            "sekretbarilo check-codex --stdin-json",
+        );
         assert_eq!(codex.matching_group_index, Some(1));
         assert_eq!(codex.exact_hook, Some((1, 1)));
         let redact = find_hook_for_event(
@@ -189,7 +199,12 @@ mod tests {
             }]
         }});
 
-        let result = find_hook(&config, "Bash", "sekretbarilo check-codex --stdin-json");
+        let result = find_hook(
+            &config,
+            "PreToolUse",
+            "Bash",
+            "sekretbarilo check-codex --stdin-json",
+        );
         assert_eq!(result.first_sekretbarilo_hook, Some((0, 2)));
         assert_eq!(result.exact_hook, Some((0, 2)));
     }

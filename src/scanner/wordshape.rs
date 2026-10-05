@@ -384,6 +384,30 @@ pub fn analyze(value: &[u8]) -> WordStructure {
     report
 }
 
+/// sums `analyze` over every maximal run of word bytes, so a value `analyze` rejects for its
+/// syntax bytes (an alternation, a search pattern) still reports the words its verdict rests on.
+pub fn analyze_word_runs(value: &[u8]) -> WordStructure {
+    let mut total = WordStructure {
+        words: 0,
+        short_words: 0,
+        longest_word: 0,
+        digit_bytes: 0,
+        rejected_byte: true,
+    };
+    for run in value
+        .split(|&byte| !(byte.is_ascii_alphanumeric() || is_separator(byte)))
+        .filter(|run| !run.is_empty())
+    {
+        let report = analyze(run);
+        total.words += report.words;
+        total.short_words += report.short_words;
+        total.longest_word = total.longest_word.max(report.longest_word);
+        total.digit_bytes += report.digit_bytes;
+        total.rejected_byte = false;
+    }
+    total
+}
+
 // wired in the exemption-layer glue
 #[allow(dead_code)]
 /// recognizes identifier structure, or a search-pattern alternation whose every item is either a
@@ -925,8 +949,8 @@ fn is_identifier_structured(value: &[u8]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        PieceWords, analyze, is_chunked, is_chunked_with_digits, is_known_short_word,
-        is_word_structured, wordlike_piece,
+        PieceWords, analyze, analyze_word_runs, is_chunked, is_chunked_with_digits,
+        is_known_short_word, is_word_structured, wordlike_piece,
     };
     use crate::scanner::entropy::shannon_entropy;
 
@@ -1182,6 +1206,18 @@ mod tests {
             "human passphrases at entropy >= 4.0: {high_entropy}/{}",
             passphrases.len()
         );
+    }
+
+    #[test]
+    fn analyze_word_runs_counts_the_runs_of_an_alternation() {
+        let value = b"^(ERROR|WARNING|FATAL|panicked|timeout)$";
+        assert!(is_word_structured(value));
+        assert_eq!(analyze(value).words, 0);
+        let report = analyze_word_runs(value);
+        assert_eq!(report.words, 5);
+        assert_eq!(report.longest_word, 8);
+        assert!(!report.rejected_byte);
+        assert!(analyze_word_runs(b"()|").rejected_byte);
     }
 
     #[test]

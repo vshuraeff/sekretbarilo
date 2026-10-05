@@ -114,6 +114,7 @@ fn parse_cli(
     let mut audit_flags = AuditFlags::default();
     let mut check_file_flags = CheckFileFlags::default();
     let mut install_flags = InstallFlags::default();
+    let mut hook_help = false;
 
     while let Some(arg) = opts.next_arg().map_err(|e| e.to_string())? {
         match arg {
@@ -145,11 +146,30 @@ fn parse_cli(
             // help (before a subcommand)
             Arg::Long("help") if command.is_none() => command = Some(Command::Help),
             Arg::Short('h') if command.is_none() => command = Some(Command::Help),
-            // help after any subcommand: same outcome as top-level --help, short-circuiting
-            // whatever flags were already collected so they are never re-validated
+            // install has dedicated help; hook help still validates stdin-json mode.
             Arg::Long("help") | Arg::Short('h') => {
+                if matches!(
+                    command,
+                    Some(Command::CheckFile | Command::CheckCodex | Command::RedactClaude)
+                ) {
+                    // parse remaining hook flags so help cannot bypass stdin-json validation.
+                    hook_help = true;
+                    continue;
+                }
                 return Ok((
-                    Command::Help,
+                    if matches!(
+                        command,
+                        Some(
+                            Command::InstallPreCommit
+                                | Command::InstallAgentHook(_)
+                                | Command::InstallAll
+                                | Command::InstallHelp
+                        )
+                    ) {
+                        Command::InstallHelp
+                    } else {
+                        Command::Help
+                    },
                     CliOverrides::default(),
                     AuditFlags::default(),
                     CheckFileFlags::default(),
@@ -252,6 +272,19 @@ fn parse_cli(
     }
 
     let command = command.unwrap_or(Command::Help);
+
+    if hook_help {
+        if check_file_flags.stdin_json {
+            return Err("help cannot be combined with --stdin-json".to_string());
+        }
+        return Ok((
+            Command::Help,
+            CliOverrides::default(),
+            AuditFlags::default(),
+            CheckFileFlags::default(),
+            InstallFlags::default(),
+        ));
+    }
 
     // validate check-file flags
     if command != Command::CheckFile
@@ -411,6 +444,24 @@ fn parse_install_subcommand<'a, I: Iterator<Item = &'a str>>(
 fn run() -> i32 {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.first().is_some_and(|arg| arg == "help") {
+        if matches!(
+            args[1..]
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>()
+                .as_slice(),
+            ["--help" | "-h"]
+        ) {
+            print_usage();
+            return 0;
+        }
+        // `help <topic> -h` shows the topic itself rather than the general usage
+        if let [topic, flag] = &args[1..]
+            && matches!(topic.as_str(), "config" | "rules")
+            && matches!(flag.as_str(), "--help" | "-h")
+        {
+            return help::run(std::slice::from_ref(topic));
+        }
         return help::run(&args[1..]);
     }
 
@@ -487,7 +538,12 @@ fn run_entropy() -> i32 {
 
     let entropy = scanner::entropy::shannon_entropy(&bytes);
     let ceiling = (bytes.len().min(256) as f64).log2();
-    let word_structure = scanner::wordshape::analyze(&bytes);
+    let word_structured = scanner::wordshape::is_word_structured(&bytes);
+    let mut word_structure = scanner::wordshape::analyze(&bytes);
+    if word_structured && word_structure.rejected_byte {
+        // an alternation or search pattern is exempt on its word runs, so count those
+        word_structure = scanner::wordshape::analyze_word_runs(&bytes);
+    }
     let length_gate = if bytes.len() >= scanner::entropy::MIN_ENTROPY_LENGTH {
         "pass"
     } else {
@@ -499,7 +555,7 @@ fn run_entropy() -> i32 {
     } else {
         "not eligible"
     };
-    let word_structure_status = if scanner::wordshape::is_word_structured(&bytes) {
+    let word_structure_status = if word_structured {
         "exempt"
     } else {
         "not exempt"
@@ -1090,10 +1146,6 @@ mod tests {
         for sub in [
             "scan",
             "audit",
-            "install pre-commit",
-            "install all",
-            "install agent-hook claude",
-            "install agent-hook codex",
             "doctor",
             "check-file",
             "check-codex",

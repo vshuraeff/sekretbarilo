@@ -57,13 +57,18 @@ const NEAR_DISTINCT_RATIO: f64 = 0.8;
 /// run of token length is never one, and no run of short groups may cross it. a value that could be a token standing alone (`MIN_ENTROPY_LENGTH` bytes
 /// or more, the rule's own `entropy_floor` cleared, bytes near-distinct under
 /// `NEAR_DISTINCT_RATIO`) is never one, whatever its pieces read as.
-fn is_source_expression_value(value: &[u8], entropy_floor: Option<f64>) -> bool {
+fn is_source_expression_value(
+    value: &[u8],
+    entropy_floor: Option<f64>,
+    secret_reference_key: bool,
+) -> bool {
     use crate::scanner::wordshape;
     let value = value
         .strip_suffix(b",")
         .or_else(|| value.strip_suffix(b";"))
         .unwrap_or(value);
-    if value.len() >= entropy::MIN_ENTROPY_LENGTH
+    if !secret_reference_key
+        && value.len() >= entropy::MIN_ENTROPY_LENGTH
         && entropy_floor.is_none_or(|threshold| entropy::shannon_entropy(value) >= threshold)
         && folded_distinct_ratio(value) >= NEAR_DISTINCT_RATIO
     {
@@ -90,6 +95,39 @@ fn is_source_expression_value(value: &[u8], entropy_floor: Option<f64>) -> bool 
         && !wordshape::is_chunked_with_digits(value, b"")
 }
 
+/// whether the matched unquoted assignment names a secret reference rather than a secret value.
+fn is_secret_reference_assignment(prefix: &[u8]) -> bool {
+    fn compact_suffix(key: &[u8], suffix: &[u8]) -> bool {
+        let mut bytes = key
+            .iter()
+            .rev()
+            .filter(|byte| !matches!(**byte, b'_' | b'-'));
+        suffix.iter().rev().all(|expected| {
+            bytes
+                .next()
+                .is_some_and(|byte| byte.eq_ignore_ascii_case(expected))
+        })
+    }
+
+    let prefix = prefix.trim_ascii_end();
+    let prefix = prefix
+        .strip_suffix(b":=")
+        .or_else(|| prefix.strip_suffix(b"="))
+        .or_else(|| prefix.strip_suffix(b":"))
+        .unwrap_or(prefix)
+        .trim_ascii_end();
+    let key = prefix
+        .rsplit(|byte| !byte.is_ascii_alphanumeric() && !matches!(byte, b'_' | b'-'))
+        .next()
+        .unwrap_or_default();
+    (key.get(..8)
+        .is_some_and(|start| start.eq_ignore_ascii_case(b"existing"))
+        && compact_suffix(key, b"secret"))
+        || compact_suffix(key, b"secretname")
+        || compact_suffix(key, b"secretref")
+        || compact_suffix(key, b"secretkeyref")
+}
+
 /// the length below which one word alone reads as a word value (`is_source_expression_value`).
 const LONE_WORD_MAX_LEN: usize = 16;
 
@@ -107,11 +145,13 @@ fn folded_distinct_ratio(value: &[u8]) -> f64 {
     distinct as f64 / value.len().max(1) as f64
 }
 
-/// whether the unquoted value ending at `end` ends its word: the input ends there or whitespace
-/// follows. the value class stops at a quote, backtick, `(` or non-ascii byte, and a value cut
+/// whether the unquoted value ending at `end` ends its word: the input ends there, or whitespace
+/// or nul follows. the value class stops at a quote, backtick, `(` or non-ascii byte, and a value cut
 /// there would be a prefix of the word, so the alternative is not read at all.
 fn ends_word(input: &[u8], end: usize) -> bool {
-    input.get(end).is_none_or(u8::is_ascii_whitespace)
+    input
+        .get(end)
+        .is_none_or(|byte| byte.is_ascii_whitespace() || *byte == b'\0')
 }
 
 /// a detected secret finding
@@ -1105,8 +1145,9 @@ pub(super) fn scan_matches(
     }
 }
 
-/// the value groups of the tier-3 rule, in pattern order.
-const ENTROPY_VALUE_GROUPS: [&str; 9] = [
+/// the value groups of the tier-3 rule, preferring a default operand over its enclosing reference.
+const ENTROPY_VALUE_GROUPS: [&str; 10] = [
+    "entropy_default",
     "entropy_reference",
     "entropy_bare_double",
     "entropy_bare_single",
@@ -1121,7 +1162,8 @@ const ENTROPY_VALUE_GROUPS: [&str; 9] = [
 /// the tier-3 rule's own capture cursor. an unquoted boundary may consume the next assignment's
 /// key, so the scan resumes after the value. a quoted body holding whitespace is a phrase, not a
 /// value: a stray quote byte can pair with a later one across whole assignments, so the scan
-/// resumes inside the body and evaluates the assignments it contains on their own. a key the
+/// resumes inside the body and evaluates the assignments it contains on their own. a quoted body
+/// consisting of a shell default is revisited so its operand is judged separately. a key the
 /// grammar misread (`misread_key_resume`) is no candidate, and the scan resumes after its
 /// separator so the text behind it is still read.
 fn entropy_captures<'h>(
@@ -1143,11 +1185,22 @@ fn entropy_captures<'h>(
             offset = resume.max(floor);
             continue;
         }
-        let phrase = ["entropy_double", "entropy_single"]
-            .into_iter()
-            .filter_map(|name| captures.name(name))
-            .find(|body| body.as_bytes().iter().any(u8::is_ascii_whitespace));
-        offset = match phrase {
+        let rescan_body = [
+            "entropy_double",
+            "entropy_single",
+            "entropy_bare_double",
+            "entropy_bare_single",
+        ]
+        .into_iter()
+        .filter_map(|name| captures.name(name))
+        .find(|body| {
+            let bytes = body.as_bytes();
+            bytes.iter().any(u8::is_ascii_whitespace)
+                || (bytes.starts_with(b"${")
+                    && bytes.ends_with(b"}")
+                    && bytes.windows(2).any(|pair| pair == b":-" || pair == b":="))
+        });
+        offset = match rescan_body {
             Some(body) => body.start(),
             None => captures
                 .name("entropy_unquoted")
@@ -1851,6 +1904,7 @@ impl<'a> Candidate<'a> {
             return CaptureKind::Call;
         }
         [
+            ("entropy_default", CaptureKind::Other),
             ("entropy_unquoted", CaptureKind::Unquoted),
             ("entropy_bare", CaptureKind::Bare),
             ("entropy_double", CaptureKind::Double),
@@ -1903,7 +1957,13 @@ fn evaluate_candidate(
         && captures
             .name(CONTEXT_UNQUOTED_GROUP)
             .is_some_and(|value| value.range() == original_range);
-    let unquoted_word_ends = unquoted_arm && ends_word(ctx.input, original_range.end);
+    let unquoted_word_ends = unquoted_arm
+        && (ends_word(ctx.input, original_range.end)
+            || (ctx.input.get(original_range.end) == Some(&b'"')
+                && captures
+                    .get(0)
+                    .is_some_and(|matched| ctx.input[matched.start()] == b'"')
+                && ends_word(ctx.input, original_range.end + 1)));
     if unquoted_arm && matches!(secret.last(), Some(b',' | b';')) && secret.len() > 1 {
         secret_range.end -= 1;
         secret = &ctx.input[secret_range.clone()];
@@ -2026,7 +2086,15 @@ fn evaluate_candidate(
         && (!unquoted_word_ends
             || entropy::is_path_shaped(secret)
             || entropy::is_reference_rooted(secret)
-            || is_source_expression_value(secret, effective_threshold(ctx, rule)))
+            || is_source_expression_value(
+                secret,
+                effective_threshold(ctx, rule),
+                captures.get(0).is_some_and(|matched| {
+                    is_secret_reference_assignment(
+                        &ctx.input[matched.start()..original_range.start],
+                    )
+                }),
+            ))
     {
         return;
     }
@@ -2268,6 +2336,9 @@ fn evaluate_candidate(
     // sk_test_ inherently contain "test".
     // tier 2+ rules, password rules, and credential rules get the
     // full stopword check.
+    if NAMED_KEY_RULES.contains(&rule.id.as_str()) && ctx.allowlist.contains_user_stopword(secret) {
+        return;
+    }
     if rule.id == "password-in-url" {
         if password::is_url_password_placeholder(secret)
             || ctx.allowlist.contains_user_stopword(secret)
@@ -2299,7 +2370,11 @@ fn evaluate_candidate(
     } else {
         line
     };
-    if !is_entropy_value && hash_detect::is_hash_in_context(secret, hash_scope) {
+    let hash_value = secret
+        .strip_prefix(b"0x")
+        .or_else(|| secret.strip_prefix(b"0X"))
+        .unwrap_or(secret);
+    if !is_entropy_value && hash_detect::is_hash_in_context(hash_value, hash_scope) {
         return;
     }
 
@@ -2344,7 +2419,7 @@ fn evaluate_candidate(
         return;
     }
 
-    // an exact-length hex value under a credential name (32, 40 or 64 digits, optionally `0x`,
+    // a hex value under a credential name (32 to 128 digits, optionally `0x`,
     // one trailing `,`/`;` aside): sixteen symbols cap its shannon entropy at 4.0 bits, so the
     // named-key rules' 4.0-bit gate would drop nearly every random hex key. it is measured by its
     // hex symbols instead, as the heuristic rule's hex policy does; a digest with hash context on
@@ -2358,7 +2433,7 @@ fn evaluate_candidate(
             .strip_prefix(b"0x")
             .or_else(|| value.strip_prefix(b"0X"))
             .unwrap_or(value);
-        matches!(payload.len(), 32 | 40 | 64)
+        (32..=128).contains(&payload.len())
             && payload.iter().all(u8::is_ascii_hexdigit)
             && hex_symbol_entropy(payload) >= HEX_BYPASS_MIN_ENTROPY
     };
@@ -2681,12 +2756,24 @@ mod tests {
                 };
                 let al = CompiledAllowlist::new(&paths, &[], None, &rules, false).unwrap();
                 let files = [make_file(path, vec![(7, line.as_bytes())])];
-                assert!(scan(&files, &scanner, &al).is_empty());
+                let regular = scan(&files, &scanner, &al);
+                if per_rule {
+                    assert!(regular.len() <= 1);
+                    assert!(
+                        regular
+                            .iter()
+                            .all(|finding| finding.rule_id == "generic-token-assignment")
+                    );
+                } else {
+                    assert!(regular.is_empty());
+                }
                 let findings = scan_without_path_filters(&files, &scanner, &al);
-                assert_eq!(findings.len(), 1, "{path}, per_rule={per_rule}");
-                assert_eq!(findings[0].file, path);
-                assert_eq!(findings[0].line, 7);
-                assert_eq!(findings[0].matched_value, token.as_bytes());
+                assert_eq!(findings.len(), 2, "{path}, per_rule={per_rule}");
+                for finding in findings {
+                    assert_eq!(finding.file, path);
+                    assert_eq!(finding.line, 7);
+                    assert_eq!(finding.matched_value, token.as_bytes());
+                }
             }
         }
     }
@@ -3333,7 +3420,7 @@ mod tests {
             (b"ingress-tls-secret", 3.5),
         ] {
             assert!(
-                is_source_expression_value(value, Some(floor)),
+                is_source_expression_value(value, Some(floor), false),
                 "{}",
                 String::from_utf8_lossy(value)
             );
@@ -3342,24 +3429,35 @@ mod tests {
         assert!(folded_distinct_ratio(b"plmoknijuh.bqygtverfc") >= NEAR_DISTINCT_RATIO);
         assert!(!is_source_expression_value(
             b"plmoknijuh.bqygtverfc",
-            Some(4.0)
+            Some(4.0),
+            false
         ));
         assert!(!is_source_expression_value(
             b"plmoknijuh.bqygtverfc;",
-            Some(4.0)
+            Some(4.0),
+            false
         ));
         // the case fold: a mixed-case chain is judged by its letters, not their case
         assert!(folded_distinct_ratio(b"settings.DJANGO_SECRET_KEY") < NEAR_DISTINCT_RATIO);
         // a lone word is a word value only below 16 bytes
-        assert!(is_source_expression_value(b"postgresql", Some(3.5)));
-        assert!(is_source_expression_value(b"required", Some(3.5)));
+        assert!(is_source_expression_value(b"postgresql", Some(3.5), false));
+        assert!(is_source_expression_value(b"required", Some(3.5), false));
         // a lone letter run of token length or an opaque piece is never a word value
-        assert!(!is_source_expression_value(b"plmoknijuhbqygtv", Some(4.0)));
-        assert!(!is_source_expression_value(b"kx7mq2pl", Some(3.5)));
-        assert!(!is_source_expression_value(b"q8Vn3sY6.Kp4Zr9Tw", Some(4.0)));
+        assert!(!is_source_expression_value(
+            b"plmoknijuhbqygtv",
+            Some(4.0),
+            false
+        ));
+        assert!(!is_source_expression_value(b"kx7mq2pl", Some(3.5), false));
+        assert!(!is_source_expression_value(
+            b"q8Vn3sY6.Kp4Zr9Tw",
+            Some(4.0),
+            false
+        ));
         assert!(!is_source_expression_value(
             b"abcd-efgh-ijkl-mnop",
-            Some(4.0)
+            Some(4.0),
+            false
         ));
     }
 
@@ -3368,6 +3466,7 @@ mod tests {
         assert!(ends_word(b"API_KEY=value", 13));
         assert!(ends_word(b"API_KEY=value rest", 13));
         assert!(ends_word(b"API_KEY=value\r\n", 13));
+        assert!(ends_word(b"API_KEY=value\0next", 13));
         assert!(!ends_word(b"API_KEY=value\"x\"", 13));
         assert!(!ends_word(b"API_KEY=value(x)", 13));
     }

@@ -24,7 +24,20 @@ const MIN_SHAPES_PER_CLASS: usize = 8;
 const MIN_TOTAL_SHAPES: usize = 100;
 
 const SUPPORTED_PLACEHOLDERS: &[&str] = &[
-    "S32", "S36", "S40", "HEX32", "HEX40", "HEX64", "B64_44", "UUID",
+    "S32",
+    "S36",
+    "S40",
+    "HEX32",
+    "HEX36",
+    "HEX40",
+    "HEX48",
+    "HEX56",
+    "HEX64",
+    "HEX128",
+    "B64_44",
+    "UUID",
+    "DECIMAL_BYTES_32",
+    "X_ESCAPED_BYTES_32",
 ];
 
 static SCANNER: LazyLock<CompiledScanner> = LazyLock::new(|| {
@@ -77,12 +90,31 @@ fn sequence(length: usize) -> String {
 
 /// a base64 body, ending in the padding a 32-byte digest carries.
 fn base64_body(length: usize) -> String {
+    assert_eq!(length % 4, 0);
     let mut state = GENERATOR_SEED ^ 0x5555_5555_5555_5555;
-    let mut value: String = (0..length - 1)
+    let mut value: String = (0..length - 2)
         .map(|_| char::from(B64_ALPHABET[(next(&mut state) >> 58) as usize]))
         .collect();
+    value.push(char::from(
+        B64_ALPHABET[((next(&mut state) >> 60) as usize) * 4],
+    ));
     value.push('=');
     value
+}
+
+fn decimal_bytes(length: usize) -> String {
+    let mut state = GENERATOR_SEED ^ 0xD3C1_4A11_0000_0001;
+    (0..length)
+        .map(|_| ((next(&mut state) >> 56) as u8).to_string())
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+fn x_escaped_bytes(length: usize) -> String {
+    let mut state = GENERATOR_SEED ^ 0xE5CA_9ED0_0000_0001;
+    (0..length)
+        .map(|_| format!("\\x{:02x}", (next(&mut state) >> 56) as u8))
+        .collect()
 }
 
 fn uuid() -> String {
@@ -103,10 +135,16 @@ fn placeholder_value(name: &str) -> Option<String> {
         "S36" => Some(sequence(36)),
         "S40" => Some(sequence(40)),
         "HEX32" => Some(hex(32)),
+        "HEX36" => Some(hex(36)),
         "HEX40" => Some(hex(40)),
+        "HEX48" => Some(hex(48)),
+        "HEX56" => Some(hex(56)),
         "HEX64" => Some(hex(64)),
+        "HEX128" => Some(hex(128)),
         "B64_44" => Some(base64_body(44)),
         "UUID" => Some(uuid()),
+        "DECIMAL_BYTES_32" => Some(decimal_bytes(32)),
+        "X_ESCAPED_BYTES_32" => Some(x_escaped_bytes(32)),
         _ => None,
     }
 }
@@ -117,10 +155,13 @@ fn looks_like_placeholder(name: &str) -> bool {
     if name == "UUID" {
         return true;
     }
-    ["S", "HEX", "B64_"].into_iter().any(|prefix| {
-        name.strip_prefix(prefix)
-            .is_some_and(|rest| !rest.is_empty() && rest.bytes().all(|byte| byte.is_ascii_digit()))
-    })
+    ["S", "HEX", "B64_", "DECIMAL_BYTES_", "X_ESCAPED_BYTES_"]
+        .into_iter()
+        .any(|prefix| {
+            name.strip_prefix(prefix).is_some_and(|rest| {
+                !rest.is_empty() && rest.bytes().all(|byte| byte.is_ascii_digit())
+            })
+        })
 }
 
 struct Expansion {
@@ -554,6 +595,57 @@ fn source_posture_fixture_matrix() {
             }
         }
     }
+}
+
+#[test]
+fn generated_placeholders_have_valid_encodings() {
+    for name in SUPPORTED_PLACEHOLDERS {
+        assert!(placeholder_value(name).is_some(), "{name}");
+    }
+    for (name, length) in [
+        ("HEX32", 32),
+        ("HEX36", 36),
+        ("HEX40", 40),
+        ("HEX48", 48),
+        ("HEX56", 56),
+        ("HEX64", 64),
+        ("HEX128", 128),
+    ] {
+        let value = placeholder_value(name).expect("hex placeholder");
+        assert_eq!(value.len(), length, "{name}");
+        assert!(value.bytes().all(|byte| byte.is_ascii_hexdigit()), "{name}");
+    }
+    let digest = base64_body(44);
+    assert_eq!(digest.len(), 44);
+    assert!(digest.ends_with('='));
+    assert!(
+        digest[..43]
+            .bytes()
+            .all(|byte| B64_ALPHABET.contains(&byte))
+    );
+    let last_data = digest.as_bytes()[42];
+    assert_eq!(
+        B64_ALPHABET
+            .iter()
+            .position(|&byte| byte == last_data)
+            .expect("base64 alphabet")
+            % 4,
+        0
+    );
+    let decimal = decimal_bytes(32);
+    let groups: Vec<_> = decimal.split(',').collect();
+    assert_eq!(groups.len(), 32);
+    assert!(groups.iter().all(|group| group.parse::<u8>().is_ok()));
+    let escaped = x_escaped_bytes(32);
+    let (chunks, remainder) = escaped.as_bytes().as_chunks::<4>();
+    assert_eq!(chunks.len(), 32);
+    assert!(chunks.iter().all(|chunk| {
+        chunk[0] == b'\\'
+            && chunk[1] == b'x'
+            && chunk[2].is_ascii_hexdigit()
+            && chunk[3].is_ascii_hexdigit()
+    }));
+    assert!(remainder.is_empty());
 }
 
 #[test]

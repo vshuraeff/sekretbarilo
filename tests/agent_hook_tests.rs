@@ -275,6 +275,93 @@ fn e2e_check_file_vendor_path_skipped() {
     );
 }
 
+/// run `check-file --stdin-json` on one file with the payload cwd set to its directory.
+fn check_file_stdin_json(
+    env: &IsolatedEnv,
+    dir: &std::path::Path,
+    file: &str,
+) -> std::process::Output {
+    use std::io::Write;
+
+    let payload = serde_json::json!({
+        "tool_input": {"file_path": dir.join(file).to_str().unwrap()},
+        "cwd": dir.to_str().unwrap()
+    });
+    env.command()
+        .args(["check-file", "--stdin-json"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .and_then(|mut child| {
+            child
+                .stdin
+                .take()
+                .unwrap()
+                .write_all(payload.to_string().as_bytes())
+                .unwrap();
+            child.wait_with_output()
+        })
+        .expect("failed to run sekretbarilo")
+}
+
+#[test]
+fn e2e_check_file_invalid_exclude_pattern_is_reported_without_its_text() {
+    let dir = tempfile::tempdir().unwrap();
+    let env = IsolatedEnv::new();
+    std::fs::write(dir.path().join("main.rs"), "fn main() {}\n").unwrap();
+    // a generated marker inside an unclosed class makes the pattern invalid
+    let marker = format!(
+        "mk{}x{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    );
+    env.write_user_config(&format!(
+        "[audit]\nexclude_patterns = [\"^ok/\", \"[{marker}\"]\n"
+    ));
+
+    let output = check_file_stdin_json(&env, dir.path(), "main.rs");
+
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains(&marker),
+        "pattern text reached stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("exclude_patterns entry 2"),
+        "the pattern index is reported: {stderr}"
+    );
+}
+
+#[test]
+fn e2e_check_file_vendor_and_lock_paths_skip_before_strict_config_loading() {
+    let dir = tempfile::tempdir().unwrap();
+    let env = IsolatedEnv::new();
+    let config_dir = env.home().join(".config/sekretbarilo");
+    std::fs::create_dir_all(&config_dir).unwrap();
+    std::fs::write(config_dir.join("sekretbarilo.toml"), "[audit\nnot toml").unwrap();
+    std::fs::create_dir_all(dir.path().join("node_modules/pkg")).unwrap();
+    std::fs::write(dir.path().join("node_modules/pkg/index.js"), "x\n").unwrap();
+    std::fs::write(dir.path().join("package-lock.json"), "{}\n").unwrap();
+    std::fs::write(dir.path().join("main.rs"), "fn main() {}\n").unwrap();
+
+    for skipped in ["node_modules/pkg/index.js", "package-lock.json"] {
+        let output = check_file_stdin_json(&env, dir.path(), skipped);
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "{skipped} skips with a broken config"
+        );
+    }
+    // a path no hard-coded skip covers still fails closed on the same config
+    let output = check_file_stdin_json(&env, dir.path(), "main.rs");
+    assert_eq!(output.status.code(), Some(2));
+}
+
 #[test]
 fn e2e_check_file_exit_code_is_stable_when_stderr_reader_closes_early() {
     use std::io::{Read, Write};

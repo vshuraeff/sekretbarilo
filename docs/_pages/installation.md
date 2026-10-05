@@ -119,7 +119,7 @@ git config --global --unset core.hooksPath
 
 ### Agent hooks (AI coding tool protection)
 
-Agent hooks can block Claude Code file reads or mask secrets in its tool results, and block Codex CLI patches and shell commands containing secrets. Each agent is installed separately.
+Agent hooks can block Claude Code file reads or mask secrets in its tool results, block Codex CLI patches and shell commands containing secrets, and withhold Codex shell output that contains secrets. Each agent is installed separately.
 
 > One thing to know before you tune them: a `.sekretbarilo.toml` inside the repository is honored by the agent hooks only once it is committed. An uncommitted config is ignored entirely, because an agent can write one. See [Configuration]({{ '/configuration/#in-workspace-config-trust-agent-hooks-only' | relative_url }}).
 
@@ -214,7 +214,7 @@ This writes `$CODEX_HOME/hooks.json` — `~/.codex/hooks.json` when `CODEX_HOME`
 
 Installing the Codex hook is only half the job. Codex will not run a newly installed hook until you approve it, and it skips an unapproved hook **silently** — no error and no warning at the point of use, so everything looks fine while nothing is being scanned.
 
-Start Codex and approve the hook from the TUI:
+Start Codex and approve both sekretbarilo hooks, the `PreToolUse` one and the `PostToolUse` one, from the TUI:
 
 ```
 /hooks
@@ -283,7 +283,7 @@ cd /path/to/your-project
 # claude code: drop the Read matcher entry from hooks.PreToolUse
 $EDITOR .claude/settings.json
 
-# codex cli: drop the sekretbarilo PreToolUse entry
+# codex cli: drop the sekretbarilo PreToolUse and PostToolUse entries
 $EDITOR .codex/hooks.json
 ```
 

@@ -12,19 +12,51 @@ use super::hooks_json::{HookInstallResult, find_hook, write_config};
 use crate::audit::history::sanitize_display;
 use crate::config;
 use crate::config::allowlist::CompiledAllowlist;
+use crate::config::discovery::{self, LayerOrigin};
 use crate::diff::parser::{AddedLine, DiffFile};
 use crate::output::masking::mask_secret;
-use crate::scanner::engine::{Finding, scan};
+use crate::scanner::engine::{Finding, TextMatch, redact_text, scan, scan_text};
 use crate::scanner::rules::{CompiledScanner, compile_rules};
 
 const MAX_PAYLOAD_BYTES: u64 = 10 * 1024 * 1024;
 const BASH_SYNTHETIC_PATH: &str = "<bash-command>";
 // twenty findings preserve useful variety while bounding hook feedback.
 pub(super) const MAX_RENDERED_FINDINGS: usize = 20;
+// a redacted Bash output up to this size is shown in place of the original result.
+const MAX_INLINE_REDACTED_BYTES: usize = 64 * 1024;
 
 /// Frozen command string consumed by the Codex hook installer follow-up.
 pub const CODEX_HOOK_COMMAND: &str = "sekretbarilo check-codex --stdin-json";
 pub const CODEX_HOOK_MATCHER: &str = "^(apply_patch|Bash)$";
+pub const CODEX_POST_HOOK_MATCHER: &str = "^Bash$";
+
+/// one Codex hook event the installer writes and doctor checks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CodexHookEvent {
+    /// PascalCase key under `hooks` in hooks.json
+    pub event: &'static str,
+    /// snake_case label inside Codex's positional trust-state key
+    pub trust_label: &'static str,
+    pub matcher: &'static str,
+    pub status_message: &'static str,
+}
+
+pub const CODEX_PRE_TOOL_USE: CodexHookEvent = CodexHookEvent {
+    event: "PreToolUse",
+    trust_label: "pre_tool_use",
+    matcher: CODEX_HOOK_MATCHER,
+    status_message: "Scanning tool input for secrets...",
+};
+
+pub const CODEX_POST_TOOL_USE: CodexHookEvent = CodexHookEvent {
+    event: "PostToolUse",
+    trust_label: "post_tool_use",
+    matcher: CODEX_POST_HOOK_MATCHER,
+    status_message: "Scanning tool output for secrets...",
+};
+
+/// installed in this order; each event's group is appended to its own array.
+pub const CODEX_HOOK_EVENTS: [CodexHookEvent; 2] = [CODEX_PRE_TOOL_USE, CODEX_POST_TOOL_USE];
 
 /// resolve the global Codex home directory from CODEX_HOME (if non-empty) or HOME.
 /// an exported-but-empty CODEX_HOME must be treated as unset, matching upstream
@@ -94,9 +126,50 @@ fn install_codex_hook_to_path(path: &Path) -> Result<HookInstallResult, String> 
     };
 
     let command = codex_hook_command();
-    let hook_match = find_hook(&config, CODEX_HOOK_MATCHER, &command);
-    if hook_match.exact_hook.is_some() {
+    let mut changed = false;
+    let mut every_event_new = true;
+    for event in CODEX_HOOK_EVENTS {
+        match install_event(&mut config, path, &event, &command)? {
+            EventInstall::Present => every_event_new = false,
+            EventInstall::Refreshed => {
+                changed = true;
+                every_event_new = false;
+            }
+            EventInstall::Added => changed = true,
+        }
+    }
+
+    if !changed {
         return Ok(HookInstallResult::AlreadyInstalled);
+    }
+    write_config(path, &config)?;
+    if every_event_new {
+        Ok(HookInstallResult::Created)
+    } else {
+        Ok(HookInstallResult::Updated)
+    }
+}
+
+enum EventInstall {
+    /// the exact handler already exists
+    Present,
+    /// an older sekretbarilo handler was rewritten in place
+    Refreshed,
+    /// a handler was appended
+    Added,
+}
+
+/// install one event's handler. codex keys hook trust by group and handler index, so an
+/// existing handler is updated in place and a new one only ever goes at the end.
+fn install_event(
+    config: &mut Value,
+    path: &Path,
+    event: &CodexHookEvent,
+    command: &str,
+) -> Result<EventInstall, String> {
+    let hook_match = find_hook(config, event.event, event.matcher, command);
+    if hook_match.exact_hook.is_some() {
+        return Ok(EventInstall::Present);
     }
 
     let root = config
@@ -106,29 +179,32 @@ fn install_codex_hook_to_path(path: &Path) -> Result<HookInstallResult, String> 
     let hooks = hooks
         .as_object_mut()
         .ok_or_else(|| format!("{}.hooks is not a JSON object", path.display()))?;
-    let pre_tool_use = hooks.entry("PreToolUse").or_insert_with(|| json!([]));
-    let pre_tool_use = pre_tool_use
-        .as_array_mut()
-        .ok_or_else(|| format!("{}.hooks.PreToolUse is not a JSON array", path.display()))?;
+    let groups = hooks.entry(event.event).or_insert_with(|| json!([]));
+    let groups = groups.as_array_mut().ok_or_else(|| {
+        format!(
+            "{}.hooks.{} is not a JSON array",
+            path.display(),
+            event.event
+        )
+    })?;
 
     if let Some((group_index, hook_index)) = hook_match.first_sekretbarilo_hook {
-        let handler = pre_tool_use[group_index]["hooks"][hook_index]
+        let handler = groups[group_index]["hooks"][hook_index]
             .as_object_mut()
             .ok_or_else(|| {
                 "existing sekretbarilo codex hook handler is not a JSON object".to_string()
             })?;
-        if let Value::Object(pinned) = codex_hook_handler() {
+        if let Value::Object(pinned) = codex_hook_handler(event) {
             for (key, value) in pinned {
                 handler.insert(key, value);
             }
         }
-        write_config(path, &config)?;
-        return Ok(HookInstallResult::Updated);
+        return Ok(EventInstall::Refreshed);
     }
 
-    if let Some(group) = pre_tool_use
+    if let Some(group) = groups
         .iter_mut()
-        .find(|group| group.get("matcher").and_then(Value::as_str) == Some(CODEX_HOOK_MATCHER))
+        .find(|group| group.get("matcher").and_then(Value::as_str) == Some(event.matcher))
     {
         let group = group
             .as_object_mut()
@@ -137,34 +213,34 @@ fn install_codex_hook_to_path(path: &Path) -> Result<HookInstallResult, String> 
         let handlers = handlers
             .as_array_mut()
             .ok_or_else(|| "Codex hook matcher group's hooks field is not an array".to_string())?;
-        handlers.push(codex_hook_handler());
+        handlers.push(codex_hook_handler(event));
     } else {
-        pre_tool_use.push(json!({
-            "matcher": CODEX_HOOK_MATCHER,
-            "hooks": [codex_hook_handler()]
+        groups.push(json!({
+            "matcher": event.matcher,
+            "hooks": [codex_hook_handler(event)]
         }));
     }
-
-    write_config(path, &config)?;
-    Ok(HookInstallResult::Created)
+    Ok(EventInstall::Added)
 }
 
 fn codex_hook_command() -> String {
     command_for_running_binary_with_args("check-codex --stdin-json", CODEX_HOOK_COMMAND)
 }
 
-fn codex_hook_handler() -> Value {
+fn codex_hook_handler(event: &CodexHookEvent) -> Value {
     json!({
         "type": "command",
         "command": codex_hook_command(),
         "timeout": 10,
-        "statusMessage": "Scanning tool input for secrets..."
+        "statusMessage": event.status_message
     })
 }
 
 fn print_post_install_notes(hooks_path: &Path) {
-    eprintln!("[WARN] IMPORTANT: Codex will silently skip this hook until you approve it.");
-    eprintln!("       In the Codex TUI, run /hooks and approve the sekretbarilo hook.");
+    eprintln!("[WARN] IMPORTANT: Codex will silently skip these hooks until you approve them.");
+    eprintln!(
+        "       In the Codex TUI, run /hooks and approve both sekretbarilo hooks (PreToolUse and PostToolUse)."
+    );
     eprintln!(
         "       For non-interactive automation only, --dangerously-bypass-hook-trust bypasses this protection."
     );
@@ -213,7 +289,7 @@ fn has_hooks_table(config_toml: &Path) -> bool {
 
 #[derive(Debug, serde::Deserialize)]
 #[allow(dead_code)]
-struct PreToolUsePayload {
+struct CodexHookPayload {
     #[serde(default)]
     session_id: Option<String>,
     #[serde(default)]
@@ -233,6 +309,9 @@ struct PreToolUsePayload {
     permission_mode: Option<String>,
     tool_name: String,
     tool_input: Value,
+    /// PostToolUse only: the model-facing tool result
+    #[serde(default)]
+    tool_response: Option<Value>,
     #[serde(default)]
     tool_use_id: Option<String>,
 }
@@ -249,7 +328,7 @@ enum HookDecision {
     Block(String),
 }
 
-/// Read and check a Codex `PreToolUse` payload from stdin.
+/// Read and check a Codex `PreToolUse` or `PostToolUse` payload from stdin.
 ///
 /// Returns only 0 (allow) or 2 (block). Every block is emitted to stderr by
 /// `finish_decision`; this module deliberately has no stdout write path.
@@ -294,28 +373,33 @@ where
         Ok(CodexToolCall::Bash { command, cwd }) => {
             evaluate_bash(&command, cwd.as_deref(), load_context)
         }
+        Ok(CodexToolCall::BashOutput { output, cwd }) => {
+            evaluate_bash_output(&output, cwd.as_deref(), load_output_scan_context)
+        }
         Err(reason) => HookDecision::Block(reason),
     }
 }
 
-/// the tool call a Codex `PreToolUse` payload hands the hook, before any scanning.
+/// what a Codex hook payload hands the hook to scan, before any scanning.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CodexToolCall {
     /// another hook event or a tool the hook does not scan: the hook allows it
     Unscanned,
-    /// an `apply_patch` call carrying its patch text
+    /// a PreToolUse `apply_patch` call carrying its patch text
     ApplyPatch {
         command: String,
         cwd: Option<String>,
     },
-    /// a `Bash` call carrying its command line
+    /// a PreToolUse `Bash` call carrying its command line
     Bash {
         command: String,
         cwd: Option<String>,
     },
+    /// a PostToolUse `Bash` result carrying the output the model would see
+    BashOutput { output: String, cwd: Option<String> },
 }
 
-/// parse a Codex `PreToolUse` payload into the tool call the hook scans.
+/// parse a Codex `PreToolUse` or `PostToolUse` payload into what the hook scans.
 ///
 /// pure: it stops before config loading and scanning, so it touches no filesystem,
 /// environment or git state. an `Err` is the hook's block reason, already sanitized
@@ -329,7 +413,7 @@ pub fn parse_codex_payload(input: &[u8]) -> Result<CodexToolCall, String> {
         }
     };
 
-    let payload: PreToolUsePayload = match serde_json::from_value(value) {
+    let payload: CodexHookPayload = match serde_json::from_value(value) {
         Ok(payload) => payload,
         Err(error) => {
             let error = sanitize_display(&error.to_string());
@@ -337,20 +421,33 @@ pub fn parse_codex_payload(input: &[u8]) -> Result<CodexToolCall, String> {
         }
     };
 
-    if payload.hook_event_name != "PreToolUse" {
-        return Ok(CodexToolCall::Unscanned);
-    }
-
-    match payload.tool_name.as_str() {
-        "apply_patch" => Ok(CodexToolCall::ApplyPatch {
+    match (payload.hook_event_name.as_str(), payload.tool_name.as_str()) {
+        ("PreToolUse", "apply_patch") => Ok(CodexToolCall::ApplyPatch {
             command: command_from_tool_input(&payload.tool_input, "apply_patch")?.to_owned(),
             cwd: payload.cwd,
         }),
-        "Bash" => Ok(CodexToolCall::Bash {
+        ("PreToolUse", "Bash") => Ok(CodexToolCall::Bash {
             command: command_from_tool_input(&payload.tool_input, "Bash")?.to_owned(),
             cwd: payload.cwd,
         }),
+        ("PostToolUse", "Bash") => Ok(CodexToolCall::BashOutput {
+            output: output_from_tool_response(payload.tool_response)?,
+            cwd: payload.cwd,
+        }),
         _ => Ok(CodexToolCall::Unscanned),
+    }
+}
+
+/// codex hands a completed unified-exec result to PostToolUse as one plain string, the
+/// model-facing output; any other shape is schema drift and withholds the output.
+fn output_from_tool_response(tool_response: Option<Value>) -> Result<String, String> {
+    match tool_response {
+        Some(Value::String(output)) => Ok(output),
+        Some(_) => Err(
+            "Codex Bash output withheld: tool_response schema mismatch: expected a JSON string"
+                .to_string(),
+        ),
+        None => Err("Codex Bash output withheld: tool_response is missing".to_string()),
     }
 }
 
@@ -402,8 +499,8 @@ where
     for parsed in parsed_files {
         let mut file = parsed.diff_file;
         let path = Path::new(&file.path);
-        // an empty or whitespace cwd is absent, as in resolve_base_dir; Path::starts_with("")
-        // is true for every path and would route outside-cwd files through the filtered branch
+        // an empty or whitespace cwd anchors nothing; Path::starts_with("") is true for
+        // every path and would route outside-cwd files through the filtered branch
         let absolute_under_cwd = path.is_absolute()
             && cwd.is_some_and(|cwd| !cwd.trim().is_empty() && path.starts_with(cwd));
         let never_allowlist = path
@@ -464,6 +561,167 @@ where
     let findings = scan(&[diff_file], &context.scanner, &context.bash_allowlist);
 
     findings_decision("Bash", &findings)
+}
+
+/// the scanner and allowlist of the agent text surface, as `redact-claude` builds them.
+struct OutputScanContext {
+    scanner: CompiledScanner,
+    allowlist: CompiledAllowlist,
+}
+
+/// scan a completed Bash result before Codex hands it to the model.
+///
+/// a block replaces the model-facing result with the reason, so the reason carries the
+/// redacted output when it fits and only masked findings when it does not. every failure
+/// blocks too: Codex itself fails open on a hook error, so this path never does.
+fn evaluate_bash_output<F>(output: &str, cwd: Option<&str>, load_context: F) -> HookDecision
+where
+    F: FnOnce(Option<&str>) -> Result<OutputScanContext, String>,
+{
+    let context = match load_context(cwd) {
+        Ok(context) => context,
+        Err(error) => {
+            let error = sanitize_display(&error);
+            return HookDecision::Block(format!(
+                "Codex Bash output withheld: scanner setup failed: {error}"
+            ));
+        }
+    };
+
+    let matches = scan_text(output, &context.scanner, &context.allowlist);
+    if matches.is_empty() {
+        return HookDecision::Allow;
+    }
+
+    // overlapping matches of one value (a keyword rule and a prefix rule) are one finding
+    let findings = merge_overlapping_matches(&matches);
+    let mut reason = format!(
+        "[AGENT] sekretbarilo withheld this Bash output: {} secret finding(s). The command already ran.\n",
+        findings.len()
+    );
+    match inline_redacted(output, &matches, &context) {
+        Ok(redacted) => {
+            reason.push_str("Output with secret values replaced by [REDACTED]:\n");
+            reason.push_str(&redacted);
+            return HookDecision::Block(reason);
+        }
+        Err(InlineRefusal::TooLarge) => {
+            let _ = writeln!(
+                reason,
+                "The output ({} bytes) is too large to show redacted and is withheld whole. Findings:",
+                output.len()
+            );
+        }
+        Err(InlineRefusal::Unverified) => {
+            let _ = writeln!(
+                reason,
+                "The output ({} bytes) could not be redacted safely and is withheld whole. Findings:",
+                output.len()
+            );
+        }
+    }
+    for found in findings.iter().take(MAX_RENDERED_FINDINGS) {
+        let line = output[..found.range.start].matches('\n').count() + 1;
+        let rule_id = sanitize_display(&found.rule_ids.join(", "));
+        let masked = sanitize_display(&mask_secret(&output.as_bytes()[found.range.clone()]));
+        let _ = writeln!(reason, "  line: {line}");
+        let _ = writeln!(reason, "  rule: {rule_id}");
+        let _ = writeln!(reason, "  match: {masked}");
+    }
+    if findings.len() > MAX_RENDERED_FINDINGS {
+        let omitted = findings.len() - MAX_RENDERED_FINDINGS;
+        let _ = writeln!(reason, "... and {omitted} more finding(s) omitted");
+    }
+    HookDecision::Block(reason)
+}
+
+/// one detected span of the output with every rule that matched inside it.
+struct MergedFinding {
+    range: std::ops::Range<usize>,
+    rule_ids: Vec<String>,
+}
+
+/// merge matches whose ranges overlap into one finding per span, so one value caught by
+/// several rules is counted and listed once. `matches` is sorted by start, as `scan_text`
+/// returns it.
+fn merge_overlapping_matches(matches: &[TextMatch]) -> Vec<MergedFinding> {
+    let mut merged: Vec<MergedFinding> = Vec::new();
+    for found in matches {
+        if let Some(previous) = merged.last_mut()
+            && found.range.start < previous.range.end
+        {
+            previous.range.end = previous.range.end.max(found.range.end);
+            if !previous.rule_ids.contains(&found.rule_id) {
+                previous.rule_ids.push(found.rule_id.clone());
+            }
+        } else {
+            merged.push(MergedFinding {
+                range: found.range.clone(),
+                rule_ids: vec![found.rule_id.clone()],
+            });
+        }
+    }
+    merged
+}
+
+#[derive(Debug)]
+enum InlineRefusal {
+    TooLarge,
+    Unverified,
+}
+
+/// the model-facing redacted output, built from the sanitized text and checked as emitted.
+///
+/// sanitizing drops characters, which can join the halves of a value the raw scan never saw
+/// whole, so the sanitized text is redacted itself and the result is scanned again; any
+/// remaining finding, or a raw finding's value surviving verbatim, withholds the output whole.
+fn inline_redacted(
+    output: &str,
+    raw_matches: &[TextMatch],
+    context: &OutputScanContext,
+) -> Result<String, InlineRefusal> {
+    let sanitized = sanitize_multiline(output);
+    let redacted = redact_text(&sanitized, &context.scanner, &context.allowlist);
+    if redacted.len() > MAX_INLINE_REDACTED_BYTES {
+        return Err(InlineRefusal::TooLarge);
+    }
+    if !scan_text(&redacted, &context.scanner, &context.allowlist).is_empty() {
+        return Err(InlineRefusal::Unverified);
+    }
+    let survives = raw_matches
+        .iter()
+        .any(|found| redacted.contains(&output[found.range.clone()]));
+    if survives {
+        return Err(InlineRefusal::Unverified);
+    }
+    Ok(redacted)
+}
+
+/// `sanitize_display` per line: keeps line breaks and tabs, drops CR and every other
+/// control or spoofing character, so terminal output cannot redraw the block reason.
+fn sanitize_multiline(text: &str) -> String {
+    text.split('\n')
+        .map(sanitize_display)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn load_output_scan_context(cwd: Option<&str>) -> Result<OutputScanContext, String> {
+    let (base, vanished) = resolve_payload_base(cwd)?;
+    let project_config = load_trusted_redact_config(&base, vanished.as_deref())
+        .map_err(|error| format!("failed to load project config: {error}"))?;
+    let rules = config::load_rules_with_config(&project_config)
+        .map_err(|error| format!("failed to load scanner rules: {error}"))?;
+    // allowlist compiler errors quote the offending pattern; only the fixed category is reported.
+    let allowlist = config::build_allowlist(&project_config, &rules).map_err(|_| {
+        format!(
+            "failed to build scanner allowlist: {}",
+            config::ALLOWLIST_ERROR_CATEGORY
+        )
+    })?;
+    let scanner = compile_rules(&rules)
+        .map_err(|error| format!("failed to compile scanner rules: {error}"))?;
+    Ok(OutputScanContext { scanner, allowlist })
 }
 
 fn findings_decision(tool: &str, findings: &[Finding]) -> HookDecision {
@@ -539,22 +797,35 @@ fn load_trusted_config(
         (None, Some(_)) => return Err("could not establish configuration trust".to_string()),
         (None, None) => base_dir.to_path_buf(),
     };
-    let config_paths = match vanished {
-        // the vanished path's own discovery: from a missing start `discover_configs` returns
+    let layers = match vanished {
+        // the vanished path's own discovery: from a missing start `discover_layers` returns
         // only the fixed system and XDG layers, and the home hierarchy above it is walked from
         // the ancestor. the ancestor's own layer, which discovery outside HOME adds for a
         // start directory, is one the vanished path never read.
         Some(vanished) => {
-            let mut paths = config::discovery::discover_configs(vanished, &home);
-            paths.extend(config::discovery::discover_hierarchy(base_dir, &home));
-            paths
+            let mut layers = discovery::discover_layers(vanished, &home);
+            layers.extend(
+                discovery::discover_hierarchy(base_dir, &home)
+                    .into_iter()
+                    .map(|path| discovery::ConfigLayer {
+                        path,
+                        origin: LayerOrigin::Hierarchy,
+                    }),
+            );
+            layers
         }
-        None => config::discovery::discover_configs(base_dir, &home),
+        None => discovery::discover_layers(base_dir, &home),
     };
-    if config_paths.is_empty() {
+    if layers.is_empty() {
         return Ok(config::ProjectConfig::default());
     }
 
+    // a fixed layer is trusted wherever the cwd is, so its location must come from the
+    // hook's environment: without an absolute HOME or XDG_CONFIG_HOME the XDG path derives
+    // from the cwd fallback above or the process cwd, both of which the agent can write.
+    let fixed_pinned = ["HOME", "XDG_CONFIG_HOME"]
+        .iter()
+        .any(|name| std::env::var_os(name).is_some_and(|value| Path::new(&value).is_absolute()));
     let repo_root = resolve_git_repo_root(base_dir);
     // with no repository above the ancestor, the vanished path's workspace lay below it, so the
     // missing path itself is the boundary and every existing layer stays outside it.
@@ -568,15 +839,21 @@ fn load_trusted_config(
         });
     let mut trusted = Vec::new();
 
-    for path in config_paths {
-        let path = path.canonicalize().unwrap_or(path);
-        let is_in_workspace = path.starts_with(&workspace_boundary);
-        let is_trusted = if !is_in_workspace {
+    for layer in layers {
+        let path = layer.path;
+        // the system and user layers are user-owned config even when the boundary covers
+        // them (cwd = HOME outside git, a dotfiles repository in HOME), symlinked or not.
+        let is_trusted = if layer.origin == LayerOrigin::Fixed && fixed_pinned && path.is_absolute()
+        {
             true
-        } else if let Some(repo_root) = repo_root.as_deref() {
-            is_committed_config(repo_root, &path)
         } else {
-            false
+            match place_layer(&path, &workspace_boundary) {
+                LayerPlacement::Outside => true,
+                LayerPlacement::Symlinked => false,
+                LayerPlacement::Inside(real) => repo_root
+                    .as_deref()
+                    .is_some_and(|repo_root| is_committed_config(repo_root, &real)),
+            }
         };
         if !is_trusted && vanished.is_some() {
             // only reachable through the ancestor's repository, which may not have been the
@@ -607,6 +884,50 @@ fn load_trusted_config(
     }
 
     Ok(config::merge::merge_all(trusted))
+}
+
+/// where a config layer sits relative to the workspace boundary.
+#[derive(Debug, PartialEq, Eq)]
+enum LayerPlacement {
+    /// no prefix of the layer path reaches inside the boundary, as spelled or resolved
+    Outside,
+    /// inside, reached through a symlink held by the workspace, or not resolvable at all
+    Symlinked,
+    /// inside, at this resolved path
+    Inside(PathBuf),
+}
+
+/// place a layer by its path as discovered, not by its resolved target: an in-workspace
+/// symlink to a file outside would otherwise pass as an outside layer. git records only a
+/// symlink's text, so a committed one vouches for nothing it points at.
+///
+/// the layer is inside when any prefix of its path lies inside the boundary as spelled or
+/// once resolved, which also catches a link from outside into the workspace. every entry
+/// below the shortest such prefix sits in a workspace directory, and any symlink among them
+/// leaves the layer untrusted.
+fn place_layer(path: &Path, boundary: &Path) -> LayerPlacement {
+    let path = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
+    // longest first, so the shortest prefix inside is the last match
+    let prefixes: Vec<&Path> = path.ancestors().collect();
+    let Some(entry) = prefixes.iter().rposition(|prefix| {
+        prefix.starts_with(boundary)
+            || prefix
+                .canonicalize()
+                .is_ok_and(|real| real.starts_with(boundary))
+    }) else {
+        return LayerPlacement::Outside;
+    };
+    let symlinked = prefixes[..entry].iter().any(|held| {
+        held.symlink_metadata()
+            .map_or(true, |metadata| metadata.file_type().is_symlink())
+    });
+    if symlinked {
+        return LayerPlacement::Symlinked;
+    }
+    match path.canonicalize() {
+        Ok(real) => LayerPlacement::Inside(real),
+        Err(_) => LayerPlacement::Symlinked,
+    }
 }
 
 /// the repository-local variables git itself clears before it enters another repository,
@@ -687,8 +1008,8 @@ fn is_committed_config(repo_root: &Path, path: &Path) -> bool {
 }
 
 fn load_scan_context(cwd: Option<&str>) -> Result<ScanContext, String> {
-    let base_dir = resolve_base_dir(cwd)?;
-    let project_config = load_trusted_project_config(&base_dir)
+    let (base, vanished) = resolve_payload_base(cwd)?;
+    let project_config = load_trusted_config(&base, vanished.as_deref(), false)
         .map_err(|error| format!("failed to load project config: {error}"))?;
     let rules = config::load_rules_with_config(&project_config)
         .map_err(|error| format!("failed to load scanner rules: {error}"))?;
@@ -733,18 +1054,19 @@ fn build_bash_allowlist(
     config::build_allowlist(&bash_config, &bash_rules)
 }
 
-fn resolve_base_dir(cwd: Option<&str>) -> Result<PathBuf, String> {
-    if let Some(cwd) = cwd
-        && !cwd.trim().is_empty()
-    {
-        let path = Path::new(cwd);
-        if path.is_dir() {
-            return Ok(path.to_path_buf());
-        }
-    }
-
-    std::env::current_dir()
-        .map_err(|error| format!("failed to determine current directory: {error}"))
+/// the directory config discovery and git run from for either Codex event, plus the payload
+/// cwd when it has vanished (see `redact::resolve_hook_base`). only an absent cwd falls back to
+/// the process cwd; an empty, relative or non-directory one fails, because the process cwd's
+/// layers belong to some other workspace.
+fn resolve_payload_base(cwd: Option<&str>) -> Result<(PathBuf, Option<PathBuf>), String> {
+    let cwd = match cwd {
+        Some(cwd) if !cwd.is_empty() => PathBuf::from(cwd),
+        Some(_) => return Err("the payload cwd is empty".to_string()),
+        None => std::env::current_dir()
+            .map_err(|_| "could not determine the current directory".to_string())?,
+    };
+    super::redact::resolve_hook_base(&cwd)
+        .map_err(|()| "could not resolve the payload cwd".to_string())
 }
 
 fn finish_decision(decision: HookDecision) -> i32 {
@@ -937,9 +1259,60 @@ mod tests {
                             "timeout": 10,
                             "statusMessage": "Scanning tool input for secrets..."
                         }]
+                    }],
+                    "PostToolUse": [{
+                        "matcher": CODEX_POST_HOOK_MATCHER,
+                        "hooks": [{
+                            "type": "command",
+                            "command": codex_hook_command(),
+                            "timeout": 10,
+                            "statusMessage": "Scanning tool output for secrets..."
+                        }]
                     }]
                 }
             })
+        );
+    }
+
+    #[test]
+    fn install_codex_hook_upgrades_a_pre_tool_use_only_install() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("hooks.json");
+        let pre_tool_use = json!([
+            {"matcher": "Read", "hooks": [{"type": "command", "command": "foreign-hook"}]},
+            {"matcher": CODEX_HOOK_MATCHER, "hooks": [codex_hook_handler(&CODEX_PRE_TOOL_USE)]}
+        ]);
+        let foreign_post =
+            json!({"matcher": "Bash", "hooks": [{"type": "command", "command": "post-hook"}]});
+        fs::write(
+            &path,
+            serde_json::to_vec(&json!({"hooks": {
+                "PreToolUse": pre_tool_use,
+                "PostToolUse": [foreign_post]
+            }}))
+            .unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            install_codex_hook_to_path(&path).unwrap(),
+            HookInstallResult::Updated
+        );
+
+        let config = read_hook_config(&path);
+        // existing trust positions are untouched; the output hook goes at the end
+        assert_eq!(config["hooks"]["PreToolUse"], pre_tool_use);
+        let post = config["hooks"]["PostToolUse"].as_array().unwrap();
+        assert_eq!(post.len(), 2);
+        assert_eq!(post[0], foreign_post);
+        assert_eq!(post[1]["matcher"], CODEX_POST_HOOK_MATCHER);
+        assert_eq!(
+            post[1]["hooks"][0],
+            codex_hook_handler(&CODEX_POST_TOOL_USE)
+        );
+        assert_eq!(
+            install_codex_hook_to_path(&path).unwrap(),
+            HookInstallResult::AlreadyInstalled
         );
     }
 
@@ -975,14 +1348,13 @@ mod tests {
         );
 
         let config = read_hook_config(&path);
-        assert_eq!(config["hooks"]["PreToolUse"].as_array().unwrap().len(), 1);
-        assert_eq!(
-            config["hooks"]["PreToolUse"][0]["hooks"]
-                .as_array()
-                .unwrap()
-                .len(),
-            1
-        );
+        for event in ["PreToolUse", "PostToolUse"] {
+            assert_eq!(config["hooks"][event].as_array().unwrap().len(), 1);
+            assert_eq!(
+                config["hooks"][event][0]["hooks"].as_array().unwrap().len(),
+                1
+            );
+        }
     }
 
     #[test]
@@ -1017,7 +1389,7 @@ mod tests {
             .unwrap();
         assert_eq!(handlers.len(), 2);
         assert_eq!(handlers[0]["command"], "foreign-hook");
-        assert_eq!(handlers[1], codex_hook_handler());
+        assert_eq!(handlers[1], codex_hook_handler(&CODEX_PRE_TOOL_USE));
     }
 
     #[test]
@@ -1133,7 +1505,10 @@ mod tests {
 
         let config = read_hook_config(&path);
         assert_eq!(config["description"], "preserved");
-        assert_eq!(config["hooks"]["PostToolUse"], post_tool_use);
+        // the foreign group keeps its position; ours is appended after it
+        let post = config["hooks"]["PostToolUse"].as_array().unwrap();
+        assert_eq!(post[0], post_tool_use[0]);
+        assert_eq!(post[1]["matcher"], CODEX_POST_HOOK_MATCHER);
     }
 
     #[test]
@@ -1173,7 +1548,10 @@ mod tests {
         assert_eq!(groups[1]["matcher"], "Bar");
         assert_eq!(groups[1]["hooks"][0]["command"], "bar-hook");
         assert_eq!(groups[2]["matcher"], CODEX_HOOK_MATCHER);
-        assert_eq!(groups[2]["hooks"][0], codex_hook_handler());
+        assert_eq!(
+            groups[2]["hooks"][0],
+            codex_hook_handler(&CODEX_PRE_TOOL_USE)
+        );
     }
 
     #[test]
@@ -1514,11 +1892,187 @@ mod tests {
             })
         );
 
-        let other_event = payload("PostToolUse", "Bash", Value::Null);
+        let output = post_payload(json!("line one\nline two\n"));
+        assert_eq!(
+            parse_codex_payload(&output),
+            Ok(CodexToolCall::BashOutput {
+                output: "line one\nline two\n".to_string(),
+                cwd: Some("/tmp".to_string()),
+            })
+        );
+
+        let other_tool = payload("PostToolUse", "apply_patch", Value::Null);
+        assert_eq!(
+            parse_codex_payload(&other_tool),
+            Ok(CodexToolCall::Unscanned)
+        );
+        let other_event = payload("SessionStart", "Bash", Value::Null);
         assert_eq!(
             parse_codex_payload(&other_event),
             Ok(CodexToolCall::Unscanned)
         );
+    }
+
+    /// a PostToolUse Bash payload as codex-cli 0.159.3 sends it: tool_response is a string.
+    fn post_payload(tool_response: Value) -> Vec<u8> {
+        serde_json::to_vec(&json!({
+            "session_id": "session-1",
+            "turn_id": "turn-1",
+            "cwd": "/tmp",
+            "hook_event_name": "PostToolUse",
+            "model": "gpt-test",
+            "tool_name": "Bash",
+            "tool_input": {"command": "cat secret.env"},
+            "tool_response": tool_response,
+            "tool_use_id": "exec-1"
+        }))
+        .unwrap()
+    }
+
+    fn test_output_context() -> OutputScanContext {
+        let config = config::ProjectConfig::default();
+        let rules = config::load_rules_with_config(&config).unwrap();
+        OutputScanContext {
+            allowlist: config::build_allowlist(&config, &rules).unwrap(),
+            scanner: compile_rules(&rules).unwrap(),
+        }
+    }
+
+    fn evaluate_output(output: &str) -> HookDecision {
+        evaluate_bash_output(output, Some("/tmp"), |_| Ok(test_output_context()))
+    }
+
+    fn fake_github_token() -> String {
+        format!("ghp_{}", "a1B2c3D4e5".repeat(4).get(..36).unwrap())
+    }
+
+    #[test]
+    fn post_tool_use_clean_output_is_silent_allow() {
+        assert_eq!(
+            evaluate_output("total 0\ndrwxr-xr-x  2 user  staff  64 src\n"),
+            HookDecision::Allow
+        );
+        assert_eq!(evaluate_output(""), HookDecision::Allow);
+    }
+
+    #[test]
+    fn post_tool_use_secret_output_is_withheld_and_shown_redacted() {
+        let token = fake_github_token();
+        let output = format!("first line\nGITHUB_TOKEN={token}\nlast line\n");
+
+        let reason = assert_block_contains(evaluate_output(&output), "withheld this Bash output");
+
+        assert!(!reason.contains(&token));
+        assert!(reason.contains("The command already ran."));
+        assert!(reason.contains("first line\nGITHUB_TOKEN=[REDACTED]\nlast line\n"));
+    }
+
+    #[test]
+    fn post_tool_use_redacted_output_drops_terminal_control_sequences() {
+        let token = fake_github_token();
+        let output = format!("token={token}\n\u{1b}[2K\rall clean\u{202e}\n");
+
+        let reason = assert_block_contains(evaluate_output(&output), "withheld this Bash output");
+
+        assert!(!reason.contains(&token));
+        assert!(!reason.contains('\u{1b}'));
+        assert!(!reason.contains('\r'));
+        assert!(!reason.contains('\u{202e}'));
+        assert!(reason.contains("token=[REDACTED]\n"));
+    }
+
+    #[test]
+    fn post_tool_use_sanitizing_never_rebuilds_an_unmasked_token() {
+        let first = fake_github_token();
+        let second = format!("ghp_{}", "Z9y8X7w6V5".repeat(4).get(..36).unwrap());
+        let tail = second.strip_prefix("gh").unwrap();
+        for separator in ['\r', '\u{1b}', '\u{202e}'] {
+            let output = format!("FIRST={first}\nSECOND=gh{separator}{tail}\nlast line\n");
+
+            let reason =
+                assert_block_contains(evaluate_output(&output), "withheld this Bash output");
+
+            assert!(!reason.contains(&first), "{separator:?}");
+            assert!(!reason.contains(&second), "{separator:?}");
+            assert!(!reason.contains(separator), "{separator:?}");
+            assert!(
+                reason.contains("FIRST=[REDACTED]\nSECOND=[REDACTED]\nlast line\n"),
+                "{separator:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn post_tool_use_inline_output_is_rechecked_as_emitted() {
+        let context = test_output_context();
+        let token = fake_github_token();
+        let output = format!("GITHUB_TOKEN={token}\n");
+        let matches = scan_text(&output, &context.scanner, &context.allowlist);
+
+        assert_eq!(
+            inline_redacted(&output, &matches, &context).unwrap(),
+            "GITHUB_TOKEN=[REDACTED]\n"
+        );
+        // a raw finding whose value the sanitized redaction would leave verbatim is refused
+        let clean = "nothing here\n";
+        let foreign = vec![TextMatch {
+            range: 0..7,
+            rule_id: "test-rule".to_string(),
+        }];
+        assert!(matches!(
+            inline_redacted(clean, &foreign, &context),
+            Err(InlineRefusal::Unverified)
+        ));
+    }
+
+    #[test]
+    fn post_tool_use_oversized_output_is_withheld_whole_with_masked_findings() {
+        let token = fake_github_token();
+        let filler = "x".repeat(MAX_INLINE_REDACTED_BYTES);
+        let output = format!("{filler}\nGITHUB_TOKEN={token}\n");
+
+        let reason = assert_block_contains(evaluate_output(&output), "too large to show redacted");
+
+        assert!(!reason.contains(&token));
+        assert!(!reason.contains(&filler));
+        assert!(reason.contains("  line: 2\n"));
+        assert!(reason.contains(&mask_secret(token.as_bytes())));
+        assert!(reason.len() < 4096);
+    }
+
+    #[test]
+    fn post_tool_use_non_string_tool_response_fails_closed() {
+        let structured = post_payload(json!({"stdout": "x", "stderr": ""}));
+        assert_block_contains(
+            evaluate(&structured),
+            "Codex Bash output withheld: tool_response schema mismatch",
+        );
+        let missing = payload("PostToolUse", "Bash", json!({"command": "cat x"}));
+        assert_block_contains(
+            evaluate(&missing),
+            "Codex Bash output withheld: tool_response is missing",
+        );
+    }
+
+    #[test]
+    fn post_tool_use_scanner_setup_error_fails_closed() {
+        let decision = evaluate_bash_output("anything", Some("/tmp"), |_| {
+            Err("fixture config failure".to_string())
+        });
+        assert_block_contains(
+            decision,
+            "Codex Bash output withheld: scanner setup failed: fixture config failure",
+        );
+    }
+
+    #[test]
+    fn post_tool_use_relative_or_empty_cwd_fails_closed() {
+        for cwd in ["relative/dir", ""] {
+            let error = load_output_scan_context(Some(cwd))
+                .err()
+                .expect("a cwd that cannot be trusted fails");
+            assert!(!error.is_empty());
+        }
     }
 
     #[test]
@@ -1768,10 +2322,158 @@ mod tests {
         assert!(!config.allowlist.paths.iter().any(|path| path == marker));
     }
 
+    /// a permissive config outside the workspace, the target of an in-workspace symlink.
+    fn outside_permissive_config() -> (tempfile::TempDir, PathBuf) {
+        let outside = tempfile::tempdir().unwrap();
+        let target = outside.path().join("permissive.toml");
+        fs::write(&target, permissive_config()).unwrap();
+        (outside, target)
+    }
+
+    #[test]
+    fn untracked_inworkspace_config_symlink_to_outside_is_not_trusted() {
+        let repo = init_git_repo();
+        let (_outside, target) = outside_permissive_config();
+        std::os::unix::fs::symlink(&target, repo.path().join(".sekretbarilo.toml")).unwrap();
+
+        assert_block_contains(
+            evaluate_payload_with_loader(&secret_patch_payload(repo.path()), load_scan_context),
+            "secret(s) detected",
+        );
+    }
+
+    #[test]
+    fn committed_inworkspace_config_symlink_is_not_trusted() {
+        // git records the link text, so a clean `git diff` says nothing about the target.
+        let repo = init_git_repo();
+        let (_outside, target) = outside_permissive_config();
+        std::os::unix::fs::symlink(&target, repo.path().join(".sekretbarilo.toml")).unwrap();
+        git_success(repo.path(), &["add", ".sekretbarilo.toml"]);
+        git_success(
+            repo.path(),
+            &["commit", "--no-verify", "-m", "add fixture config symlink"],
+        );
+
+        assert_block_contains(
+            evaluate_payload_with_loader(&secret_patch_payload(repo.path()), load_scan_context),
+            "secret(s) detected",
+        );
+    }
+
+    #[test]
+    fn cwd_through_a_symlinked_workspace_directory_does_not_trust_its_target_layer() {
+        let repo = init_git_repo();
+        let outside = tempfile::tempdir().unwrap();
+        fs::write(
+            outside.path().join(".sekretbarilo.toml"),
+            permissive_config(),
+        )
+        .unwrap();
+        let linked = repo.path().join("linked");
+        std::os::unix::fs::symlink(outside.path(), &linked).unwrap();
+
+        assert_block_contains(
+            evaluate_payload_with_loader(&secret_patch_payload(&linked), load_scan_context),
+            "secret(s) detected",
+        );
+    }
+
+    #[test]
+    fn inworkspace_config_symlink_without_git_repo_is_not_trusted() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let marker = "fixture-non-git-symlink-marker";
+        let target = outside.path().join("marker.toml");
+        fs::write(&target, format!("[allowlist]\npaths = [\"{marker}\"]\n")).unwrap();
+        std::os::unix::fs::symlink(&target, dir.path().join(".sekretbarilo.toml")).unwrap();
+
+        let config = load_trusted_project_config(dir.path()).unwrap();
+        assert!(!config.allowlist.paths.iter().any(|path| path == marker));
+    }
+
+    #[test]
+    fn place_layer_judges_the_path_as_discovered() {
+        let workspace = tempfile::tempdir().unwrap();
+        let boundary = workspace.path().canonicalize().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let outside_dir = outside.path().canonicalize().unwrap();
+        fs::write(outside_dir.join("layer.toml"), "").unwrap();
+        fs::write(boundary.join("layer.toml"), "").unwrap();
+
+        // a regular file inside
+        assert_eq!(
+            place_layer(&boundary.join("layer.toml"), &boundary),
+            LayerPlacement::Inside(boundary.join("layer.toml"))
+        );
+        // a symlinked file inside, pointing out
+        std::os::unix::fs::symlink(outside_dir.join("layer.toml"), boundary.join("link.toml"))
+            .unwrap();
+        assert_eq!(
+            place_layer(&boundary.join("link.toml"), &boundary),
+            LayerPlacement::Symlinked
+        );
+        // a regular file under a symlinked workspace directory
+        std::os::unix::fs::symlink(&outside_dir, boundary.join("dir")).unwrap();
+        assert_eq!(
+            place_layer(&boundary.join("dir/layer.toml"), &boundary),
+            LayerPlacement::Symlinked
+        );
+        // a link outside the workspace into it is judged by its target
+        std::os::unix::fs::symlink(boundary.join("layer.toml"), outside_dir.join("in.toml"))
+            .unwrap();
+        assert_eq!(
+            place_layer(&outside_dir.join("in.toml"), &boundary),
+            LayerPlacement::Inside(boundary.join("layer.toml"))
+        );
+        assert_eq!(
+            place_layer(&outside_dir.join("layer.toml"), &boundary),
+            LayerPlacement::Outside
+        );
+    }
+
+    #[test]
+    fn pre_tool_use_relative_empty_or_file_cwd_fails_closed() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("file.txt");
+        fs::write(&file, "").unwrap();
+        let file = file.to_str().unwrap();
+        for cwd in ["relative/dir", "", "   ", file] {
+            let error = load_scan_context(Some(cwd))
+                .err()
+                .expect("a cwd that cannot be trusted fails");
+            assert!(!error.is_empty());
+            let bash = payload_with_cwd("PreToolUse", "Bash", json!({"command": "echo hi"}), cwd);
+            assert_block_contains(
+                evaluate_payload_with_loader(&bash, load_scan_context),
+                "Codex Bash scanner setup failed",
+            );
+            let patch = payload_with_cwd(
+                "PreToolUse",
+                "apply_patch",
+                json!({"command": "*** Begin Patch\n*** Add File: clean.rs\n+let clean = true;\n*** End Patch\n"}),
+                cwd,
+            );
+            assert_block_contains(
+                evaluate_payload_with_loader(&patch, load_scan_context),
+                "Codex apply_patch scanner setup failed",
+            );
+        }
+    }
+
+    #[test]
+    fn pre_tool_use_vanished_cwd_scans_from_its_nearest_existing_ancestor() {
+        let repo = init_git_repo();
+        let vanished = repo.path().join(".worktrees/unit-gone");
+        assert_block_contains(
+            evaluate_payload_with_loader(&secret_patch_payload(&vanished), load_scan_context),
+            "secret(s) detected",
+        );
+    }
+
     #[test]
     fn payload_accepts_absent_agent_fields_and_unknown_fields() {
         let input = payload("PreToolUse", "Bash", json!({"command": "echo hello"}));
-        let payload: PreToolUsePayload = serde_json::from_slice(&input).unwrap();
+        let payload: CodexHookPayload = serde_json::from_slice(&input).unwrap();
 
         assert_eq!(payload.agent_id, None);
         assert_eq!(payload.agent_type, None);
@@ -1983,5 +2685,55 @@ mod tests {
             }),
             HookDecision::Allow
         );
+    }
+
+    #[test]
+    fn git_local_env_vars_covers_every_name_git_lists() {
+        let Ok(output) = Command::new("git")
+            .args(["rev-parse", "--local-env-vars"])
+            .stdin(Stdio::null())
+            .output()
+        else {
+            return;
+        };
+        if !output.status.success() {
+            return;
+        }
+        let listed = String::from_utf8_lossy(&output.stdout);
+        let missing: Vec<&str> = listed
+            .split_whitespace()
+            .filter(|name| !GIT_LOCAL_ENV_VARS.contains(name))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "git lists local env vars missing from GIT_LOCAL_ENV_VARS: {missing:?}"
+        );
+    }
+
+    #[test]
+    fn merge_overlapping_matches_counts_one_span_once() {
+        let matches = vec![
+            TextMatch {
+                range: 0..10,
+                rule_id: "keyword-rule".to_string(),
+            },
+            TextMatch {
+                range: 4..10,
+                rule_id: "prefix-rule".to_string(),
+            },
+            TextMatch {
+                range: 4..10,
+                rule_id: "keyword-rule".to_string(),
+            },
+            TextMatch {
+                range: 20..30,
+                rule_id: "other-rule".to_string(),
+            },
+        ];
+        let merged = merge_overlapping_matches(&matches);
+        assert_eq!(merged.len(), 2);
+        assert_eq!(merged[0].range, 0..10);
+        assert_eq!(merged[0].rule_ids, ["keyword-rule", "prefix-rule"]);
+        assert_eq!(merged[1].range, 20..30);
     }
 }

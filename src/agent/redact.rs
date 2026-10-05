@@ -1,7 +1,7 @@
 //! in-memory replacement of successful Claude tool output; never edits a file.
 
 use std::io::{ErrorKind, Read, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
 
@@ -91,32 +91,8 @@ fn evaluate(payload: &mut Value) -> Result<bool, ()> {
         None => std::env::current_dir().map_err(|_| ())?,
         _ => return Err(()),
     };
-    if !cwd.is_absolute() {
-        return Err(());
-    }
-    // a Bash call that removes its own cwd (`git worktree remove` inside the
-    // worktree) reports the vanished path. discovery and git run from its
-    // nearest existing ancestor, while trust is judged for the vanished path
-    // (see `load_trusted_redact_config`). the walk passes only absent
-    // components: a dangling symlink or an unreadable entry stops it.
-    let base = cwd
-        .ancestors()
-        .find(|path| !matches!(path.symlink_metadata(), Err(e) if e.kind() == ErrorKind::NotFound))
-        .filter(|path| path.is_dir())
-        .ok_or(())?
-        .to_path_buf();
-    let vanished = (base != cwd).then_some(cwd.as_path());
-    // the walk is lexical, so a vanished path spelled with `.` or `..` is
-    // refused; `components()` hides a `.`, hence the raw segments.
-    if vanished.is_some()
-        && cwd
-            .as_os_str()
-            .as_encoded_bytes()
-            .split(|byte| *byte == b'/')
-            .any(|segment| segment == b"." || segment == b"..")
-    {
-        return Err(());
-    }
+    let (base, vanished) = resolve_hook_base(&cwd)?;
+    let vanished = vanished.as_deref();
     let response = payload.get_mut("tool_response").ok_or(())?;
     // known non-text Read variants are outside this command's scope.
     if tool == "Read"
@@ -135,6 +111,40 @@ fn evaluate(payload: &mut Value) -> Result<bool, ()> {
     visit_text(&tool, response, &mut |text| {
         redact_text(text, &scanner, &allowlist)
     })
+}
+
+/// resolve an output hook's absolute cwd to the directory config discovery and git run
+/// from, plus the vanished cwd when it no longer exists. shared by `redact-claude` and both
+/// Codex events of `check-codex`.
+///
+/// a Bash call that removes its own cwd (`git worktree remove` inside the worktree) reports
+/// the vanished path. discovery and git run from its nearest existing ancestor, while trust
+/// is judged for the vanished path (see `load_trusted_redact_config`). the walk passes only
+/// absent components: a dangling symlink or an unreadable entry stops it.
+pub(crate) fn resolve_hook_base(cwd: &Path) -> Result<(PathBuf, Option<PathBuf>), ()> {
+    if !cwd.is_absolute() {
+        return Err(());
+    }
+    let base = cwd
+        .ancestors()
+        .find(|path| !matches!(path.symlink_metadata(), Err(e) if e.kind() == ErrorKind::NotFound))
+        .filter(|path| path.is_dir())
+        .ok_or(())?
+        .to_path_buf();
+    if base == cwd {
+        return Ok((base, None));
+    }
+    // the walk is lexical, so a vanished path spelled with `.` or `..` is
+    // refused; `components()` hides a `.`, hence the raw segments.
+    if cwd
+        .as_os_str()
+        .as_encoded_bytes()
+        .split(|byte| *byte == b'/')
+        .any(|segment| segment == b"." || segment == b"..")
+    {
+        return Err(());
+    }
+    Ok((base, Some(cwd.to_path_buf())))
 }
 
 fn replacement(response: Value) -> Value {

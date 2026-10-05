@@ -1343,8 +1343,8 @@ fn e2e_doctor_exit_0_when_all_installed() {
     std::fs::write(
         codex_home.join("config.toml"),
         format!(
-            "[hooks.state.\"{}:pre_tool_use:0:0\"]\nenabled = true\n",
-            hooks_json_path.display()
+            "[hooks.state.\"{path}:pre_tool_use:0:0\"]\nenabled = true\n[hooks.state.\"{path}:post_tool_use:0:0\"]\nenabled = true\n",
+            path = hooks_json_path.display()
         ),
     )
     .unwrap();

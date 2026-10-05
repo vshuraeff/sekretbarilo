@@ -153,7 +153,7 @@ With the layer enabled, a bounded lexical pass also collects quoted call-argumen
 
 The layer changes which values are considered, never the gates they are measured against: the 20-byte minimum and the 4.0 threshold are unchanged, and signature and contextual rules never enter it. The path-shape check that runs before the layer, and the user entropy-key allowlist that runs after it, are both independent of the switch.
 
-**Hex bypass**: an exact-length hex value (32, 40 or 64 digits, optionally `0x`-prefixed) assigned under a key that is not `*_id`, `*_hash` or `address`-shaped skips the Shannon gate of step 14 and is emitted if it clears every other gate. This is the one place the layer makes the rule stricter. It applies to double-quoted, single-quoted, bracketed and unquoted captures, never to bare lines or call bodies, and requires both that the value's own assignment carry no hash context (step 12) and that the value reach 2.0 bits of entropy over the 16-symbol hex alphabet.
+**Hex bypass**: a hex value of 32 through 128 digits (optionally `0x`-prefixed) assigned under a key that is not `*_id`, `*_hash` or `address`-shaped skips the Shannon gate of step 14 and is emitted if it clears every other gate. This is the one place the layer makes the rule stricter. It applies to double-quoted, single-quoted, bracketed and unquoted captures, never to bare lines or call bodies, and requires both that the value's own assignment carry no hash context (step 12) and that the value reach 2.0 bits of entropy over the 16-symbol hex alphabet.
 
 **Rationale and residuals**: [ADR 0002](../adr/0002-tier3-exemption-layer.md) for the layer, [ADR 0003](../adr/0003-tier3-source-posture.md) for the source posture and the test-path skip.
 
@@ -387,12 +387,16 @@ For supported formats, installation/version requirements, and failure/telemetry 
 
 ## Check-Codex Pipeline (Codex CLI Agent Hook)
 
-Triggered by the Codex CLI *before* it runs a tool, not after. `check-codex` inspects what the agent
-is about to write, so a secret is caught before it reaches the working tree.
+Triggered by the Codex CLI at two points. On `PreToolUse`, before it runs a tool, `check-codex`
+inspects what the agent is about to write, so a secret is caught before it reaches the working tree.
+On `PostToolUse`, after a `Bash` command has finished, it scans the output Codex is about to hand the
+model with the agent text surface (`scan_text`/`redact_text`, the `redact-claude` trust and cwd
+rules), and on a finding exits 2 so Codex replaces the output with the reason, which carries the
+redacted output or, above 64 KiB, masked findings only.
 
-The hook is registered with matcher `^(apply_patch|Bash)$` and runs
-`sekretbarilo check-codex --stdin-json`. The command is internal: it only reads a hook payload from
-stdin, and refuses to run without `--stdin-json`.
+The hook is registered with matcher `^(apply_patch|Bash)$` under `PreToolUse` and `^Bash$` under
+`PostToolUse`, and both run `sekretbarilo check-codex --stdin-json`. The command is internal: it only
+reads a hook payload from stdin, and refuses to run without `--stdin-json`.
 
 ### Payload
 
@@ -686,7 +690,7 @@ diagnostic secret values masked before display:
 
 - `[ERROR]`: scan command findings (blocks commit), and fatal errors on any command
 - `[AUDIT]`: audit command findings and progress (informational)
-- `[AGENT]`: check-file findings (blocks read) and check-codex findings (blocks the tool call)
+- `[AGENT]`: check-file findings (blocks read) and check-codex findings (blocks the tool call or withholds Bash output)
 - `[SEARCH]`: user-search pass results — **not** masked
 - `[OK]` / `[WARN]` / `[NOT INSTALLED]` / `[INFO]`: install and doctor status lines
 
@@ -882,7 +886,7 @@ they mutate global git state.
 ### Sandboxing
 agent hook mode:
 - `check-file` reads only the target file (no directory traversal); `check-codex` reads no file at
-  all, only the payload the agent is about to act on
+  all, only the payload the agent is about to act on or the output Codex is about to show it
 - no network access
 - no temp file creation
 - read-only access to config files

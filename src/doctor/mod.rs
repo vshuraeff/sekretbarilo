@@ -11,7 +11,8 @@ use crate::agent::claude::{
     sekretbarilo_subcommand_executable,
 };
 use crate::agent::{
-    CODEX_HOOK_COMMAND, CODEX_HOOK_MATCHER, find_hook, is_sekretbarilo_hook_command,
+    CODEX_HOOK_COMMAND, CODEX_HOOK_MATCHER, CODEX_POST_HOOK_MATCHER, CODEX_POST_TOOL_USE,
+    CODEX_PRE_TOOL_USE, CodexHookEvent, find_hook, is_sekretbarilo_hook_command,
     resolve_codex_home,
 };
 use crate::hook::HOOK_MARKER;
@@ -642,6 +643,19 @@ fn check_codex_hook_at(
     });
     let mut results = Vec::new();
 
+    let current_exe = std::env::current_exe().ok();
+    let absolute_command = current_exe
+        .as_deref()
+        .and_then(|path| command_for_binary_path_with_args(path, "check-codex --stdin-json"));
+    let context = CodexEventCheck {
+        parsed: &parsed,
+        hooks_json_path,
+        config_toml_path,
+        scope,
+        current_exe: current_exe.as_deref(),
+        absolute_command: absolute_command.as_deref(),
+    };
+
     // navigate to hooks.PreToolUse
     let Some(pre_tool_use) = parsed
         .get("hooks")
@@ -664,83 +678,126 @@ fn check_codex_hook_at(
         return results;
     }
 
-    let current_exe = std::env::current_exe().ok();
-    let absolute_command = current_exe
-        .as_deref()
-        .and_then(|path| command_for_binary_path_with_args(path, "check-codex --stdin-json"));
-    let absolute_hook_search = absolute_command
-        .as_deref()
-        .map(|command| find_hook(&parsed, CODEX_HOOK_MATCHER, command));
-    let hook_search = find_hook(&parsed, CODEX_HOOK_MATCHER, CODEX_HOOK_COMMAND);
-    if let Some((group_index, hook_index)) = hook_search.first_sekretbarilo_hook {
-        let current_hook = absolute_hook_search
-            .and_then(|search| search.exact_hook)
-            .or(hook_search.exact_hook)
-            .or_else(|| find_current_codex_hook(&parsed));
-        if let Some((current_group_index, current_hook_index)) = current_hook {
-            let command = parsed["hooks"]["PreToolUse"][current_group_index]["hooks"]
-                [current_hook_index]["command"]
-                .as_str()
-                .unwrap_or("<unreadable command>");
-            results.push(CheckResult::ok(format!(
-                "{} codex cli hook installed ({})",
-                scope,
-                hooks_json_path.display()
-            )));
-            if (current_group_index, current_hook_index) != (group_index, hook_index) {
-                results.push(CheckResult::warn(format!(
-                    "{} codex cli hook: a stale sekretbarilo handler also exists at group {}, handler {}; remove it by hand from {}",
-                    scope,
-                    group_index,
-                    hook_index,
-                    hooks_json_path.display()
-                )));
-            }
-            results.push(check_codex_hook_approval(
-                hooks_json_path,
-                config_toml_path,
-                scope,
-                current_group_index,
-                current_hook_index,
-            ));
-            results.extend(check_codex_hook_binary(
-                command,
-                scope,
-                current_exe.as_deref(),
-            ));
-        } else {
-            let command =
-                parsed["hooks"]["PreToolUse"][group_index]["hooks"][hook_index]["command"]
-                    .as_str()
-                    .unwrap_or("<unreadable command>");
-            results.push(CheckResult::warn(format!(
-                "{} codex cli hook has outdated sekretbarilo command: {}; re-running the installer will update it",
-                scope, command
-            )));
-            results.extend(check_codex_hook_binary(
-                command,
-                scope,
-                current_exe.as_deref(),
-            ));
-        }
-    } else {
+    if !context.check_event(&CODEX_PRE_TOOL_USE, &mut results) {
         results.push(CheckResult::not_installed(format!(
             "{} codex hooks.json exists but no sekretbarilo hook was found under the matcher \"{}\"; if you hand-edited the matcher, doctor cannot see hooks under a different one",
             scope, CODEX_HOOK_MATCHER
         )));
     }
 
+    match parsed
+        .get("hooks")
+        .and_then(|hooks| hooks.get("PostToolUse"))
+    {
+        Some(post_tool_use) if post_tool_use.as_array().is_none() => {
+            results.push(CheckResult::error(format!(
+                "{} hooks.PostToolUse is not an array",
+                scope
+            )));
+        }
+        _ => {
+            if !context.check_event(&CODEX_POST_TOOL_USE, &mut results) {
+                results.push(CheckResult::warn(format!(
+                    "{} codex cli output hook not found under hooks.PostToolUse with the matcher \"{}\"; Bash output reaches the model unscanned; re-run sekretbarilo install agent-hook codex and approve the new hook with /hooks in the Codex TUI",
+                    scope, CODEX_POST_HOOK_MATCHER
+                )));
+            }
+        }
+    }
+
     append_codex_unrecognised_key_warning(&mut results, scope, has_unrecognised_top_level_key);
     results
 }
 
-fn find_current_codex_hook(root: &serde_json::Value) -> Option<(usize, usize)> {
+/// one hooks.json under inspection, shared by the per-event checks.
+struct CodexEventCheck<'a> {
+    parsed: &'a serde_json::Value,
+    hooks_json_path: &'a Path,
+    config_toml_path: &'a Path,
+    scope: &'a str,
+    current_exe: Option<&'a Path>,
+    absolute_command: Option<&'a str>,
+}
+
+impl CodexEventCheck<'_> {
+    /// report one event's sekretbarilo handler; false when the event has none.
+    fn check_event(&self, event: &CodexHookEvent, results: &mut Vec<CheckResult>) -> bool {
+        let scope = self.scope;
+        let label = codex_event_label(event);
+        let absolute_hook_search = self
+            .absolute_command
+            .map(|command| find_hook(self.parsed, event.event, event.matcher, command));
+        let hook_search = find_hook(self.parsed, event.event, event.matcher, CODEX_HOOK_COMMAND);
+        let Some((group_index, hook_index)) = hook_search.first_sekretbarilo_hook else {
+            return false;
+        };
+        let handlers = &self.parsed["hooks"][event.event];
+        let current_hook = absolute_hook_search
+            .and_then(|search| search.exact_hook)
+            .or(hook_search.exact_hook)
+            .or_else(|| find_current_codex_hook(self.parsed, event));
+        if let Some((current_group_index, current_hook_index)) = current_hook {
+            let command = handlers[current_group_index]["hooks"][current_hook_index]["command"]
+                .as_str()
+                .unwrap_or("<unreadable command>");
+            results.push(CheckResult::ok(format!(
+                "{} {} installed ({})",
+                scope,
+                label,
+                self.hooks_json_path.display()
+            )));
+            if (current_group_index, current_hook_index) != (group_index, hook_index) {
+                results.push(CheckResult::warn(format!(
+                    "{} {}: a stale sekretbarilo handler also exists at group {}, handler {}; remove it by hand from {}",
+                    scope,
+                    label,
+                    group_index,
+                    hook_index,
+                    self.hooks_json_path.display()
+                )));
+            }
+            results.push(check_codex_hook_approval(
+                self.hooks_json_path,
+                self.config_toml_path,
+                scope,
+                event,
+                current_group_index,
+                current_hook_index,
+            ));
+            results.extend(check_codex_hook_binary(command, scope, self.current_exe));
+        } else {
+            let command = handlers[group_index]["hooks"][hook_index]["command"]
+                .as_str()
+                .unwrap_or("<unreadable command>");
+            results.push(CheckResult::warn(format!(
+                "{} {} has outdated sekretbarilo command: {}; re-running the installer will update it",
+                scope, label, command
+            )));
+            results.extend(check_codex_hook_binary(command, scope, self.current_exe));
+        }
+        true
+    }
+}
+
+/// the name doctor gives each event's hook; the PreToolUse wording predates the output hook.
+fn codex_event_label(event: &CodexHookEvent) -> &'static str {
+    if event.event == CODEX_POST_TOOL_USE.event {
+        "codex cli output hook"
+    } else {
+        "codex cli hook"
+    }
+}
+
+fn find_current_codex_hook(
+    root: &serde_json::Value,
+    event: &CodexHookEvent,
+) -> Option<(usize, usize)> {
     let entries = root
         .get("hooks")
-        .and_then(|hooks| hooks.get("PreToolUse"))
+        .and_then(|hooks| hooks.get(event.event))
         .and_then(serde_json::Value::as_array)?;
     for (group_index, group) in entries.iter().enumerate() {
-        if group.get("matcher").and_then(serde_json::Value::as_str) != Some(CODEX_HOOK_MATCHER) {
+        if group.get("matcher").and_then(serde_json::Value::as_str) != Some(event.matcher) {
             continue;
         }
         let Some(handlers) = group.get("hooks").and_then(serde_json::Value::as_array) else {
@@ -834,6 +891,7 @@ fn check_codex_hook_approval(
     hooks_json_path: &Path,
     config_toml_path: &Path,
     scope: &str,
+    event: &CodexHookEvent,
     group_index: usize,
     hook_index: usize,
 ) -> CheckResult {
@@ -843,7 +901,8 @@ fn check_codex_hook_approval(
     // when it wrote the approval entry. Cost: if Codex ever records the key under a
     // canonicalized path that differs from this one, doctor will warn forever with advice that
     // cannot fix it. That is still only ever a WARN, never a false OK, so it is accepted.
-    let hook_prefix = format!("{hook_path}:pre_tool_use:");
+    let hook_prefix = format!("{hook_path}:{}:", event.trust_label);
+    let scope = &format!("{scope} {}", codex_event_label(event));
     let expected_key = format!("{hook_prefix}{group_index}:{hook_index}");
     let approval_entry = std::fs::read_to_string(config_toml_path)
         .ok()
@@ -855,7 +914,7 @@ fn check_codex_hook_approval(
         Ok(None) => return codex_approval_not_found(scope, config_toml_path),
         Err(error) => {
             return CheckResult::warn(format!(
-                "{} codex cli hook approval status could not be determined from {}: malformed TOML: {}; approve it with /hooks in the Codex TUI",
+                "{} approval status could not be determined from {}: malformed TOML: {}; approve it with /hooks in the Codex TUI",
                 scope,
                 config_toml_path.display(),
                 error
@@ -877,7 +936,7 @@ fn check_codex_hook_approval(
                 .any(|key| key != &expected_key && key.starts_with(&hook_prefix))
         }) {
             return CheckResult::warn(format!(
-                "{} codex cli hook: an approval entry exists in {} but not for this hook's position (group {}, handler {}); codex silently skips unapproved hooks; the indices may have shifted; re-approve with /hooks in the Codex TUI",
+                "{}: an approval entry exists in {} but not for this hook's position (group {}, handler {}); codex silently skips unapproved hooks; the indices may have shifted; re-approve with /hooks in the Codex TUI",
                 scope,
                 config_toml_path.display(),
                 group_index,
@@ -895,7 +954,7 @@ fn check_codex_hook_approval(
         .unwrap_or(true);
     if enabled {
         CheckResult::ok(format!(
-            "{} codex cli hook approval entry found in {} (group {}, handler {}); codex re-checks its own trust hash at run time, so this is not proof the hook runs",
+            "{} approval entry found in {} (group {}, handler {}); codex re-checks its own trust hash at run time, so this is not proof the hook runs",
             scope,
             config_toml_path.display(),
             group_index,
@@ -903,7 +962,7 @@ fn check_codex_hook_approval(
         ))
     } else {
         CheckResult::warn(format!(
-            "{} codex cli hook approval entry in {} is explicitly disabled; enable it with /hooks in the Codex TUI",
+            "{} approval entry in {} is explicitly disabled; enable it with /hooks in the Codex TUI",
             scope,
             config_toml_path.display()
         ))
@@ -912,7 +971,7 @@ fn check_codex_hook_approval(
 
 fn codex_approval_not_found(scope: &str, config_toml_path: &Path) -> CheckResult {
     CheckResult::warn(format!(
-        "{} codex cli hook approval entry not found in {}; codex silently skips unapproved hooks; approve it with /hooks in the Codex TUI",
+        "{} approval entry not found in {}; codex silently skips unapproved hooks; approve it with /hooks in the Codex TUI",
         scope,
         config_toml_path.display()
     ))
@@ -1805,6 +1864,118 @@ mod tests {
         );
     }
 
+    /// the PreToolUse findings alone, for fixtures that predate the output hook.
+    fn check_codex_pre_hook_at(
+        hooks_json_path: &Path,
+        config_toml_path: &Path,
+        scope: &str,
+    ) -> Vec<CheckResult> {
+        check_codex_hook_at(hooks_json_path, config_toml_path, scope)
+            .into_iter()
+            .filter(|result| !result.message.contains("codex cli output hook"))
+            .collect()
+    }
+
+    fn codex_both_hooks_json(command: &str) -> String {
+        let handler = serde_json::json!([{"type": "command", "command": command}]);
+        serde_json::to_string_pretty(&serde_json::json!({
+            "hooks": {
+                "PreToolUse": [{"matcher": CODEX_HOOK_MATCHER, "hooks": handler}],
+                "PostToolUse": [{"matcher": CODEX_POST_HOOK_MATCHER, "hooks": handler}]
+            }
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn detect_codex_pre_only_install_warns_that_the_output_hook_is_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let hooks_json_path = dir.path().join("hooks.json");
+        let config_toml_path = dir.path().join("config.toml");
+        std::fs::write(&hooks_json_path, codex_hooks_json(CODEX_HOOK_COMMAND)).unwrap();
+
+        let results = check_codex_hook_at(&hooks_json_path, &config_toml_path, "test");
+
+        let missing = results
+            .iter()
+            .find(|result| result.message.contains("codex cli output hook not found"))
+            .expect("a missing output hook is reported");
+        assert_eq!(missing.status, Status::Warn);
+        assert!(
+            missing
+                .message
+                .contains("re-run sekretbarilo install agent-hook codex")
+        );
+    }
+
+    #[test]
+    fn detect_codex_output_hook_checks_its_own_trust_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let hooks_json_path = dir.path().join("hooks.json");
+        let config_toml_path = dir.path().join("config.toml");
+        std::fs::write(&hooks_json_path, codex_both_hooks_json(CODEX_HOOK_COMMAND)).unwrap();
+        // only the PreToolUse position is approved
+        std::fs::write(
+            &config_toml_path,
+            format!(
+                "[hooks.state.\"{}:pre_tool_use:0:0\"]\nenabled = true\n",
+                hooks_json_path.display()
+            ),
+        )
+        .unwrap();
+
+        let results = check_codex_hook_at(&hooks_json_path, &config_toml_path, "test");
+        let output: Vec<_> = results
+            .iter()
+            .filter(|result| result.message.contains("codex cli output hook"))
+            .collect();
+
+        assert_eq!(output[0].status, Status::Ok);
+        assert!(output[0].message.contains("output hook installed"));
+        assert_eq!(output[1].status, Status::Warn);
+        assert!(output[1].message.contains("approval entry not found"));
+        assert!(
+            !results
+                .iter()
+                .any(|result| result.message.contains("output hook not found"))
+        );
+
+        std::fs::write(
+            &config_toml_path,
+            format!(
+                "[hooks.state.\"{path}:pre_tool_use:0:0\"]\nenabled = true\n[hooks.state.\"{path}:post_tool_use:0:0\"]\nenabled = true\n",
+                path = hooks_json_path.display()
+            ),
+        )
+        .unwrap();
+        let results = check_codex_hook_at(&hooks_json_path, &config_toml_path, "test");
+        let approval = results
+            .iter()
+            .find(|result| {
+                result.message.contains("codex cli output hook")
+                    && result.message.contains("approval entry found")
+            })
+            .expect("the output hook's own approval entry is found");
+        assert_eq!(approval.status, Status::Ok);
+    }
+
+    #[test]
+    fn detect_codex_output_hook_rejects_non_array_event() {
+        let dir = tempfile::tempdir().unwrap();
+        let hooks_json_path = dir.path().join("hooks.json");
+        let config_toml_path = dir.path().join("config.toml");
+        let hooks = serde_json::json!({"hooks": {
+            "PreToolUse": [{"matcher": CODEX_HOOK_MATCHER, "hooks": [{"type": "command", "command": CODEX_HOOK_COMMAND}]}],
+            "PostToolUse": {"matcher": CODEX_POST_HOOK_MATCHER}
+        }});
+        std::fs::write(&hooks_json_path, hooks.to_string()).unwrap();
+
+        let results = check_codex_hook_at(&hooks_json_path, &config_toml_path, "test");
+
+        assert!(results.iter().any(|result| result.status == Status::Error
+            && result.message.contains("hooks.PostToolUse is not an array")));
+    }
+
     fn codex_hooks_json(command: &str) -> String {
         serde_json::to_string_pretty(&serde_json::json!({
             "hooks": {
@@ -1830,7 +2001,7 @@ mod tests {
         let hooks_json_path = dir.path().join("hooks.json");
         let config_toml_path = dir.path().join("config.toml");
 
-        let results = check_codex_hook_at(&hooks_json_path, &config_toml_path, "test");
+        let results = check_codex_pre_hook_at(&hooks_json_path, &config_toml_path, "test");
 
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].status, Status::NotInstalled);
@@ -1844,7 +2015,7 @@ mod tests {
         let config_toml_path = dir.path().join("config.toml");
         std::fs::write(&hooks_json_path, codex_hooks_json("echo another hook")).unwrap();
 
-        let results = check_codex_hook_at(&hooks_json_path, &config_toml_path, "test");
+        let results = check_codex_pre_hook_at(&hooks_json_path, &config_toml_path, "test");
 
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].status, Status::NotInstalled);
@@ -1863,7 +2034,7 @@ mod tests {
         let config_toml_path = dir.path().join("config.toml");
         std::fs::write(&hooks_json_path, codex_hooks_json(CODEX_HOOK_COMMAND)).unwrap();
 
-        let results = check_codex_hook_at(&hooks_json_path, &config_toml_path, "test");
+        let results = check_codex_pre_hook_at(&hooks_json_path, &config_toml_path, "test");
 
         assert_eq!(results.len(), 3);
         assert_eq!(results[0].status, Status::Ok);
@@ -1889,7 +2060,7 @@ mod tests {
         )
         .unwrap();
 
-        let results = check_codex_hook_at(&hooks_json_path, &config_toml_path, "test");
+        let results = check_codex_pre_hook_at(&hooks_json_path, &config_toml_path, "test");
 
         assert_eq!(results.len(), 3);
         assert_eq!(results[0].status, Status::Ok);
@@ -1913,7 +2084,7 @@ mod tests {
         )
         .unwrap();
 
-        let results = check_codex_hook_at(&hooks_json_path, &config_toml_path, "test");
+        let results = check_codex_pre_hook_at(&hooks_json_path, &config_toml_path, "test");
 
         assert_eq!(results.len(), 3);
         assert_eq!(results[0].status, Status::Ok);
@@ -1962,7 +2133,7 @@ mod tests {
         )
         .unwrap();
 
-        let results = check_codex_hook_at(&hooks_json_path, &config_toml_path, "test");
+        let results = check_codex_pre_hook_at(&hooks_json_path, &config_toml_path, "test");
 
         assert_eq!(results.len(), 3);
         assert_eq!(results[0].status, Status::Ok);
@@ -1998,7 +2169,7 @@ mod tests {
         )
         .unwrap();
 
-        let results = check_codex_hook_at(&hooks_json_path, &config_toml_path, "test");
+        let results = check_codex_pre_hook_at(&hooks_json_path, &config_toml_path, "test");
 
         assert_eq!(results.len(), 3);
         assert_eq!(results[0].status, Status::Ok);
@@ -2025,7 +2196,7 @@ mod tests {
         )
         .unwrap();
 
-        let results = check_codex_hook_at(&hooks_json_path, &config_toml_path, "test");
+        let results = check_codex_pre_hook_at(&hooks_json_path, &config_toml_path, "test");
 
         assert_eq!(results.len(), 3);
         assert_eq!(results[0].status, Status::Ok);
@@ -2072,7 +2243,7 @@ mod tests {
         )
         .unwrap();
 
-        let results = check_codex_hook_at(&hooks_json_path, &config_toml_path, "test");
+        let results = check_codex_pre_hook_at(&hooks_json_path, &config_toml_path, "test");
 
         assert_eq!(results.len(), 3);
         assert_eq!(results[0].status, Status::Ok);
@@ -2096,7 +2267,7 @@ mod tests {
         )
         .unwrap();
 
-        let results = check_codex_hook_at(&hooks_json_path, &config_toml_path, "test");
+        let results = check_codex_pre_hook_at(&hooks_json_path, &config_toml_path, "test");
 
         assert_eq!(results.len(), 3);
         assert_eq!(results[0].status, Status::Ok);
@@ -2143,7 +2314,7 @@ mod tests {
         )
         .unwrap();
 
-        let results = check_codex_hook_at(&hooks_json_path, &config_toml_path, "test");
+        let results = check_codex_pre_hook_at(&hooks_json_path, &config_toml_path, "test");
 
         assert_eq!(results.len(), 4);
         assert_eq!(results[0].status, Status::Ok);
@@ -2174,7 +2345,7 @@ mod tests {
         )
         .unwrap();
 
-        let results = check_codex_hook_at(&hooks_json_path, &config_toml_path, "test");
+        let results = check_codex_pre_hook_at(&hooks_json_path, &config_toml_path, "test");
 
         assert_eq!(results.len(), 2);
         assert_eq!(results[0].status, Status::Warn);
@@ -2201,7 +2372,7 @@ mod tests {
         )
         .unwrap();
 
-        let results = check_codex_hook_at(&hooks_json_path, &config_toml_path, "test");
+        let results = check_codex_pre_hook_at(&hooks_json_path, &config_toml_path, "test");
 
         assert!(results.iter().any(|result| result.status == Status::Warn
             && result.message.contains("unrecognised top-level key")));
@@ -2214,7 +2385,7 @@ mod tests {
         let config_toml_path = dir.path().join("config.toml");
         std::fs::write(&hooks_json_path, "not json{{{").unwrap();
 
-        let results = check_codex_hook_at(&hooks_json_path, &config_toml_path, "test");
+        let results = check_codex_pre_hook_at(&hooks_json_path, &config_toml_path, "test");
 
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].status, Status::Error);
@@ -2232,7 +2403,7 @@ mod tests {
         )
         .unwrap();
 
-        let results = check_codex_hook_at(&hooks_json_path, &config_toml_path, "test");
+        let results = check_codex_pre_hook_at(&hooks_json_path, &config_toml_path, "test");
 
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].status, Status::Error);

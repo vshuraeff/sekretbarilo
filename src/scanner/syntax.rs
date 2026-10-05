@@ -48,7 +48,47 @@ pub fn expression_span(
         return Some(span);
     }
     let (span, widened) = forward_span(line, start, max_scan)?;
-    (!widened || reads_as_words(&line[span.clone()])).then_some(span)
+    (!widened || numeric_rust_attribute(&line[span.clone()]) || reads_as_words(&line[span.clone()]))
+        .then_some(span)
+}
+
+fn numeric_rust_attribute(bytes: &[u8]) -> bool {
+    if !bytes.starts_with(b"#[") || !bytes.ends_with(b")]") {
+        return false;
+    }
+    let Some(name_end) = identifier_end(bytes, 2) else {
+        return false;
+    };
+    if bytes.get(name_end) != Some(&b'(') {
+        return false;
+    }
+    let args = bytes[name_end + 1..bytes.len() - 2].trim_ascii();
+    let args = args.strip_suffix(b",").unwrap_or(args);
+    !args.contains(&b',') && numeric_literal(args)
+}
+
+fn numeric_literal(bytes: &[u8]) -> bool {
+    let bytes = bytes.trim_ascii();
+    let bytes = bytes.strip_prefix(b"-").unwrap_or(bytes);
+    let (digits, hex, limit) = if let Some(digits) = bytes.strip_prefix(b"0x") {
+        (digits, true, 16)
+    } else {
+        (bytes, false, 20)
+    };
+    let count = digits.iter().filter(|&&byte| byte != b'_').count();
+    count > 0
+        && count <= limit
+        && digits.first() != Some(&b'_')
+        && digits.last() != Some(&b'_')
+        && !digits.windows(2).any(|pair| pair == b"__")
+        && digits.iter().all(|byte| {
+            *byte == b'_'
+                || if hex {
+                    byte.is_ascii_hexdigit()
+                } else {
+                    byte.is_ascii_digit()
+                }
+        })
 }
 
 /// the number of groups the unquoted run starting at `start` closes without opening them. the run
@@ -1431,6 +1471,17 @@ mod tests {
             inject(b"#", &secret, b"(value)"),
             inject(b"@", &secret, b"(value)"),
             inject(b"", &secret, b"!(value)"),
+        ]);
+    }
+
+    #[test]
+    fn rust_numeric_attributes_are_expressions_without_hiding_payloads() {
+        let input = b"#[test_case(0x9e37_79b9_7f4a_7c15)]";
+        assert_eq!(expression_span(input, 0, usize::MAX), Some(0..input.len()));
+        let secret = secret_fixture();
+        assert_vetoed(&[
+            inject(b"#[test_case(\"", &secret, b"\")]"),
+            inject(b"#[test_case(", &secret, b")]"),
         ]);
     }
 

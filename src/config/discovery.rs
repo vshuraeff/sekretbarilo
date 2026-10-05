@@ -11,12 +11,42 @@ const SYSTEM_CONFIG_FILENAME: &str = "sekretbarilo.toml";
 /// the directory name used in xdg config
 const CONFIG_DIR_NAME: &str = "sekretbarilo";
 
+/// where a discovered config layer comes from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LayerOrigin {
+    /// `/etc/sekretbarilo.toml` or the xdg user config: a location named by the environment,
+    /// whatever the start directory
+    Fixed,
+    /// a `.sekretbarilo.toml` found in the directory hierarchy of the start directory
+    Hierarchy,
+}
+
+/// one discovered config file and its origin.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConfigLayer {
+    pub path: PathBuf,
+    pub origin: LayerOrigin,
+}
+
 /// discover all config files in priority order (lowest priority first):
 /// 1. /etc/sekretbarilo.toml - system-wide defaults
 /// 2. $XDG_CONFIG_HOME/sekretbarilo/sekretbarilo.toml (or ~/.config/sekretbarilo/sekretbarilo.toml)
 /// 3. directory hierarchy from home down to start_dir
 pub fn discover_configs(start: &Path, home: &Path) -> Vec<PathBuf> {
-    let mut paths = Vec::new();
+    discover_layers(start, home)
+        .into_iter()
+        .map(|layer| layer.path)
+        .collect()
+}
+
+/// `discover_configs` with each file tagged by its origin.
+pub fn discover_layers(start: &Path, home: &Path) -> Vec<ConfigLayer> {
+    discover_layers_with(start, home, xdg_config_path(home))
+}
+
+/// inner implementation that accepts an explicit xdg config path for testability.
+fn discover_layers_with(start: &Path, home: &Path, xdg_config: PathBuf) -> Vec<ConfigLayer> {
+    let mut layers = Vec::new();
 
     // canonicalize start/home so path comparisons are consistent with discover_hierarchy
     let canon_start = start.canonicalize().unwrap_or_else(|_| start.to_path_buf());
@@ -25,29 +55,43 @@ pub fn discover_configs(start: &Path, home: &Path) -> Vec<PathBuf> {
     // 1. system-wide config
     let system_config = PathBuf::from("/etc").join(SYSTEM_CONFIG_FILENAME);
     if system_config.is_file() {
-        paths.push(system_config);
+        layers.push(ConfigLayer {
+            path: system_config,
+            origin: LayerOrigin::Fixed,
+        });
     }
 
     // 2. xdg user config
-    let xdg_config = xdg_config_path(home);
     if xdg_config.is_file() {
-        paths.push(xdg_config);
+        layers.push(ConfigLayer {
+            path: xdg_config,
+            origin: LayerOrigin::Fixed,
+        });
     }
 
     // 3. directory hierarchy (walks from start up to home)
-    let hierarchy = discover_hierarchy(start, home);
-    paths.extend(hierarchy);
+    layers.extend(
+        discover_hierarchy(start, home)
+            .into_iter()
+            .map(|path| ConfigLayer {
+                path,
+                origin: LayerOrigin::Hierarchy,
+            }),
+    );
 
     // 4. if start is outside home, the hierarchy walk returns empty.
     //    still check for a config at start itself so project-local config is never missed.
     if !canon_start.starts_with(&canon_home) {
         let local_config = canon_start.join(CONFIG_FILENAME);
-        if local_config.is_file() && !paths.contains(&local_config) {
-            paths.push(local_config);
+        if local_config.is_file() && !layers.iter().any(|layer| layer.path == local_config) {
+            layers.push(ConfigLayer {
+                path: local_config,
+                origin: LayerOrigin::Hierarchy,
+            });
         }
     }
 
-    paths
+    layers
 }
 
 /// resolve the xdg config file path.
@@ -244,6 +288,55 @@ mod tests {
 
         let path = xdg_config_path_with(&home, Some(home.join("no-such-xdg")));
         assert!(!path.is_file());
+    }
+
+    #[test]
+    fn discover_layers_tags_fixed_and_hierarchy_origins() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().canonicalize().unwrap();
+        let child = home.join("repo");
+        fs::create_dir_all(&child).unwrap();
+        fs::write(home.join(CONFIG_FILENAME), "[settings]\n").unwrap();
+        fs::write(child.join(CONFIG_FILENAME), "[settings]\n").unwrap();
+        let xdg_dir = home.join(".config").join(CONFIG_DIR_NAME);
+        fs::create_dir_all(&xdg_dir).unwrap();
+        fs::write(xdg_dir.join(SYSTEM_CONFIG_FILENAME), "[settings]\n").unwrap();
+
+        let layers = discover_layers_with(&child, &home, xdg_config_path_with(&home, None));
+        let origin_of = |path: PathBuf| {
+            layers
+                .iter()
+                .find(|layer| layer.path == path)
+                .map(|layer| layer.origin)
+        };
+        // the xdg layer under home is fixed even though the hierarchy walk also covers home
+        assert_eq!(
+            origin_of(xdg_dir.join(SYSTEM_CONFIG_FILENAME)),
+            Some(LayerOrigin::Fixed)
+        );
+        assert_eq!(
+            origin_of(home.join(CONFIG_FILENAME)),
+            Some(LayerOrigin::Hierarchy)
+        );
+        assert_eq!(
+            origin_of(child.join(CONFIG_FILENAME)),
+            Some(LayerOrigin::Hierarchy)
+        );
+    }
+
+    #[test]
+    fn discover_layers_tags_a_local_config_outside_home_as_hierarchy() {
+        let home_tmp = tempfile::tempdir().unwrap();
+        let home = home_tmp.path().canonicalize().unwrap();
+        let repo_tmp = tempfile::tempdir().unwrap();
+        let repo = repo_tmp.path().canonicalize().unwrap();
+        fs::write(repo.join(CONFIG_FILENAME), "[settings]\n").unwrap();
+
+        let layers = discover_layers_with(&repo, &home, home.join("no-such-xdg"));
+        assert!(layers.contains(&ConfigLayer {
+            path: repo.join(CONFIG_FILENAME),
+            origin: LayerOrigin::Hierarchy,
+        }));
     }
 
     #[test]

@@ -803,6 +803,101 @@ fn assert_custom_value_masked(output: &Output) {
 }
 
 #[test]
+fn home_as_cwd_keeps_the_user_layer() {
+    // outside git the workspace boundary is the cwd, which then covers the XDG layer.
+    let env = IsolatedEnv::new();
+    env.write_user_config(CUSTOM_RULE);
+    let output = run_bytes(&env, &custom_value_payload(env.home()));
+    assert_custom_value_masked(&output);
+    assert!(output.stderr.is_empty());
+}
+
+#[test]
+fn user_layer_under_a_non_git_cwd_is_kept() {
+    // the cwd holds HOME and with it XDG_CONFIG_HOME, as for a probe whose isolated config
+    // sits under the non-git $TMPDIR it reads from.
+    let env = IsolatedEnv::new();
+    env.write_user_config(CUSTOM_RULE);
+    let output = run_bytes(&env, &custom_value_payload(env.root()));
+    assert_custom_value_masked(&output);
+    assert!(output.stderr.is_empty());
+}
+
+#[test]
+fn symlinked_user_layer_is_kept_with_home_as_cwd() {
+    let env = IsolatedEnv::new();
+    let dotfiles = env.home().join("dotfiles");
+    std::fs::create_dir_all(&dotfiles).unwrap();
+    let target = dotfiles.join("sekretbarilo.toml");
+    std::fs::write(&target, CUSTOM_RULE).unwrap();
+    let dir = env.home().join(".config/sekretbarilo");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::os::unix::fs::symlink(&target, dir.join("sekretbarilo.toml")).unwrap();
+    let output = run_bytes(&env, &custom_value_payload(env.home()));
+    assert_custom_value_masked(&output);
+    assert!(output.stderr.is_empty());
+}
+
+#[test]
+fn cwd_through_a_symlinked_workspace_directory_ignores_its_target_layer() {
+    let env = IsolatedEnv::new();
+    env.write_user_config(CUSTOM_RULE);
+    let repo = env.git_repo();
+    let outside = env.root().join("outside");
+    std::fs::create_dir_all(&outside).unwrap();
+    std::fs::write(outside.join(".sekretbarilo.toml"), ALLOW_CUSTOM).unwrap();
+    let linked = repo.join("linked");
+    std::os::unix::fs::symlink(&outside, &linked).unwrap();
+    let output = run_bytes(&env, &custom_value_payload(&linked));
+    assert_custom_value_masked(&output);
+    assert!(String::from_utf8_lossy(&output.stderr).contains("ignoring untrusted"));
+}
+
+#[test]
+fn workspace_config_symlink_is_not_trusted_even_when_committed() {
+    let env = IsolatedEnv::new();
+    env.write_user_config(CUSTOM_RULE);
+    let repo = env.git_repo();
+    let outside = env.root().join("outside");
+    std::fs::create_dir_all(&outside).unwrap();
+    let target = outside.join("allow.toml");
+    std::fs::write(&target, ALLOW_CUSTOM).unwrap();
+    std::os::unix::fs::symlink(&target, repo.join(".sekretbarilo.toml")).unwrap();
+    let payload = custom_value_payload(&repo);
+
+    let untracked = run_bytes(&env, &payload);
+    assert_custom_value_masked(&untracked);
+    assert!(String::from_utf8_lossy(&untracked.stderr).contains("ignoring untrusted"));
+
+    for args in [
+        vec!["add", ".sekretbarilo.toml"],
+        vec![
+            "-c",
+            "core.hooksPath=/dev/null",
+            "commit",
+            "-m",
+            "fixture symlink",
+        ],
+    ] {
+        let output = std::process::Command::new("git")
+            .args(args)
+            .current_dir(&repo)
+            .env("GIT_CONFIG_GLOBAL", env.git_config_global())
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+    }
+    let committed = run_bytes(&env, &payload);
+    assert_custom_value_masked(&committed);
+    assert!(String::from_utf8_lossy(&committed.stderr).contains("ignoring untrusted"));
+
+    // control: the same allowlist in a trusted layer lets the value through.
+    std::fs::remove_file(repo.join(".sekretbarilo.toml")).unwrap();
+    env.write_user_config(&format!("{CUSTOM_RULE}{ALLOW_CUSTOM}"));
+    assert!(run_bytes(&env, &payload).stdout.is_empty());
+}
+
+#[test]
 fn vanished_cwd_keeps_the_user_layer_of_a_non_git_home() {
     // the nearest existing ancestor is HOME, which holds the XDG layer.
     let env = IsolatedEnv::new();

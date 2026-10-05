@@ -368,11 +368,8 @@ proptest! {
                 .strip_prefix(b"0x")
                 .or_else(|| data.strip_prefix(b"0X"))
                 .unwrap_or(&data);
-            prop_assert!(matches!(remainder.len(), 32 | 40 | 64));
+            prop_assert!((32..=128).contains(&remainder.len()));
             prop_assert!(remainder.iter().all(u8::is_ascii_hexdigit));
-            prop_assert!(
-                (!data.starts_with(b"0x") && !data.starts_with(b"0X")) || remainder.len() == 64
-            );
         }
     }
 

@@ -144,9 +144,9 @@ fn is_git_context(line: &[u8]) -> bool {
 }
 
 #[allow(dead_code)]
-/// determines whether an assignment value is eligible for the deterministic exact-length hex policy.
-/// unprefixed and `0x`/`0X`-prefixed values admit exactly 32, 40, or 64 hex digits.
-/// this is a deterministic exact-length policy, not a secret classifier.
+/// determines whether an assignment value is eligible for the hex policy.
+/// unprefixed and `0x`/`0X`-prefixed values admit 32 through 128 hex digits.
+/// this is an eligibility policy, not a secret classifier.
 /// key-token exclusions are name-based recall limits: a hex credential stored under a `*_id`,
 /// `*_hash`, or `address`-shaped key is not caught by this path.
 /// a value matching this predicate is emitted by the engine under the
@@ -159,12 +159,12 @@ pub fn is_hex_policy_candidate(key: Option<&[u8]>, value: &[u8]) -> bool {
 
     let value = if value.starts_with(b"0x") || value.starts_with(b"0X") {
         let remainder = &value[2..];
-        if !matches!(remainder.len(), 32 | 40 | 64) || !is_hex_string(remainder) {
+        if !(32..=128).contains(&remainder.len()) || !is_hex_string(remainder) {
             return false;
         }
         remainder
     } else {
-        if !matches!(value.len(), 32 | 40 | 64) || !is_hex_string(value) {
+        if !(32..=128).contains(&value.len()) || !is_hex_string(value) {
             return false;
         }
         value
@@ -494,6 +494,12 @@ mod tests {
             Some(b"token"),
             &generated_hex(3, 64)
         ));
+        for length in [36, 48, 56, 128] {
+            assert!(is_hex_policy_candidate(
+                Some(b"API_KEY"),
+                &generated_hex(31, length)
+            ));
+        }
         assert!(is_hex_policy_candidate(Some(b"x"), &generated_hex(4, 32)));
         assert!(is_hex_policy_candidate(
             Some(b"TxnSignature"),
@@ -590,14 +596,14 @@ mod tests {
 
     #[test]
     fn hex_policy_rejects_invalid_values_and_missing_keys() {
-        for (length, seed) in [(31, 43), (33, 44), (39, 45), (41, 46), (63, 47), (65, 48)] {
+        for (length, seed) in [(0, 41), (31, 43), (129, 48)] {
             assert!(!is_hex_policy_candidate(
                 Some(b"API_KEY"),
                 &generated_hex(seed, length)
             ));
         }
 
-        for (length, seed) in [(31, 51), (33, 52), (39, 53), (41, 54), (63, 55)] {
+        for (length, seed) in [(0, 51), (31, 52), (129, 55)] {
             assert!(!is_hex_policy_candidate(
                 Some(b"API_KEY"),
                 &prefixed_generated_hex(seed, length)

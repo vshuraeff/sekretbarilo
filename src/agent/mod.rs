@@ -19,7 +19,10 @@ pub use claude::{
 #[allow(unused_imports)]
 pub(crate) use codex::resolve_codex_home;
 #[allow(unused_imports)]
-pub use codex::{CODEX_HOOK_COMMAND, CODEX_HOOK_MATCHER, install_codex_hook, run_check_codex};
+pub use codex::{
+    CODEX_HOOK_COMMAND, CODEX_HOOK_EVENTS, CODEX_HOOK_MATCHER, CODEX_POST_HOOK_MATCHER,
+    CODEX_POST_TOOL_USE, CODEX_PRE_TOOL_USE, CodexHookEvent, install_codex_hook, run_check_codex,
+};
 #[allow(unused_imports)]
 pub use hooks_json::HookInstallResult;
 pub use redact::{redact_cli_error, run_redact_claude};
@@ -148,7 +151,8 @@ fn should_skip_file(
 
     // check against audit exclude patterns (if any)
     if !audit_config.exclude_patterns.is_empty() {
-        let exclude_regexes = crate::audit::compile_patterns(&audit_config.exclude_patterns)?;
+        let exclude_regexes =
+            crate::audit::compile_patterns_redacted(&audit_config.exclude_patterns)?;
         for re in &exclude_regexes {
             if re.is_match(relative_path) {
                 return Ok(true);
@@ -250,6 +254,8 @@ pub fn run_check_file(stdin_json: bool, file_arg: Option<&str>) -> i32 {
 
     // step 3: cheap fast-path rejection using hardcoded patterns only.
     // this avoids loading config/rules for obvious skips (binary, vendor, lock files).
+    // deliberately before strict config loading: these skips are hard-coded and no config can
+    // override them, so failing closed on a broken config here would protect nothing.
     if let Ok(default_al) = CompiledAllowlist::default_allowlist()
         && default_al.is_path_skipped(&relative_path)
     {

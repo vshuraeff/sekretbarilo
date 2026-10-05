@@ -177,12 +177,12 @@ sekretbarilo install agent-hook claude --settings .claude/settings.local.json --
 
 #### `sekretbarilo install agent-hook codex`
 
-installs codex cli agent hook that intercepts patches and shell commands and scans them before codex applies or runs them.
+installs the codex cli agent hooks: one intercepts patches and shell commands and scans them before codex applies or runs them, the other scans the output of finished shell commands before codex hands it to the model.
 
 **local mode (default):**
 - installs to `.codex/hooks.json` in the repository root
-- creates or updates the `PreToolUse` entry whose matcher is the regex `^(apply_patch|Bash)$`, with a 10 second timeout
-- preserves existing codex hooks
+- creates or updates the `PreToolUse` entry whose matcher is the regex `^(apply_patch|Bash)$` and the `PostToolUse` entry whose matcher is `^Bash$`, each with a 10 second timeout
+- preserves existing codex hooks; re-running it on an older installation appends the missing `PostToolUse` entry
 
 **global mode (`--global`):**
 - installs to `$CODEX_HOME/hooks.json`, defaulting to `~/.codex/hooks.json` when `CODEX_HOME` is unset
@@ -195,8 +195,9 @@ installs codex cli agent hook that intercepts patches and shell commands and sca
 - for `apply_patch`: scans the lines being added, blocks `.env` targets unconditionally
 - for `Bash`: scans the raw command string
 - blocks the tool call if secrets detected (exit code 2), allows it if clean (exit code 0)
+- after a `Bash` command finishes, runs the same command with the `PostToolUse` payload; output with a secret is replaced for the model by a reason carrying the redacted output (exit code 2)
 
-**trust:** codex does not run a newly installed hook until it is approved with `/hooks` in the codex tui. an unapproved hook is skipped silently. sekretbarilo does not write the trust state itself. see [agent hooks]({{ '/agent-hooks/#hook-trust' | relative_url }}).
+**trust:** codex does not run a newly installed hook until it is approved with `/hooks` in the codex tui; the `PreToolUse` and `PostToolUse` hooks are approved separately. an unapproved hook is skipped silently. sekretbarilo does not write the trust state itself. see [agent hooks]({{ '/agent-hooks/#hook-trust' | relative_url }}).
 
 **note:** codex can also express hooks as a `[hooks]` table in `config.toml`. sekretbarilo writes only `hooks.json` and never modifies `config.toml`.
 
@@ -296,7 +297,7 @@ sekretbarilo redact-claude --stdin-json
 
 ### `sekretbarilo check-codex`
 
-entry point for the codex cli agent hook. reads a `PreToolUse` payload on stdin and decides whether codex may proceed with the tool call. this command is invoked by codex, not by hand.
+entry point for the codex cli agent hooks. reads a `PreToolUse` payload on stdin and decides whether codex may proceed with the tool call, or a `PostToolUse` payload and decides whether the finished `Bash` output may reach the model. this command is invoked by codex, not by hand.
 
 **`--stdin-json` is required.** the bare command has no other source of input, so it exits 2 with `[ERROR] check-codex reads its payload from stdin and requires --stdin-json`. the command written by `install agent-hook codex` already passes the flag, so installed hooks need no change.
 
@@ -308,8 +309,9 @@ entry point for the codex cli agent hook. reads a `PreToolUse` payload on stdin 
 - writes the block reason to stderr, where codex picks it up and surfaces it to the model. nothing is ever written to stdout
 - secret values in the reason are masked; file paths and rule names, which come from the patch, are stripped of control characters and bidirectional overrides before being printed
 - at most 20 findings are rendered in the reason, followed by `... and N more finding(s) omitted`; the closing `total findings: N.` line always carries the true count
-- a clean patch or command produces no output at all
-- an event other than `PreToolUse`, or a tool other than `apply_patch`/`Bash`, is allowed without scanning
+- `PostToolUse` on `Bash`: `tool_response` must be a plain string (the output codex would show the model). it is scanned with the `redact-claude` detectors and trust rules; on a finding the reason says the output was withheld and the command already ran, then shows the output with detected values replaced by `[REDACTED]`, or, above 64 KiB after redaction, at most 20 masked findings. a non-string `tool_response` or any internal error withholds the output too. output streamed while a command is still running never reaches this hook
+- a clean patch, command or output produces no output at all
+- any other event, a `PreToolUse` tool other than `apply_patch`/`Bash`, or a `PostToolUse` tool other than `Bash`, is allowed without scanning
 - stdin is capped at 10 MiB; an oversized payload is blocked, not truncated
 
 **flags:** `--stdin-json` only, and it is mandatory
@@ -407,7 +409,7 @@ sekretbarilo -V
 
 ### `sekretbarilo --help`
 
-displays usage information and examples.
+displays usage information and examples on stderr and exits 0. `--help` and `-h` also work after subcommands; install targets show install-specific help. Standalone hook help reads no stdin. Combining help with `--stdin-json` is an error: `check-file` and `check-codex` exit 2 with a reason, while `redact-claude` returns its safe stop response.
 
 **examples:**
 ```sh
@@ -424,7 +426,7 @@ sekretbarilo install -h
 
 ### `sekretbarilo help`
 
-prints built-in reference topics on stdout, so an agent can read them through a pipe. `help` lists the topics; `help config` prints the full configuration reference (discovery and precedence, every setting, rule classes and switches, allowlists, custom rules, audit settings, common fixes); `help rules` prints every defined rule with its class, enabled or disabled state and the reason, resolved from the configuration of the current directory; `help rules --defaults` ignores external configuration and lists the built-in state. `help`, `help config` and `help rules --defaults` work even when a configuration file is broken. an unknown topic or option, or a configuration error under `help rules`, is reported on stderr with exit 2.
+prints built-in reference topics on stdout, so an agent can read them through a pipe. `help` lists the topics; `help config` prints the full configuration reference (discovery and precedence, every setting, rule classes and switches, allowlists, custom rules, audit settings, common fixes); `help rules` prints every defined rule with its class, enabled or disabled state and the reason, resolved from the configuration of the current directory; `help rules --defaults` ignores external configuration and lists the built-in state. `help config -h` and `help rules -h` (or `--help`) print the same topic as without the flag. `help`, `help config` and `help rules --defaults` work even when a configuration file is broken. an unknown topic or option, or a configuration error under `help rules`, is reported on stderr with exit 2.
 
 **examples:**
 ```sh

@@ -264,7 +264,7 @@ Fast-path filters (applied before reading file content):
 - `node_modules/`, `vendor/`, `.venv/`, `target/` → skip
 - `package-lock.json`, `Cargo.lock`, `go.sum` → skip
 
-`check-codex` never reads a file at all. It scans the tool payload the agent is about to execute — the added lines of an `apply_patch`, or a `Bash` command string — so its scanning cost is proportional to that payload, which is small.
+`check-codex` never reads a file at all. It scans the tool payload the agent is about to execute — the added lines of an `apply_patch`, or a `Bash` command string — or, on `PostToolUse`, the finished `Bash` output, so its scanning cost is proportional to that payload. An 8 MiB output scanned in under a second in local measurements, well inside the 10-second hook timeout.
 
 **Timeout**: both hooks are installed with a 10-second timeout, far above what either needs.
 

@@ -89,11 +89,11 @@ This will detect the outdated command and replace it with the current format.
 
 **Check, in this order**:
 
-1. **Approve the hook.** This is the usual cause. Run `/hooks` in the Codex TUI and approve the sekretbarilo entry. An unapproved hook is skipped without any message — see [Hook Trust]({{ '/agent-hooks/#hook-trust' | relative_url }}). If you already approved it once, approve it again: the approval is tied to the hook's position in the file, and adding or removing another hook shifts it.
+1. **Approve the hook.** This is the usual cause. Run `/hooks` in the Codex TUI and approve both sekretbarilo entries, the `PreToolUse` one and the `PostToolUse` one. An unapproved hook is skipped without any message — see [Hook Trust]({{ '/agent-hooks/#hook-trust' | relative_url }}). If you already approved it once, approve it again: the approval is tied to the hook's position in the file, and adding or removing another hook shifts it.
 2. **Verify it is installed**: `sekretbarilo doctor` reports the local and global codex groups, and tells you whether it can find an approval entry for the position your hook occupies. Codex itself has no `hooks list` or `hooks validate` command to cross-check with.
 3. **Check the layer you expect**: project-local hooks live in `.codex/hooks.json` at the repository root, global ones in `$CODEX_HOME/hooks.json` (by default `~/.codex/hooks.json`). If you installed globally but run Codex somewhere with its own configuration, check both.
 4. **Look for a stray root key** if you edited `hooks.json` by hand. Only `hooks` and `description` are accepted at the root; anything else makes Codex discard that file's hooks completely, with no visible error.
-5. **Check the Codex version**: `codex --version`. The integration is verified on `0.145.0`; older releases may not deliver `PreToolUse` for `apply_patch`.
+5. **Check the Codex version**: `codex --version`. The input hook is verified on `0.145.0` and the output hook on `0.159.3`; older releases may not deliver `PreToolUse` for `apply_patch` or `PostToolUse` for `Bash`.
 6. **Ensure the binary is in PATH**: `which sekretbarilo`. The hook command is resolved by Codex, in Codex's environment.
 
 ## Codex Warns About Duplicate Hook Definitions
