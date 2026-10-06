@@ -18,11 +18,19 @@ fuzz_target!(|data: &[u8]| {
                 assert!(literals.known);
                 assert!(range.start <= range.end && range.end <= line.len());
             }
-            let mut previous_end = 0;
+            let mut previous_start = 0;
+            let mut furthest_end = 0;
             for range in literals.bodies {
                 assert!(range.start <= range.end && range.end <= line.len());
-                assert!(previous_end <= range.start);
-                previous_end = range.end;
+                assert!(previous_start <= range.start);
+                if range.start < furthest_end {
+                    // go struct tags expose both the full value and its component items.
+                    assert!(matches!(language, Language::Go));
+                    assert!(range.end <= furthest_end);
+                } else {
+                    furthest_end = range.end;
+                }
+                previous_start = range.start;
             }
         }
     }

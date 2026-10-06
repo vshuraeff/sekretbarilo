@@ -14,7 +14,7 @@ use crate::scanner::hash_detect;
 use crate::scanner::literals::{LineLiterals, LiteralTracker};
 use crate::scanner::password;
 use crate::scanner::pubkey;
-use crate::scanner::rules::CompiledScanner;
+use crate::scanner::rules::{CaptureIndices, CompiledScanner};
 use crate::scanner::source_literals::{BodyKind, ParsedLine};
 
 /// minimum number of files to trigger parallel processing with rayon
@@ -22,11 +22,6 @@ const PARALLEL_FILE_THRESHOLD: usize = 4;
 
 /// the keywordless tier-3 rule that the exemption layer and the source postures govern.
 const ENTROPY_RULE: &str = "generic-high-entropy-value";
-
-/// the capture group of a contextual rule's unquoted `NAME=value` / `name: value` alternative
-/// (rules.toml); its value is dropped when it is not a whole word or is a path, a reference, code
-/// or words, see `evaluate_candidate`.
-const CONTEXT_UNQUOTED_GROUP: &str = "context_unquoted";
 
 /// the contextual rules that read a value under a credential name (`API_KEY`, `*_TOKEN`,
 /// `*_SECRET`) in quoted and unquoted form.
@@ -1097,12 +1092,17 @@ pub(super) fn scan_matches(
         // if the first match is filtered (allowlist/stopword/var-ref), a later
         // match on the same line could still be a real secret.
         let candidates: Vec<_> = if is_entropy_value {
-            entropy_captures(&rule.regex, ctx.input, rule.entropy_threshold)
+            entropy_captures(
+                &rule.regex,
+                &rule.capture_indices,
+                ctx.input,
+                rule.entropy_threshold,
+            )
         } else {
             rule.regex.captures_iter(ctx.input).collect()
         };
         let scopes = if is_entropy_value {
-            assignment_scopes(&candidates, ctx.input.len())
+            assignment_scopes(&candidates, ctx.input.len(), &rule.capture_indices)
         } else {
             vec![0..ctx.input.len(); candidates.len()]
         };
@@ -1145,20 +1145,6 @@ pub(super) fn scan_matches(
     }
 }
 
-/// the value groups of the tier-3 rule, preferring a default operand over its enclosing reference.
-const ENTROPY_VALUE_GROUPS: [&str; 10] = [
-    "entropy_default",
-    "entropy_reference",
-    "entropy_bare_double",
-    "entropy_bare_single",
-    "entropy_url",
-    "entropy_double",
-    "entropy_single",
-    "entropy_bracket",
-    "entropy_unquoted",
-    "entropy_bare",
-];
-
 /// the tier-3 rule's own capture cursor. an unquoted boundary may consume the next assignment's
 /// key, so the scan resumes after the value. a quoted body holding whitespace is a phrase, not a
 /// value: a stray quote byte can pair with a later one across whole assignments, so the scan
@@ -1168,6 +1154,7 @@ const ENTROPY_VALUE_GROUPS: [&str; 10] = [
 /// separator so the text behind it is still read.
 fn entropy_captures<'h>(
     regex: &regex::bytes::Regex,
+    indices: &CaptureIndices,
     input: &'h [u8],
     entropy_floor: Option<f64>,
 ) -> Vec<regex::bytes::Captures<'h>> {
@@ -1181,29 +1168,26 @@ fn entropy_captures<'h>(
             break;
         };
         let floor = matched.start().saturating_add(1);
-        if let Some(resume) = misread_key_resume(input, &captures, entropy_floor) {
+        if let Some(resume) = misread_key_resume(input, &captures, indices, entropy_floor) {
             offset = resume.max(floor);
             continue;
         }
-        let rescan_body = [
-            "entropy_double",
-            "entropy_single",
-            "entropy_bare_double",
-            "entropy_bare_single",
-        ]
-        .into_iter()
-        .filter_map(|name| captures.name(name))
-        .find(|body| {
-            let bytes = body.as_bytes();
-            bytes.iter().any(u8::is_ascii_whitespace)
-                || (bytes.starts_with(b"${")
-                    && bytes.ends_with(b"}")
-                    && bytes.windows(2).any(|pair| pair == b":-" || pair == b":="))
-        });
+        let rescan_body = indices
+            .entropy_rescan_groups
+            .into_iter()
+            .filter_map(|index| index.and_then(|index| captures.get(index)))
+            .find(|body| {
+                let bytes = body.as_bytes();
+                bytes.iter().any(u8::is_ascii_whitespace)
+                    || (bytes.starts_with(b"${")
+                        && bytes.ends_with(b"}")
+                        && bytes.windows(2).any(|pair| pair == b":-" || pair == b":="))
+            });
         offset = match rescan_body {
             Some(body) => body.start(),
-            None => captures
-                .name("entropy_unquoted")
+            None => indices
+                .entropy_unquoted
+                .and_then(|index| captures.get(index))
                 .map_or(matched.end(), |value| value.end()),
         }
         .max(floor);
@@ -1224,9 +1208,10 @@ fn entropy_captures<'h>(
 fn misread_key_resume(
     input: &[u8],
     captures: &regex::bytes::Captures<'_>,
+    indices: &CaptureIndices,
     entropy_floor: Option<f64>,
 ) -> Option<usize> {
-    let key = captures.name("entropy_key")?;
+    let key = captures.get(indices.entropy_key?)?;
     let separator = key.end()
         + input[key.end()..]
             .iter()
@@ -1245,9 +1230,10 @@ fn misread_key_resume(
     } else {
         return None;
     };
-    ENTROPY_VALUE_GROUPS
-        .iter()
-        .find_map(|name| captures.name(name))
+    indices
+        .entropy_value_groups
+        .into_iter()
+        .find_map(|index| index.and_then(|index| captures.get(index)))
         .is_none_or(|value| is_word_code(value.as_bytes(), b"=", entropy_floor))
         .then_some(resume)
 }
@@ -1327,14 +1313,19 @@ fn escaped_key(input: &[u8], key: Range<usize>) -> bool {
 }
 
 /// the text one tier-3 capture spans: from its key, or its value when keyless, to the value end.
-fn assignment_span(captures: &regex::bytes::Captures<'_>) -> Range<usize> {
-    let value = ENTROPY_VALUE_GROUPS
-        .iter()
-        .find_map(|name| captures.name(name))
+fn assignment_span(
+    captures: &regex::bytes::Captures<'_>,
+    indices: &CaptureIndices,
+) -> Range<usize> {
+    let value = indices
+        .entropy_value_groups
+        .into_iter()
+        .find_map(|index| index.and_then(|index| captures.get(index)))
         .or_else(|| captures.get(0))
         .map_or(0..0, |value| value.range());
-    let start = captures
-        .name("entropy_key")
+    let start = indices
+        .entropy_key
+        .and_then(|index| captures.get(index))
         .map_or(value.start, |key| key.start());
     start..value.end
 }
@@ -1344,14 +1335,21 @@ fn assignment_span(captures: &regex::bytes::Captures<'_>) -> Range<usize> {
 /// when it has no key). a context word such as `sha256` before one assignment says nothing about
 /// the next one on the same line, while words around the assignment itself (`checksum secret =
 /// ...`, a trailing `# sha256` comment) still belong to it.
-fn assignment_scopes(candidates: &[regex::bytes::Captures<'_>], len: usize) -> Vec<Range<usize>> {
+fn assignment_scopes(
+    candidates: &[regex::bytes::Captures<'_>],
+    len: usize,
+    indices: &CaptureIndices,
+) -> Vec<Range<usize>> {
     // a lone candidate owns the whole input. the general case below gives an empty span only its
     // own point, but an empty span holds an empty value, which never reaches the hash check, so
     // the span is not worth its capture-name lookups on the common single-assignment line.
     if candidates.len() < 2 {
         return vec![0..len; candidates.len()];
     }
-    let spans: Vec<Range<usize>> = candidates.iter().map(assignment_span).collect();
+    let spans: Vec<Range<usize>> = candidates
+        .iter()
+        .map(|captures| assignment_span(captures, indices))
+        .collect();
     let mut ends: Vec<usize> = spans.iter().map(|span| span.end).collect();
     let mut starts: Vec<usize> = spans.iter().map(|span| span.start).collect();
     ends.sort_unstable();
@@ -1878,11 +1876,8 @@ impl<'a> Candidate<'a> {
         }
     }
 
-    fn name(&self, name: &str) -> Option<regex::bytes::Match<'a>> {
-        match self {
-            Self::Regex(captures, _) => captures.name(name),
-            Self::Call(_) => None,
-        }
+    fn named(&self, index: Option<usize>) -> Option<regex::bytes::Match<'a>> {
+        index.and_then(|index| self.get(index))
     }
 
     fn call_range(&self) -> Option<Range<usize>> {
@@ -1899,25 +1894,27 @@ impl<'a> Candidate<'a> {
         }
     }
 
-    fn kind(&self, original_range: &Range<usize>) -> CaptureKind {
+    fn kind(&self, original_range: &Range<usize>, indices: &CaptureIndices) -> CaptureKind {
         if matches!(self, Self::Call(_)) {
             return CaptureKind::Call;
         }
-        [
-            ("entropy_default", CaptureKind::Other),
-            ("entropy_unquoted", CaptureKind::Unquoted),
-            ("entropy_bare", CaptureKind::Bare),
-            ("entropy_double", CaptureKind::Double),
-            ("entropy_single", CaptureKind::Single),
-            ("entropy_bracket", CaptureKind::Bracket),
-        ]
-        .into_iter()
-        .find_map(|(name, kind)| {
-            self.name(name)
-                .filter(|matched| matched.range() == *original_range)
-                .map(|_| kind)
-        })
-        .unwrap_or(CaptureKind::Other)
+        indices
+            .kind_groups
+            .into_iter()
+            .zip([
+                CaptureKind::Other,
+                CaptureKind::Unquoted,
+                CaptureKind::Bare,
+                CaptureKind::Double,
+                CaptureKind::Single,
+                CaptureKind::Bracket,
+            ])
+            .find_map(|(index, kind)| {
+                self.named(index)
+                    .filter(|matched| matched.range() == *original_range)
+                    .map(|_| kind)
+            })
+            .unwrap_or(CaptureKind::Other)
     }
 }
 
@@ -1946,7 +1943,7 @@ fn evaluate_candidate(
     else {
         return;
     };
-    let mut kind = captures.kind(&original_range);
+    let mut kind = captures.kind(&original_range, &rule.capture_indices);
     let mut secret_range = original_range.clone();
     let mut secret = &ctx.input[secret_range.clone()];
 
@@ -1955,7 +1952,7 @@ fn evaluate_candidate(
     // neither reported nor masked; the word-end check still reads the untrimmed word.
     let unquoted_arm = !is_entropy_value
         && captures
-            .name(CONTEXT_UNQUOTED_GROUP)
+            .named(rule.capture_indices.context_unquoted)
             .is_some_and(|value| value.range() == original_range);
     let unquoted_word_ends = unquoted_arm
         && (ends_word(ctx.input, original_range.end)
@@ -1971,7 +1968,7 @@ fn evaluate_candidate(
 
     if is_entropy_value
         && kind == CaptureKind::Unquoted
-        && let Some(key) = captures.name("entropy_key")
+        && let Some(key) = captures.named(rule.capture_indices.entropy_key)
     {
         (kind, secret_range) =
             read_unquoted_value(ctx, key.start(), secret_range, rule.entropy_threshold);
@@ -2006,7 +2003,7 @@ fn evaluate_candidate(
     // already met the entropy gate, which the url is not measured against again; a split value
     // the path check, the reference path step or the entropy gate would drop keeps that outcome,
     // so re-anchoring only ever narrows what is reported.
-    let mut key_match = captures.name("entropy_key");
+    let mut key_match = captures.named(rule.capture_indices.entropy_key);
     let mut reanchored = false;
     if is_entropy_value
         && kind == CaptureKind::Unquoted
@@ -2045,24 +2042,20 @@ fn evaluate_candidate(
     if secret.is_empty() {
         return;
     }
-    // the fixed provider prefix is not randomness in the credential payload. keep this guard
-    // separate from rule thresholds so it does not add stopwords or a documentation bonus.
-    if rule.id == "openai-api-key"
-        && let Some(payload) = secret.strip_prefix(b"sk-proj-")
-        && entropy::shannon_entropy(payload) < 3.0
-    {
-        return;
-    }
-    if rule.id == "facebook-access-token"
-        && secret.starts_with(b"EAA")
-        && secret
-            .get(3..)
-            .is_some_and(|tail| tail.iter().all(u8::is_ascii_hexdigit))
-    {
-        return;
+    // payload checks use only the configured inner capture, keeping fixed provider prefixes out
+    // of the entropy measurement.
+    if let Some(payload) = rule.payload_group.and_then(|group| captures.get(group)) {
+        let payload = payload.as_bytes();
+        if rule
+            .min_payload_entropy
+            .is_some_and(|floor| entropy::shannon_entropy(payload) < floor)
+            || (rule.reject_hex_payload && payload.iter().all(u8::is_ascii_hexdigit))
+        {
+            return;
+        }
     }
     if rule.id == "generic-password-assignment"
-        && let Some(key_match) = captures.name("password_key")
+        && let Some(key_match) = captures.named(rule.capture_indices.password_key)
     {
         let key = key_match.as_bytes();
         let key = if key.len() >= 2
@@ -2385,7 +2378,7 @@ fn evaluate_candidate(
     // unquoted value other than a shell assignment word counts as one
     // only in a configuration file.
     if rule.id == "generic-password-assignment" {
-        let key = captures.name("password_key");
+        let key = captures.named(rule.capture_indices.password_key);
         let concrete_literal =
             is_concrete_password_literal(ctx.input, ctx.file_path, key, &secret_range)
                 || ctx
@@ -2684,6 +2677,9 @@ mod tests {
             secret_groups: Vec::new(),
             keywords: keywords.into_iter().map(String::from).collect(),
             entropy_threshold: threshold,
+            payload_group: None,
+            min_payload_entropy: None,
+            reject_hex_payload: false,
             allowlist: RuleAllowlist::default(),
             class: None,
         }
@@ -3261,6 +3257,9 @@ mod tests {
             secret_groups: Vec::new(),
             keywords: vec!["akia".to_string()],
             entropy_threshold: None,
+            payload_group: None,
+            min_payload_entropy: None,
+            reject_hex_payload: false,
             allowlist: RuleAllowlist {
                 regexes: vec!["AKIAIOSFODNN7EXAMPLE".to_string()],
                 paths: vec![],
@@ -3333,6 +3332,9 @@ mod tests {
             secret_groups: Vec::new(),
             keywords: vec!["akia".to_string()],
             entropy_threshold: None,
+            payload_group: None,
+            min_payload_entropy: None,
+            reject_hex_payload: false,
             allowlist: RuleAllowlist {
                 regexes: vec!["AKIAIOSFODNN7EXAMPLE".to_string()],
                 paths: vec![],

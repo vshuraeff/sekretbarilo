@@ -67,14 +67,14 @@ fn inventory_reports_defaults_overrides_custom_rules_and_public_key_gate() {
     let out = run(&env, &["help", "rules", "--defaults"]);
     assert!(out.status.success());
     let text = String::from_utf8(out.stdout).unwrap();
-    assert_eq!(text.lines().skip(2).count(), 113);
+    assert_eq!(text.lines().skip(2).count(), 114);
     assert!(text.contains("generic-high-entropy-value\theuristic\tdisabled\tdefault"));
     assert!(text.contains("pem-public-key\tsignature\tdisabled\tdetect_public_keys gate"));
     assert_eq!(
         text.lines()
             .filter(|line| line.contains("\tenabled\t"))
             .count(),
-        109
+        110
     );
     let ids: Vec<_> = text
         .lines()

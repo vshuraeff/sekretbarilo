@@ -1,11 +1,8 @@
 ---
-layout: default
-title: Configuration
-nav_order: 3
+title: Configuration reference
+description: Every section and key of .sekretbarilo.toml, the discovery order and merge rules, the agent-hook trust rule for in-workspace config, and how configuration is validated.
+section: reference
 ---
-
-# Configuration
-{: .no_toc }
 
 sekretbarilo uses hierarchical `.sekretbarilo.toml` configuration files to customize scanning behavior, add allowlists, define custom detection rules, and configure audit options. Configuration is entirely optional - the tool works out of the box with sensible defaults.
 
@@ -33,7 +30,7 @@ Config files are searched in this order (lowest to highest priority):
 | Priority | Location | Description |
 |----------|----------|-------------|
 | 1 (lowest) | `/etc/sekretbarilo.toml` | System-wide defaults (all users) |
-| 2 | `$XDG_CONFIG_HOME/sekretbarilo/sekretbarilo.toml` | User-level defaults (falls back to `~/.config/sekretbarilo/sekretbarilo.toml` if `XDG_CONFIG_HOME` is not set) |
+| 2 | `$XDG_CONFIG_HOME/sekretbarilo/sekretbarilo.toml` | User-level defaults (falls back to `~/.config/sekretbarilo/sekretbarilo.toml` if `XDG_CONFIG_HOME` is not set, empty or relative) |
 | 3 | `~/.sekretbarilo.toml` | Home directory config (legacy location) |
 | 4..N | Parent directories from `$HOME` down to current directory | Hierarchical project configs (walks from home down to repo root) |
 | N+1 (highest) | `.sekretbarilo.toml` in current directory | Project-specific config (highest priority) |
@@ -62,10 +59,12 @@ When running `sekretbarilo` from `~/work/acme/project-x/`, all five configs will
 The agent hooks — `check-file`, `check-codex`, and `redact-claude` — apply one extra rule on top of the discovery above:
 
 > A `.sekretbarilo.toml` located **inside the git working tree** is honored only when it is **git-tracked and unmodified relative to `HEAD`**. Otherwise the entire layer is dropped.
+>
+> Unmodified means byte for byte: the file must equal its blob at `HEAD`, so `git update-index --assume-unchanged`, `--skip-worktree` or a replace ref does not hide an edit, and a checkout that differs from the blob through an `eol` or filter conversion counts as modified.
 
 Outside a git repository the workspace is the hook's working directory, and a `.sekretbarilo.toml` there is always dropped, because nothing vouches for it.
 
-A layer reached through a symlink inside the workspace is dropped even when the symlink is committed. Git records only the link text, so a clean `git status` says nothing about the file the link points to, which may sit anywhere the agent can write. The test uses the path where discovery found the layer, not its resolved target. A symlink outside the workspace that points into it is judged by its target, which must then be committed. `sekretbarilo doctor` does not report symlinked layers yet; the hook's warning below does.
+A layer reached through a symlink inside the workspace is dropped even when the symlink is committed. Git records only the link text, so a clean `git status` says nothing about the file the link points to, which may sit anywhere the agent can write. The test uses the path where discovery found the layer, not its resolved target. A symlink outside the workspace that points into it is judged by its target, which must then be committed. A working directory reached through a symlink that one repository holds and that leads into another repository drops every layer inside that other repository, because its commits vouch for nothing in the workspace holding the link. A layer outside that other repository but inside the one holding the link, such as a layer above a nested repository the link leads into, must be committed unmodified in the repository holding the link. `sekretbarilo doctor` reports symlinked layers along with untracked and modified ones, using the hooks' own judgment.
 
 When a layer is dropped, the hook writes one line to stderr and carries on with the remaining layers:
 
@@ -430,7 +429,7 @@ stopwords = [
 **Default stopwords** (always active, even if not listed):
 - `example`, `test`, `sample`, `placeholder`, `dummy`, `changeme`, `fake`, `mock`, `todo`, `fixme`, `xxx`, `lorem`, `default`, `replace_me`, `insert_here`, `your_`, `my_`
 
-Word-based stopwords are consulted only by the rules that carry an `entropy_threshold` (33 of the 113 built-in rules at the time of writing; `grep -c '^entropy_threshold' src/config/rules.toml` gives the current count). The other rules still reject the built-in placeholder examples, but ignore stopwords otherwise: a string matching `AKIA` plus sixteen key characters is an AWS key whatever else it contains.
+Word-based stopwords are consulted only by the rules that carry an `entropy_threshold` (34 of the 114 built-in rules at the time of writing; `grep -c '^entropy_threshold' src/config/rules.toml` gives the current count). The other rules still reject the built-in placeholder examples, but ignore stopwords otherwise: a string matching `AKIA` plus sixteen key characters is an AWS key whatever else it contains.
 
 The split follows the entropy threshold, not the rule class. `mailchimp-api-key`, `facebook-access-token`, `dropbox-api-token` and `launchdarkly-sdk-key` are signature rules that do carry a threshold, so stopwords reach them. `airtable-api-key`, `twilio-api-key`, `azure-storage-account-key`, `password-in-url`, `webhook-url-with-token` and `generic-password-assignment` match case-insensitively but carry no threshold, so word-based stopwords do not apply to them. Password rules reject stopword values separately, and not the same way: `generic-password-assignment`
 requires the value to also clear the password-strength heuristic, while `password-in-url` instead
@@ -532,7 +531,7 @@ include_patterns = [
 
 ### `[[rules]]`
 
-Custom detection rules. These are merged with the 113 built-in rule definitions (109 enabled by default).
+Custom detection rules. These are merged with the 114 built-in rule definitions (110 enabled by default).
 
 ```toml
 [[rules]]
@@ -569,6 +568,10 @@ paths = ["test/.*"]                   # skip findings in test files
 - `class` - `signature`, `contextual`, or `heuristic`. If omitted, a replacement of a built-in id inherits its class; a new custom id defaults to `contextual`. There is no `enabled` field on a definition: use `[settings.rules]`.
 - `entropy_threshold` - minimum Shannon entropy for the captured secret (0.0 - 8.0). The global setting can raise this floor; a rule without a threshold does not gain an entropy check.
 - `secret_groups` - alternative capture group indices, checked in order when `secret_group` did not participate in the match. Defaults to `[]`; for example, `[2, 3, 4]` supports regex alternatives for different quoting forms. If no configured group participates, the full match is used, preserving existing custom-rule behavior.
+- `payload_group` - a nonzero capture group index selecting the payload without its provider prefix. An index missing from the regex is a configuration error.
+- `min_payload_entropy` - minimum Shannon entropy of that payload (0.0 - 8.0). Requires `payload_group`.
+- `reject_hex_payload` - reject a payload made entirely of hex digits. Defaults to `false`. Requires `payload_group`.
+- The two payload checks apply only to a match in which `payload_group` participates. A match through a regex branch without that group is reported without them, so place the payload group inside every alternative the checks should cover.
 - `allowlist.regexes` - value patterns to skip (merged with `[[allowlist.rules]]` overrides)
 - `allowlist.paths` - file path patterns to skip (merged with `[[allowlist.rules]]` overrides)
 
@@ -640,13 +643,7 @@ sekretbarilo validates config files at load time:
 [ERROR] failed to compile rules: invalid regex in rule 'custom-token' (see: sekretbarilo help config)
 ```
 
-To validate a config file, run an audit with it:
-
-```sh
-sekretbarilo audit --config .sekretbarilo.toml
-```
-
-Loading and compiling happen before any file is scanned, so a parse error or a bad regex is reported immediately. To check the configs that hierarchical discovery finds, without naming them yourself, run `sekretbarilo doctor` — it lists every discovered file, reports whether the merged ruleset and allowlist load and compile, and shows the resolved rule classes. `sekretbarilo help config` prints the full configuration reference and `sekretbarilo help rules` the resolved state of every rule.
+`sekretbarilo help config` prints the full configuration reference and `sekretbarilo help rules` the resolved state of every rule. How to check a file before relying on it is in [Write a configuration file]({{ '/write-a-configuration-file/#validate-the-configuration' | relative_url }}).
 
 ---
 

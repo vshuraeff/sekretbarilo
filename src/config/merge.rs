@@ -124,6 +124,9 @@ mod tests {
             secret_groups: Vec::new(),
             keywords: vec![id.to_string()],
             entropy_threshold: None,
+            payload_group: None,
+            min_payload_entropy: None,
+            reject_hex_payload: false,
             allowlist: RuleAllowlist::default(),
             class: None,
         }
@@ -232,6 +235,9 @@ mod tests {
             secret_groups: Vec::new(),
             keywords: vec!["custom_aws".to_string()],
             entropy_threshold: Some(4.0),
+            payload_group: None,
+            min_payload_entropy: None,
+            reject_hex_payload: false,
             allowlist: RuleAllowlist::default(),
             class: None,
         };

@@ -166,12 +166,13 @@ fn parse_hunk(
                 line_number: new_line,
                 content,
             });
-            new_line += 1;
+            // malformed hunk coordinates must not panic or discard content from scanning.
+            new_line = new_line.saturating_add(1);
         } else if line.starts_with(b"-") {
             // removed line: does not affect new line numbering
         } else if line.starts_with(b" ") {
             // context line: advances new line number
-            new_line += 1;
+            new_line = new_line.saturating_add(1);
         } else if line.starts_with(b"\\") {
             // "\ No newline at end of file" - skip
         } else if line.is_empty() {
@@ -211,6 +212,24 @@ fn parse_hunk_header_new_start(header: &[u8]) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn overflowing_hunk_coordinates_keep_added_content_and_recover() {
+        for start in [usize::MAX - 1, usize::MAX] {
+            let diff = format!(
+                "diff --git a/file.txt b/file.txt\n@@ -1,1 +{start},4 @@\n context\n+first\n+second\n@@ -1 +7 @@\n+next\n"
+            );
+            let files = parse_diff(diff.as_bytes());
+            let added = &files[0].added_lines;
+            assert_eq!(added.len(), 3);
+            assert_eq!(added[0].line_number, usize::MAX);
+            assert_eq!(added[1].line_number, usize::MAX);
+            assert_eq!(added[2].line_number, 7);
+            assert_eq!(added[0].content, b"first");
+            assert_eq!(added[1].content, b"second");
+            assert_eq!(added[2].content, b"next");
+        }
+    }
 
     #[test]
     fn parse_simple_diff_one_file() {

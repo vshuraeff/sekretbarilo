@@ -77,6 +77,9 @@ fn rule(id: &str, regex: &str, keyword: &str, entropy: Option<f64>) -> Rule {
         secret_groups: Vec::new(),
         keywords: vec![keyword.into()],
         entropy_threshold: entropy,
+        payload_group: None,
+        min_payload_entropy: None,
+        reject_hex_payload: false,
         allowlist: RuleAllowlist::default(),
         class: None,
     }

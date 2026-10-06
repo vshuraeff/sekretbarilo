@@ -94,15 +94,27 @@ fn discover_layers_with(start: &Path, home: &Path, xdg_config: PathBuf) -> Vec<C
     layers
 }
 
+/// the home directory discovery walks up to: `$HOME`, unless it is unset or empty. an empty
+/// value names no directory, so callers fall back as they do for an unset one.
+pub fn home_dir() -> Option<PathBuf> {
+    std::env::var_os("HOME")
+        .filter(|home| !home.is_empty())
+        .map(PathBuf::from)
+}
+
 /// resolve the xdg config file path.
 /// uses $XDG_CONFIG_HOME if set, otherwise falls back to ~/.config.
 fn xdg_config_path(home: &Path) -> PathBuf {
     xdg_config_path_with(home, std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from))
 }
 
-/// inner implementation that accepts an explicit xdg override for testability.
+/// inner implementation that accepts an explicit xdg override for testability. the xdg base
+/// directory spec makes a relative value invalid, to be ignored, which also covers an empty one:
+/// it would resolve against whatever the process cwd happens to be.
 fn xdg_config_path_with(home: &Path, xdg_override: Option<PathBuf>) -> PathBuf {
-    let xdg_base = xdg_override.unwrap_or_else(|| home.join(".config"));
+    let xdg_base = xdg_override
+        .filter(|base| base.is_absolute())
+        .unwrap_or_else(|| home.join(".config"));
     xdg_base.join(CONFIG_DIR_NAME).join(SYSTEM_CONFIG_FILENAME)
 }
 
@@ -264,6 +276,18 @@ mod tests {
             path,
             PathBuf::from("/home/testuser/.config/sekretbarilo/sekretbarilo.toml")
         );
+    }
+
+    #[test]
+    fn xdg_path_ignores_a_relative_or_empty_override() {
+        let home = Path::new("/home/testuser");
+        for invalid in ["custom/config", "./config", ""] {
+            assert_eq!(
+                xdg_config_path_with(home, Some(PathBuf::from(invalid))),
+                PathBuf::from("/home/testuser/.config/sekretbarilo/sekretbarilo.toml"),
+                "{invalid:?}"
+            );
+        }
     }
 
     #[test]

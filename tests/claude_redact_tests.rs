@@ -898,6 +898,53 @@ fn workspace_config_symlink_is_not_trusted_even_when_committed() {
 }
 
 #[test]
+fn cwd_through_a_link_into_a_nested_repository_judges_the_holder_layer() {
+    // the target nests in the repository holding the link, so the holder's layer lies outside
+    // the target; the agent works in the holder, which has not committed it. both sit under
+    // HOME, where discovery from the link walks up to the holder.
+    let env = IsolatedEnv::new();
+    env.write_user_config(CUSTOM_RULE);
+    let holder = env.home().join("work");
+    let nested = holder.join("nested");
+    std::fs::create_dir_all(&nested).unwrap();
+    let git = |repo: &std::path::Path, args: &[&str]| {
+        let output = std::process::Command::new("git")
+            .args(args)
+            .current_dir(repo)
+            .env("GIT_CONFIG_GLOBAL", env.git_config_global())
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "git {args:?}");
+    };
+    for repo in [&holder, &nested] {
+        git(repo, &["init", "-q"]);
+        git(repo, &["config", "user.email", "test@test.invalid"]);
+        git(repo, &["config", "user.name", "Test"]);
+    }
+    std::fs::write(holder.join(".sekretbarilo.toml"), ALLOW_CUSTOM).unwrap();
+    let linked = holder.join("linked");
+    std::os::unix::fs::symlink(&nested, &linked).unwrap();
+    let payload = custom_value_payload(&linked);
+
+    let uncommitted = run_bytes(&env, &payload);
+    assert_custom_value_masked(&uncommitted);
+    assert!(String::from_utf8_lossy(&uncommitted.stderr).contains("ignoring untrusted"));
+
+    // control: committed unmodified in the holder, the allowlist lets the value through.
+    git(&holder, &["add", ".sekretbarilo.toml"]);
+    git(
+        &holder,
+        &["commit", "--no-verify", "-m", "add fixture config"],
+    );
+    let committed = run_bytes(&env, &payload);
+    assert!(
+        committed.stdout.is_empty(),
+        "{}",
+        String::from_utf8_lossy(&committed.stderr)
+    );
+}
+
+#[test]
 fn vanished_cwd_keeps_the_user_layer_of_a_non_git_home() {
     // the nearest existing ancestor is HOME, which holds the XDG layer.
     let env = IsolatedEnv::new();

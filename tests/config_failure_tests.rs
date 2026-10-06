@@ -332,3 +332,54 @@ fn scan_with_valid_configuration_and_nothing_staged_succeeds_and_traces() {
         String::from_utf8_lossy(&plain.stderr)
     );
 }
+
+/// whether `scan --trace-exemptions`, run with `vars`, loaded the layer disabling the aws rule.
+fn scan_disables_the_aws_rule(env: &IsolatedEnv, repo: &Path, vars: &[(&str, &str)]) -> bool {
+    let mut command = env.command();
+    command
+        .args(["scan", "--trace-exemptions"])
+        .current_dir(repo);
+    for (name, value) in vars {
+        command.env(name, value);
+    }
+    let output = command.output().unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(0), "{stderr}");
+    stderr.contains("[TRACE] rule:disabled aws-access-key-id")
+}
+
+#[test]
+fn scan_with_an_empty_home_reads_the_workspace_layer() {
+    // an empty HOME is unset, so discovery starts at the repository rather than finding nothing.
+    let env = IsolatedEnv::new();
+    let repo = env.git_repo();
+    std::fs::write(
+        repo.join(".sekretbarilo.toml"),
+        "[settings.rules]\n\"aws-access-key-id\" = false\n",
+    )
+    .unwrap();
+    assert!(scan_disables_the_aws_rule(&env, &repo, &[("HOME", "")]));
+}
+
+#[test]
+fn scan_ignores_a_relative_xdg_config_home() {
+    let env = IsolatedEnv::new();
+    let repo = env.git_repo();
+    let relative_dir = repo.join("xdg/sekretbarilo");
+    std::fs::create_dir_all(&relative_dir).unwrap();
+    std::fs::write(
+        relative_dir.join("sekretbarilo.toml"),
+        "[settings.rules]\n\"aws-access-key-id\" = false\n",
+    )
+    .unwrap();
+    let relative = [("XDG_CONFIG_HOME", "xdg")];
+    assert!(!scan_disables_the_aws_rule(&env, &repo, &relative));
+
+    // the HOME fallback is read instead
+    std::fs::write(
+        user_layer(&env),
+        "[settings.rules]\n\"aws-access-key-id\" = false\n",
+    )
+    .unwrap();
+    assert!(scan_disables_the_aws_rule(&env, &repo, &relative));
+}

@@ -109,7 +109,7 @@ installs git pre-commit hook that runs `sekretbarilo scan` before each commit.
 - sets `core.hooksPath` globally when it is not already configured
 - applies to all repositories on the system
 
-**note on precedence:** `core.hooksPath` does not layer with `.git/hooks/` — it *replaces* it. Once a global hook is installed, git runs only the hook in `core.hooksPath`, in every repository, and a per-repository `.git/hooks/pre-commit` is never executed. `git rev-parse --git-path hooks` reports the same directory, so a subsequent local `install pre-commit` writes to the global file too. Unset `core.hooksPath` to go back to per-repository hooks.
+**note on precedence:** `core.hooksPath` does not layer with `.git/hooks/` — it *replaces* it. Once a global hook is installed, git runs only the hook in `core.hooksPath`, in every repository, and a per-repository `.git/hooks/pre-commit` is never executed. A local `install pre-commit` therefore refuses while `core.hooksPath` comes from the global or system git config: it exits 2, names the directory, and writes nothing, instead of changing the hook every repository runs. A `core.hooksPath` set in the repository's own config (`git config --local core.hooksPath .githooks`) is that repository's hook directory, and a local install writes there. `sekretbarilo doctor` reports the bypassed local hook as `[INFO]`. Unset `core.hooksPath` to go back to per-repository hooks. `install pre-commit --global` writes into the directory only when the value came from the global config; under a system-wide value it would set a global one that overrides it everywhere, so the refusal then suggests adding the hook to the shared directory yourself or setting `core.hooksPath` in the repository's own config.
 
 **examples:**
 ```sh
@@ -139,6 +139,7 @@ installs the claude code hook in `block` or `redact` mode. `--mode block|redact`
 - installs into exactly that file instead of the local or global default; mutually exclusive with `--global`
 - a relative path resolves against the current directory of the invocation, not the repository root; works outside a git repository
 - the file is created if absent; existing content and other hooks are preserved exactly as with the default locations, and `--mode` still selects or preserves the claude mode
+- scope-conflict warnings from installation and `doctor` treat the explicit file as one more scope alongside local and global
 - installing into an arbitrary file does not register a new claude code profile: claude picks it up only when the file is one of its standard settings files, when claude itself is launched with its own `--settings <path>` flag (see the [claude code cli reference](https://code.claude.com/docs/en/cli-reference)), or when the file is the `settings.json` of the profile directory named by `CLAUDE_CONFIG_DIR` (see the [claude directory docs](https://code.claude.com/docs/en/claude-directory))
 
 **block behavior:**
@@ -214,7 +215,7 @@ sekretbarilo install agent-hook codex --global
 
 #### `sekretbarilo install all`
 
-installs all available hooks (pre-commit + claude code agent hook + codex cli agent hook), reporting each step. `--mode block|redact` selects the claude mode; omitted, it preserves the existing mode or chooses `block` for a new installation. redaction requires a known supported claude version. when `codex` is neither on `PATH` nor has a `$CODEX_HOME` directory (default `~/.codex`), its step prints `[SKIP] codex cli not detected on this machine` and continues.
+installs all available hooks (pre-commit + claude code agent hook + codex cli agent hook), reporting each step. `--mode block|redact` selects the claude mode; omitted, it preserves the existing mode or chooses `block` for a new installation. `--mode` does not change codex behavior. in `block` mode, the claude settings file can be installed even when claude code is absent. redaction requires a known supported claude version. when `codex` is neither on `PATH` nor has a `$CODEX_HOME` directory (default `~/.codex`), its step prints `[SKIP] codex cli not detected on this machine` and continues.
 
 `--settings <path>` applies only to the claude step, installing into that exact file instead of the local/global default; the pre-commit and codex steps keep their normal local/global behavior. it is mutually exclusive with `--global`.
 
@@ -331,7 +332,7 @@ sekretbarilo check-codex --stdin-json
 ### `sekretbarilo doctor`
 
 Configuration diagnostics include resolved rule-class states, explicit rule-id
-overrides, and enabled/total counts. Defaults in 0.9.0 enable 109 of 113 built-in
+overrides, and enabled/total counts. Defaults enable 110 of 114 built-in
 rules: `signature` and `contextual` are on, `heuristic` is off, and the three
 public-key rules also require `detect_public_keys`. An explicit rule override is
 shown separately, so `rule class heuristic: disabled (default)` can coexist with
@@ -849,7 +850,7 @@ when no `--config` flag is specified, sekretbarilo auto-discovers and merges con
 
 1. embedded default rules (skipped if `--no-defaults`)
 2. `/etc/sekretbarilo.toml` (system-wide)
-3. `$XDG_CONFIG_HOME/sekretbarilo/sekretbarilo.toml`, falling back to `~/.config/sekretbarilo/sekretbarilo.toml`
+3. `$XDG_CONFIG_HOME/sekretbarilo/sekretbarilo.toml`, falling back to `~/.config/sekretbarilo/sekretbarilo.toml` when `XDG_CONFIG_HOME` is unset, empty or relative (the XDG base directory spec makes a relative value invalid)
 4. every `.sekretbarilo.toml` in the directory hierarchy from `$HOME` down to the starting directory, ending with `~/.sekretbarilo.toml` at the top and the project's own file at the bottom
 
 cli flags override config file values. repeatable flags (allowlist-path, stopword) are appended, not replaced.

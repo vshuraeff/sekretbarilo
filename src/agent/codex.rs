@@ -791,8 +791,8 @@ fn load_trusted_config(
     vanished: Option<&Path>,
     redact: bool,
 ) -> Result<config::ProjectConfig, String> {
-    let home = match (std::env::var_os("HOME"), vanished) {
-        (Some(home), _) => PathBuf::from(home),
+    let home = match (discovery::home_dir(), vanished) {
+        (Some(home), _) => home,
         // the fallback home would be the ancestor, whose layers the vanished path never read.
         (None, Some(_)) => return Err("could not establish configuration trust".to_string()),
         (None, None) => base_dir.to_path_buf(),
@@ -820,9 +820,70 @@ fn load_trusted_config(
         return Ok(config::ProjectConfig::default());
     }
 
+    let mut trusted = Vec::new();
+    for (layer, trust) in judge_layers(base_dir, vanished, layers) {
+        // untrusted layers are never read; trusted ones never skip an error.
+        let content = match trust {
+            LayerTrust::Owned => std::fs::read(&layer.path)
+                .map_err(|_| "could not read trusted configuration".to_string())?,
+            LayerTrust::Committed(content) => content,
+            LayerTrust::Symlinked | LayerTrust::Uncommitted => {
+                if vanished.is_some() {
+                    // only reachable through the ancestor's repository, which may not have
+                    // been the vanished path's own: a removed nested checkout would have
+                    // trusted this layer. dropping it can lose a rule and keeping it can admit
+                    // an allowlist.
+                    return Err("could not establish configuration trust".to_string());
+                }
+                if redact {
+                    let _ = writeln!(
+                        std::io::stderr(),
+                        "[WARN] ignoring untrusted in-workspace config"
+                    );
+                } else {
+                    let path = sanitize_display(&layer.path.to_string_lossy());
+                    let _ = writeln!(
+                        std::io::stderr(),
+                        "[WARN] ignoring untrusted in-workspace config: {path}"
+                    );
+                }
+                continue;
+            }
+        };
+        let content = String::from_utf8(content)
+            .map_err(|_| "could not read trusted configuration".to_string())?;
+        let config = toml::from_str::<config::ProjectConfig>(&content)
+            .map_err(|_| "invalid trusted configuration".to_string())?;
+        trusted.push(config);
+    }
+
+    Ok(config::merge::merge_all(trusted))
+}
+
+/// how the agent hooks judge one discovered config layer.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum LayerTrust {
+    /// trusted by location: a pinned system or user layer, or a layer outside the workspace
+    Owned,
+    /// inside the workspace and committed: the bytes read from it, equal to its blob at HEAD
+    Committed(Vec<u8>),
+    /// inside the workspace and reached through a symlink a repository holds
+    Symlinked,
+    /// inside the workspace and not committed unmodified, or with no repository to vouch for it
+    Uncommitted,
+}
+
+/// judge discovered layers the way every agent hook does, without parsing any of them, so
+/// `doctor` reports exactly the layers the hooks drop. `base_dir` is where discovery started
+/// and git runs; `vanished` as in `load_trusted_redact_config`.
+pub(crate) fn judge_layers(
+    base_dir: &Path,
+    vanished: Option<&Path>,
+    layers: Vec<discovery::ConfigLayer>,
+) -> Vec<(discovery::ConfigLayer, LayerTrust)> {
     // a fixed layer is trusted wherever the cwd is, so its location must come from the
     // hook's environment: without an absolute HOME or XDG_CONFIG_HOME the XDG path derives
-    // from the cwd fallback above or the process cwd, both of which the agent can write.
+    // from the cwd fallback or the process cwd, both of which the agent can write.
     let fixed_pinned = ["HOME", "XDG_CONFIG_HOME"]
         .iter()
         .any(|name| std::env::var_os(name).is_some_and(|value| Path::new(&value).is_absolute()));
@@ -837,53 +898,57 @@ fn load_trusted_config(
                 .canonicalize()
                 .unwrap_or_else(|_| base_dir.to_path_buf())
         });
-    let mut trusted = Vec::new();
+    // the boundary stays the target repository, so its layers still place inside it, but a
+    // cwd that reaches it through a link another repository holds lets none of them count as
+    // committed: the agent works in the repository holding the link, so a layer outside the
+    // target is judged by every such repository that contains it.
+    let holders = foreign_link_holders(base_dir, repo_root.as_deref());
 
-    for layer in layers {
-        let path = layer.path;
-        // the system and user layers are user-owned config even when the boundary covers
-        // them (cwd = HOME outside git, a dotfiles repository in HOME), symlinked or not.
-        let is_trusted = if layer.origin == LayerOrigin::Fixed && fixed_pinned && path.is_absolute()
-        {
-            true
-        } else {
-            match place_layer(&path, &workspace_boundary) {
-                LayerPlacement::Outside => true,
-                LayerPlacement::Symlinked => false,
-                LayerPlacement::Inside(real) => repo_root
-                    .as_deref()
-                    .is_some_and(|repo_root| is_committed_config(repo_root, &real)),
-            }
-        };
-        if !is_trusted && vanished.is_some() {
-            // only reachable through the ancestor's repository, which may not have been the
-            // vanished path's own: a removed nested checkout would have trusted this layer.
-            // dropping it can lose a rule and keeping it can admit an allowlist.
-            return Err("could not establish configuration trust".to_string());
-        }
+    layers
+        .into_iter()
+        .map(|layer| {
+            // the system and user layers are user-owned config even when the boundary covers
+            // them (cwd = HOME outside git, a dotfiles repository in HOME), symlinked or not.
+            let trust =
+                if layer.origin == LayerOrigin::Fixed && fixed_pinned && layer.path.is_absolute() {
+                    LayerTrust::Owned
+                } else {
+                    match place_layer(&layer.path, &workspace_boundary) {
+                        LayerPlacement::Outside => judge_in_link_holders(&layer.path, &holders),
+                        LayerPlacement::Symlinked => LayerTrust::Symlinked,
+                        LayerPlacement::Inside(_) if !holders.is_empty() => LayerTrust::Symlinked,
+                        LayerPlacement::Inside(real) => repo_root
+                            .as_deref()
+                            .and_then(|repo_root| read_committed_config(repo_root, &real))
+                            .map_or(LayerTrust::Uncommitted, LayerTrust::Committed),
+                    }
+                };
+            (layer, trust)
+        })
+        .collect()
+}
 
-        if is_trusted {
-            // untrusted layers are never read; trusted ones never skip an error.
-            let content = std::fs::read_to_string(&path)
-                .map_err(|_| "could not read trusted configuration".to_string())?;
-            let config = toml::from_str::<config::ProjectConfig>(&content)
-                .map_err(|_| "invalid trusted configuration".to_string())?;
-            trusted.push(config);
-        } else if redact {
-            let _ = writeln!(
-                std::io::stderr(),
-                "[WARN] ignoring untrusted in-workspace config"
-            );
-        } else {
-            let path = sanitize_display(&path.to_string_lossy());
-            let _ = writeln!(
-                std::io::stderr(),
-                "[WARN] ignoring untrusted in-workspace config: {path}"
-            );
+/// judge a layer outside the target repository by the repositories holding a link on the way
+/// to the cwd. one that contains it is a workspace the agent works in, so the layer must be
+/// committed unmodified there, as that repository's own layer would be; a layer several of
+/// them contain must be the same committed bytes in each. a layer none of them contains is
+/// the user's own.
+fn judge_in_link_holders(path: &Path, holders: &[PathBuf]) -> LayerTrust {
+    let mut trust = LayerTrust::Owned;
+    for holder in holders {
+        match place_layer(path, holder) {
+            LayerPlacement::Outside => {}
+            LayerPlacement::Symlinked => return LayerTrust::Symlinked,
+            LayerPlacement::Inside(real) => match (read_committed_config(holder, &real), &trust) {
+                (Some(content), LayerTrust::Committed(earlier)) if content != *earlier => {
+                    return LayerTrust::Uncommitted;
+                }
+                (Some(content), _) => trust = LayerTrust::Committed(content),
+                (None, _) => return LayerTrust::Uncommitted,
+            },
         }
     }
-
-    Ok(config::merge::merge_all(trusted))
+    trust
 }
 
 /// where a config layer sits relative to the workspace boundary.
@@ -984,27 +1049,61 @@ fn resolve_git_repo_root(base_dir: &Path) -> Option<PathBuf> {
     PathBuf::from(root).canonicalize().ok()
 }
 
-fn is_committed_config(repo_root: &Path, path: &Path) -> bool {
-    let Ok(relative_path) = path.strip_prefix(repo_root) else {
-        return false;
-    };
-    let tracked = git_in(repo_root)
-        .args(["ls-files", "--error-unmatch", "--"])
-        .arg(relative_path)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
-    if !tracked.is_ok_and(|status| status.success()) {
-        return false;
-    }
+/// the repositories, other than `repo_root`, that hold a symlink on the way to `dir` as spelled.
+/// `git -C` resolves the link, so the repository found from `dir` is the target's, while the
+/// agent works in the one holding the link; with no target repository every holder counts. a
+/// link no repository holds (`/var` on macOS) leaves the cwd where git found it.
+fn foreign_link_holders(dir: &Path, repo_root: Option<&Path>) -> Vec<PathBuf> {
+    let dir = std::path::absolute(dir).unwrap_or_else(|_| dir.to_path_buf());
+    let mut holders: Vec<PathBuf> = dir
+        .ancestors()
+        .filter(|prefix| {
+            prefix
+                .symlink_metadata()
+                .is_ok_and(|metadata| metadata.file_type().is_symlink())
+        })
+        .filter_map(Path::parent)
+        .filter_map(resolve_git_repo_root)
+        .filter(|holder| Some(holder.as_path()) != repo_root)
+        .collect();
+    holders.sort();
+    holders.dedup();
+    holders
+}
 
-    git_in(repo_root)
-        .args(["diff", "--quiet", "HEAD", "--"])
-        .arg(relative_path)
-        .stdout(Stdio::null())
+/// the bytes of an in-workspace layer, when they are exactly its blob at HEAD.
+///
+/// trust is judged on the bytes the hook then parses, read once from a descriptor that is the
+/// regular file at `path` (lstat against fstat), so a swap after the decision changes nothing.
+/// `git diff --quiet HEAD` would instead trust the index, which `update-index
+/// --assume-unchanged` or `--skip-worktree` tells to skip the file, and replace refs could
+/// stand in for the committed blob, so neither is consulted.
+fn read_committed_config(repo_root: &Path, path: &Path) -> Option<Vec<u8>> {
+    use std::os::unix::fs::MetadataExt;
+
+    let relative_path = path.strip_prefix(repo_root).ok()?;
+    let linked = path.symlink_metadata().ok()?;
+    if !linked.file_type().is_file() {
+        return None;
+    }
+    let mut file = fs::File::open(path).ok()?;
+    let opened = file.metadata().ok()?;
+    if (opened.dev(), opened.ino()) != (linked.dev(), linked.ino()) {
+        return None;
+    }
+    let mut content = Vec::new();
+    file.read_to_end(&mut content).ok()?;
+
+    let mut object = std::ffi::OsString::from("HEAD:");
+    object.push(relative_path);
+    let committed = git_in(repo_root)
+        .args(["--no-replace-objects", "cat-file", "blob"])
+        .arg(object)
+        .stdin(Stdio::null())
         .stderr(Stdio::null())
-        .status()
-        .is_ok_and(|status| status.success())
+        .output()
+        .ok()?;
+    (committed.status.success() && committed.stdout == content).then_some(content)
 }
 
 fn load_scan_context(cwd: Option<&str>) -> Result<ScanContext, String> {
@@ -2389,6 +2488,222 @@ mod tests {
 
         let config = load_trusted_project_config(dir.path()).unwrap();
         assert!(!config.allowlist.paths.iter().any(|path| path == marker));
+    }
+
+    fn commit_permissive_config(repo: &Path) {
+        fs::write(repo.join(".sekretbarilo.toml"), permissive_config()).unwrap();
+        git_success(repo, &["add", ".sekretbarilo.toml"]);
+        git_success(repo, &["commit", "--no-verify", "-m", "add fixture config"]);
+    }
+
+    #[test]
+    fn cwd_through_a_symlink_into_another_repository_does_not_trust_its_committed_layer() {
+        let workspace = init_git_repo();
+        let other = init_git_repo();
+        commit_permissive_config(other.path());
+        let linked = workspace.path().join("linked");
+        std::os::unix::fs::symlink(other.path(), &linked).unwrap();
+
+        assert_block_contains(
+            evaluate_payload_with_loader(&secret_patch_payload(&linked), load_scan_context),
+            "secret(s) detected",
+        );
+        // control: from the other repository itself its committed layer is honored.
+        assert_eq!(
+            evaluate_payload_with_loader(&secret_patch_payload(other.path()), load_scan_context),
+            HookDecision::Allow
+        );
+    }
+
+    #[test]
+    fn cwd_through_a_symlink_within_its_own_repository_keeps_the_committed_layer() {
+        let repo = init_git_repo();
+        let nested = repo.path().join("nested");
+        fs::create_dir(&nested).unwrap();
+        fs::write(nested.join(".sekretbarilo.toml"), permissive_config()).unwrap();
+        git_success(repo.path(), &["add", "nested/.sekretbarilo.toml"]);
+        git_success(
+            repo.path(),
+            &["commit", "--no-verify", "-m", "add nested fixture config"],
+        );
+        let linked = repo.path().join("linked");
+        std::os::unix::fs::symlink(&nested, &linked).unwrap();
+
+        assert_eq!(
+            evaluate_payload_with_loader(&secret_patch_payload(&linked), load_scan_context),
+            HookDecision::Allow
+        );
+    }
+
+    #[test]
+    fn cwd_through_a_link_into_a_nested_repository_judges_the_holder_layer_by_the_holder() {
+        // the target nests in the repository holding the link, so the holder's layer sits
+        // outside the target; the agent works in the holder, which must have committed it.
+        // the layers are built by hand: discovery from a temp dir outside HOME would not walk
+        // up to the holder.
+        let holder = init_git_repo();
+        let root = holder.path().canonicalize().unwrap();
+        let nested = root.join("nested");
+        fs::create_dir(&nested).unwrap();
+        git_success(&nested, &["init"]);
+        let linked = holder.path().join("linked");
+        std::os::unix::fs::symlink(&nested, &linked).unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let mut paths = vec![
+            outside.path().canonicalize().unwrap(),
+            root.clone(),
+            holder.path().to_path_buf(),
+            nested.clone(),
+        ];
+        for path in &mut paths {
+            path.push(".sekretbarilo.toml");
+            fs::write(&*path, permissive_config()).unwrap();
+        }
+        let judge = || -> Vec<LayerTrust> {
+            let layers = paths
+                .iter()
+                .map(|path| discovery::ConfigLayer {
+                    path: path.clone(),
+                    origin: LayerOrigin::Hierarchy,
+                })
+                .collect();
+            judge_layers(&linked, None, layers)
+                .into_iter()
+                .map(|(_, trust)| trust)
+                .collect()
+        };
+
+        // outside both repositories; the holder's layer, as resolved and as spelled; the
+        // target's own layer.
+        assert_eq!(
+            judge(),
+            [
+                LayerTrust::Owned,
+                LayerTrust::Uncommitted,
+                LayerTrust::Uncommitted,
+                LayerTrust::Symlinked,
+            ]
+        );
+
+        git_success(&root, &["add", ".sekretbarilo.toml"]);
+        git_success(
+            &root,
+            &["commit", "--no-verify", "-m", "add fixture config"],
+        );
+        let committed = || LayerTrust::Committed(permissive_config().as_bytes().to_vec());
+        assert_eq!(
+            judge(),
+            [
+                LayerTrust::Owned,
+                committed(),
+                committed(),
+                LayerTrust::Symlinked,
+            ]
+        );
+
+        // a holder layer that is itself a link vouches for nothing, committed or not.
+        let target = outside.path().join("target.toml");
+        fs::write(&target, permissive_config()).unwrap();
+        fs::remove_file(&paths[1]).unwrap();
+        std::os::unix::fs::symlink(&target, &paths[1]).unwrap();
+        assert_eq!(judge()[1], LayerTrust::Symlinked);
+    }
+
+    #[test]
+    fn a_layer_two_link_holders_contain_must_be_committed_in_each() {
+        let outer = init_git_repo();
+        let inner = outer.path().canonicalize().unwrap().join("inner");
+        fs::create_dir(&inner).unwrap();
+        git_success(&inner, &["init"]);
+        git_success(&inner, &["config", "user.email", "fixture@example.invalid"]);
+        git_success(&inner, &["config", "user.name", "Fixture User"]);
+        commit_permissive_config(&inner);
+        let layer = inner.join(".sekretbarilo.toml");
+
+        assert_eq!(
+            judge_in_link_holders(&layer, std::slice::from_ref(&inner)),
+            LayerTrust::Committed(permissive_config().as_bytes().to_vec())
+        );
+        // the outer repository records the nested one as a whole, never this file.
+        let outer_root = outer.path().canonicalize().unwrap();
+        assert_eq!(
+            judge_in_link_holders(&layer, &[outer_root, inner]),
+            LayerTrust::Uncommitted
+        );
+    }
+
+    #[test]
+    fn committed_config_hidden_from_git_diff_is_not_trusted() {
+        // each way leaves `git diff --quiet HEAD` clean over a permissive working copy.
+        for hide in ["--assume-unchanged", "--skip-worktree", "replace"] {
+            let repo = init_git_repo();
+            let config_path = repo.path().join(".sekretbarilo.toml");
+            fs::write(&config_path, "[settings]\n").unwrap();
+            git_success(repo.path(), &["add", ".sekretbarilo.toml"]);
+            git_success(
+                repo.path(),
+                &["commit", "--no-verify", "-m", "add fixture config"],
+            );
+            if hide == "replace" {
+                fs::write(&config_path, permissive_config()).unwrap();
+                let hashed = Command::new("git")
+                    .arg("-C")
+                    .arg(repo.path())
+                    .args(["hash-object", "-w", ".sekretbarilo.toml"])
+                    .output()
+                    .unwrap();
+                let replacement = String::from_utf8(hashed.stdout).unwrap();
+                git_success(
+                    repo.path(),
+                    &["replace", "HEAD:.sekretbarilo.toml", replacement.trim()],
+                );
+            } else {
+                git_success(repo.path(), &["update-index", hide, ".sekretbarilo.toml"]);
+                fs::write(&config_path, permissive_config()).unwrap();
+            }
+            let clean = Command::new("git")
+                .arg("-C")
+                .arg(repo.path())
+                .args(["diff", "--quiet", "HEAD", "--", ".sekretbarilo.toml"])
+                .status()
+                .unwrap();
+            assert!(clean.success(), "{hide}: the fixture must fool git diff");
+
+            assert_block_contains(
+                evaluate_payload_with_loader(&secret_patch_payload(repo.path()), load_scan_context),
+                "secret(s) detected",
+            );
+        }
+    }
+
+    #[test]
+    fn read_committed_config_returns_only_the_committed_bytes_of_a_regular_file() {
+        let repo = init_git_repo();
+        let root = repo.path().canonicalize().unwrap();
+        let config_path = root.join(".sekretbarilo.toml");
+        fs::write(&config_path, "[settings]\n").unwrap();
+        assert_eq!(read_committed_config(&root, &config_path), None);
+
+        git_success(&root, &["add", ".sekretbarilo.toml"]);
+        git_success(
+            &root,
+            &["commit", "--no-verify", "-m", "add fixture config"],
+        );
+        assert_eq!(
+            read_committed_config(&root, &config_path),
+            Some(b"[settings]\n".to_vec())
+        );
+
+        fs::write(&config_path, "[settings]\nentropy_threshold = 3.0\n").unwrap();
+        assert_eq!(read_committed_config(&root, &config_path), None);
+
+        // a link whose target holds the committed bytes is still not the regular file.
+        let outside = tempfile::tempdir().unwrap();
+        let target = outside.path().join("target.toml");
+        fs::write(&target, "[settings]\n").unwrap();
+        fs::remove_file(&config_path).unwrap();
+        std::os::unix::fs::symlink(&target, &config_path).unwrap();
+        assert_eq!(read_committed_config(&root, &config_path), None);
     }
 
     #[test]

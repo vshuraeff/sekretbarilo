@@ -32,7 +32,7 @@ Use global installation when:
 
 When both global and local hooks exist:
 
-1. **Pre-commit hooks**: the global one wins, and completely. `core.hooksPath` replaces `.git/hooks/` instead of layering with it, so once a global hook is installed, per-repository pre-commit hooks stop running everywhere. `sekretbarilo install pre-commit` without `--global` then writes to that same global file, because `git rev-parse --git-path hooks` resolves to it. Unset `core.hooksPath` if you want per-repository hooks back.
+1. **Pre-commit hooks**: the global one wins, and completely. `core.hooksPath` replaces `.git/hooks/` instead of layering with it, so once a global hook is installed, per-repository pre-commit hooks stop running everywhere. `sekretbarilo install pre-commit` without `--global` then refuses and writes nothing, because the only directory git would run its hook from is the global one. Unset `core.hooksPath` if you want per-repository hooks back.
 2. **Claude Code hooks**: sekretbarilo writes to whichever scope you choose and leaves the other alone; which files Claude Code loads and in what order is Claude Code's own settings behavior.
 3. **Codex CLI hooks**: layers are additive — a global hook and a project hook both run
 

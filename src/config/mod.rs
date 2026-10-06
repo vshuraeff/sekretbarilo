@@ -308,9 +308,7 @@ pub const ALLOWLIST_ERROR_CATEGORY: &str =
 
 /// resolve the home directory for hierarchy walking.
 fn dirs_home(fallback: &Path) -> PathBuf {
-    std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| fallback.to_path_buf())
+    discovery::home_dir().unwrap_or_else(|| fallback.to_path_buf())
 }
 
 /// load the project config by discovering and merging all config files
@@ -657,6 +655,9 @@ entropy_threshold = 3.5
             secret_groups: Vec::new(),
             keywords: vec!["akia".to_string()],
             entropy_threshold: None,
+            payload_group: None,
+            min_payload_entropy: None,
+            reject_hex_payload: false,
             allowlist: rules::RuleAllowlist {
                 regexes: vec!["AKIAIOSFODNN7EXAMPLE".to_string()],
                 paths: vec![],

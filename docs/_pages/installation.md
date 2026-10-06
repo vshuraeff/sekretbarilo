@@ -1,12 +1,10 @@
 ---
-layout: default
-title: Installation
-nav_order: 2
+title: Install sekretbarilo and its hooks
+description: Install the binary, add the pre-commit hook and the Claude Code and Codex CLI agent hooks locally or globally, and remove them again.
+section: how-to
 ---
 
-# Installation
-
-This guide covers everything you need to install and configure sekretbarilo for your projects.
+What each installer writes, and every flag it accepts, is in the [CLI reference]({{ '/cli-reference/#sekretbarilo-install' | relative_url }}).
 
 ## Installing sekretbarilo
 
@@ -171,13 +169,11 @@ sekretbarilo install agent-hook claude --mode block
 sekretbarilo install agent-hook claude --settings .claude/settings.local.json --mode redact
 ```
 
-`redact` requires Claude Code >= 2.1.121. A missing, unknown, or older version prevents the installer from changing the previous Claude protection. The synchronous `PostToolUse` hook uses a 10-second timeout; it replaces detected values with `[REDACTED]` in memory and preserves source files and response structure.
+`redact` requires Claude Code >= 2.1.121. A missing, unknown, or older version prevents the installer from changing the previous Claude protection.
 
-Without `--mode`, installation preserves the mode already present in the selected settings file; a new installation uses `block`. `install all` follows the same rule and accepts `--mode block|redact` for its Claude step. `--mode` does not change Codex behavior.
+Switching modes does not switch hooks in another settings scope. A global blocking Read hook can still block a read before a local redaction hook gets any result, and the reverse scope combination has the same issue. Installation and `doctor` report this conflict; choose the intended mode explicitly in each affected scope. Read the [redaction coverage and limitations]({{ '/agent-hooks/#redact-mode-output-editor' | relative_url }}) before relying on it.
 
-Switching modes replaces only sekretbarilo's handlers in the selected file, atomically and without duplicates. Other hooks and their order are preserved. It does not switch hooks in another settings scope. A global blocking Read hook can still block a read before a local redaction hook gets any result, and the reverse scope combination has the same issue. Installation and `doctor` report this conflict; choose the intended mode explicitly in each affected scope. Read the [redaction coverage and limitations]({{ '/agent-hooks/#redact-mode-output-editor' | relative_url }}) before relying on it.
-
-**Targeting an explicit file.** `--settings <path>` installs into exactly that file instead of the local or global default, and is mutually exclusive with `--global`. A relative path resolves against the current directory of the invocation, not the repository root, and the flag works outside a git repository too; the file is created if absent, and existing content and other hooks are preserved exactly as with the default locations. Scope-conflict warnings from installation and `doctor` treat the explicit file as one more scope alongside local and global.
+`--settings <path>` cannot be combined with `--global`. How it resolves its path and treats an existing file is under [`install agent-hook claude`]({{ '/cli-reference/#sekretbarilo-install-agent-hook-claude' | relative_url }}) in the CLI reference.
 
 Writing into an arbitrary file does not register a new Claude Code profile by itself: Claude only loads a settings file when it is one of its standard locations, when Claude is launched with its own `--settings <path>` flag, or when the file is the `settings.json` of the profile directory named by `CLAUDE_CONFIG_DIR`. See the [Claude Code CLI reference](https://code.claude.com/docs/en/cli-reference) and the [configuration directory docs](https://code.claude.com/docs/en/claude-directory). `sekretbarilo doctor --settings <path>` inspects the file's contents; it is not proof that a running Claude Code session has actually loaded it.
 
@@ -220,7 +216,7 @@ Start Codex and approve both sekretbarilo hooks, the `PreToolUse` one and the `P
 /hooks
 ```
 
-sekretbarilo deliberately does not write the trust state for you: the trust hash is an internal Codex detail, and a security tool that grants itself trust defeats the purpose of the trust model. For non-interactive environments such as CI, Codex offers `--dangerously-bypass-hook-trust`, which skips the approval check for every hook in the session — use it only where you control the full hook configuration.
+sekretbarilo does not write the trust state for you; why is explained in [How the agent hooks work]({{ '/how-agent-hooks-work/#why-sekretbarilo-does-not-approve-its-own-hook' | relative_url }}). For non-interactive environments such as CI, Codex offers `--dangerously-bypass-hook-trust`, which skips the approval check for every hook in the session — use it only where you control the full hook configuration.
 
 See [Agent Hooks]({{ '/agent-hooks/#hook-trust' | relative_url }}) for the details.
 
@@ -248,7 +244,7 @@ installing codex cli agent hook...
 [SKIP] codex cli not detected on this machine; skipping codex agent hook install
 ```
 
-Omitted `--mode` preserves an existing Claude mode or uses `block` for a new install. In `block` mode, the Claude settings file can be installed even when Claude Code is absent. Selecting or preserving `redact` requires a known supported Claude version before the Claude settings can change.
+Selecting or preserving `redact` requires a known supported Claude version before the Claude settings can change.
 
 Follow installation with `/hooks` in Codex to approve its hook.
 

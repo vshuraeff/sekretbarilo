@@ -1134,6 +1134,245 @@ fn check_codex_cwd_through_a_symlinked_workspace_directory_ignores_its_target_la
     }
 }
 
+/// a second repository under the isolated root with `content` committed as its layer.
+fn other_repo_with_committed_layer(env: &IsolatedEnv, content: &str) -> PathBuf {
+    let other = env.root().join("other");
+    std::fs::create_dir_all(&other).unwrap();
+    git_success(env, &other, &["init", "-q"]);
+    git_success(env, &other, &["config", "user.email", "test@test.invalid"]);
+    git_success(env, &other, &["config", "user.name", "Test"]);
+    std::fs::write(other.join(".sekretbarilo.toml"), content).unwrap();
+    git_success(env, &other, &["add", ".sekretbarilo.toml"]);
+    git_success(
+        env,
+        &other,
+        &["commit", "--no-verify", "-m", "add fixture config"],
+    );
+    other
+}
+
+#[test]
+fn check_codex_cwd_through_a_symlink_into_another_repository_ignores_its_committed_layer() {
+    // git resolves the link and finds the other repository, whose committed layer would
+    // otherwise vouch for itself in a workspace that never committed it.
+    let env = IsolatedEnv::new();
+    let repo = env.git_repo();
+    let other = other_repo_with_committed_layer(&env, DISABLE_GITHUB_PAT);
+    let linked = repo.join("linked");
+    std::os::unix::fs::symlink(&other, &linked).unwrap();
+    let token = generated_github_token();
+
+    for cwd in [&linked, &other] {
+        for (event, payload) in [
+            ("PreToolUse", bash_payload(&format!("echo {token}"), cwd)),
+            (
+                "PostToolUse",
+                post_tool_use_payload(&format!("{token}\n"), cwd),
+            ),
+        ] {
+            let output = run_check_codex_in(&env, &payload, cwd);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            if cwd == &linked {
+                assert_eq!(output.status.code(), Some(2), "{event}: {stderr}");
+                assert!(
+                    stderr.contains("ignoring untrusted in-workspace config"),
+                    "{event}: {stderr}"
+                );
+                assert!(!stderr.contains(&token), "{event}: raw token");
+            } else {
+                // control: in the other repository itself its committed layer applies.
+                assert_eq!(output.status.code(), Some(0), "{event}: {stderr}");
+            }
+        }
+    }
+}
+
+#[test]
+fn check_codex_cwd_through_a_link_into_a_nested_repository_judges_the_holder_layer() {
+    // the target nests in the repository holding the link, so the holder's layer lies outside
+    // the target; the agent works in the holder, which has not committed it. both sit under
+    // HOME, where discovery from the link walks up to the holder.
+    let env = IsolatedEnv::new();
+    let holder = env.home().join("work");
+    let nested = holder.join("nested");
+    std::fs::create_dir_all(&nested).unwrap();
+    for repo in [&holder, &nested] {
+        git_success(&env, repo, &["init", "-q"]);
+        git_success(&env, repo, &["config", "user.email", "test@test.invalid"]);
+        git_success(&env, repo, &["config", "user.name", "Test"]);
+    }
+    std::fs::write(holder.join(".sekretbarilo.toml"), DISABLE_GITHUB_PAT).unwrap();
+    let linked = holder.join("linked");
+    std::os::unix::fs::symlink(&nested, &linked).unwrap();
+    let token = generated_github_token();
+    let pre = bash_payload(&format!("echo {token}"), &linked);
+    let post = post_tool_use_payload(&format!("{token}\n"), &linked);
+
+    for (event, payload) in [("PreToolUse", &pre), ("PostToolUse", &post)] {
+        let output = run_check_codex_in(&env, payload, &linked);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(output.status.code(), Some(2), "{event}: {stderr}");
+        assert!(
+            stderr.contains("ignoring untrusted in-workspace config"),
+            "{event}: {stderr}"
+        );
+        assert!(!stderr.contains(&token), "{event}: raw token");
+    }
+
+    // control: committed unmodified in the holder, the layer applies.
+    git_success(&env, &holder, &["add", ".sekretbarilo.toml"]);
+    git_success(
+        &env,
+        &holder,
+        &["commit", "--no-verify", "-m", "add fixture config"],
+    );
+    for (event, payload) in [("PreToolUse", &pre), ("PostToolUse", &post)] {
+        let output = run_check_codex_in(&env, payload, &linked);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(output.status.code(), Some(0), "{event}: {stderr}");
+        assert!(!stderr.contains("ignoring untrusted"), "{event}: {stderr}");
+    }
+}
+
+#[test]
+fn check_codex_ignores_a_committed_layer_modified_behind_git_diff() {
+    // each way keeps `git diff --quiet HEAD` clean while the working copy disables the rule.
+    for hide in ["--assume-unchanged", "--skip-worktree", "replace"] {
+        let env = IsolatedEnv::new();
+        let repo = env.git_repo();
+        let layer = repo.join(".sekretbarilo.toml");
+        std::fs::write(&layer, "[settings]\n").unwrap();
+        git_success(&env, &repo, &["add", ".sekretbarilo.toml"]);
+        git_success(
+            &env,
+            &repo,
+            &["commit", "--no-verify", "-m", "add fixture config"],
+        );
+        if hide == "replace" {
+            std::fs::write(&layer, DISABLE_GITHUB_PAT).unwrap();
+            let hashed = Command::new("git")
+                .args(["hash-object", "-w", ".sekretbarilo.toml"])
+                .env("GIT_CONFIG_GLOBAL", env.git_config_global())
+                .current_dir(&repo)
+                .output()
+                .unwrap();
+            let replacement = String::from_utf8(hashed.stdout).unwrap();
+            git_success(
+                &env,
+                &repo,
+                &["replace", "HEAD:.sekretbarilo.toml", replacement.trim()],
+            );
+        } else {
+            git_success(&env, &repo, &["update-index", hide, ".sekretbarilo.toml"]);
+            std::fs::write(&layer, DISABLE_GITHUB_PAT).unwrap();
+        }
+        git_success(
+            &env,
+            &repo,
+            &["diff", "--quiet", "HEAD", "--", ".sekretbarilo.toml"],
+        );
+        let token = generated_github_token();
+
+        for (event, payload) in [
+            ("PreToolUse", bash_payload(&format!("echo {token}"), &repo)),
+            (
+                "PostToolUse",
+                post_tool_use_payload(&format!("{token}\n"), &repo),
+            ),
+        ] {
+            let output = run_check_codex_in(&env, &payload, &repo);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert_eq!(output.status.code(), Some(2), "{hide} {event}: {stderr}");
+            assert!(
+                stderr.contains("ignoring untrusted in-workspace config"),
+                "{hide} {event}: {stderr}"
+            );
+        }
+    }
+}
+
+/// `check-codex` with the given environment overrides on top of the isolated one.
+fn run_check_codex_with_env(
+    env: &IsolatedEnv,
+    payload: &[u8],
+    current_dir: &Path,
+    vars: &[(&str, &str)],
+) -> Output {
+    let mut command = env.command();
+    command
+        .args(["check-codex", "--stdin-json"])
+        .current_dir(current_dir)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    for (name, value) in vars {
+        command.env(name, value);
+    }
+    let mut child = command.spawn().expect("failed to spawn sekretbarilo");
+    child
+        .stdin
+        .take()
+        .expect("stdin was not piped")
+        .write_all(payload)
+        .expect("failed to write payload to child stdin");
+    child.wait_with_output().expect("failed to wait on child")
+}
+
+#[test]
+fn check_codex_ignores_a_relative_xdg_config_home() {
+    // the relative value would name a directory under the process cwd, which is not the
+    // payload's workspace; the xdg spec says to ignore it and use HOME/.config.
+    let env = IsolatedEnv::new();
+    let repo = env.git_repo();
+    let process_dir = env.root().join("process");
+    let relative_dir = process_dir.join("xdg/sekretbarilo");
+    std::fs::create_dir_all(&relative_dir).unwrap();
+    std::fs::write(relative_dir.join("sekretbarilo.toml"), DISABLE_GITHUB_PAT).unwrap();
+    let token = generated_github_token();
+    let payload = bash_payload(&format!("echo {token}"), &repo);
+    let vars = [("XDG_CONFIG_HOME", "xdg")];
+
+    let output = run_check_codex_with_env(&env, &payload, &process_dir, &vars);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(2), "{stderr}");
+    assert!(stderr.contains("github-personal-access-token"), "{stderr}");
+
+    // the HOME fallback is read instead
+    write_xdg_layer(&env, DISABLE_GITHUB_PAT);
+    let output = run_check_codex_with_env(&env, &payload, &process_dir, &vars);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn check_codex_with_an_empty_home_reads_the_workspace_layer() {
+    // an empty HOME is unset: discovery starts at the workspace instead of finding nothing.
+    let env = IsolatedEnv::new();
+    let repo = env.git_repo();
+    std::fs::write(repo.join(".sekretbarilo.toml"), CANARY_RULE).unwrap();
+    git_success(&env, &repo, &["add", ".sekretbarilo.toml"]);
+    git_success(
+        &env,
+        &repo,
+        &["commit", "--no-verify", "-m", "add fixture config"],
+    );
+    let canary = generated_canary();
+
+    let output = run_check_codex_with_env(
+        &env,
+        &bash_payload(&format!("echo {canary}"), &repo),
+        &repo,
+        &[("HOME", "")],
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(2), "{stderr}");
+    assert!(stderr.contains("rule: fixture-canary"), "{stderr}");
+}
+
 #[test]
 fn check_codex_still_drops_the_home_hierarchy_layer_when_cwd_is_home() {
     // ~/.sekretbarilo.toml is a hierarchy layer: with cwd = HOME outside git it lies inside

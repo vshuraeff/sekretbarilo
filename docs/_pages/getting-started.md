@@ -1,10 +1,8 @@
 ---
-layout: default
-title: Getting Started
-nav_order: 1
+title: Getting started
+description: Install sekretbarilo, add its pre-commit hook to a project, and see what a blocked commit looks like.
+section: tutorial
 ---
-
-# Getting Started
 
 In this tutorial you install sekretbarilo, set up its pre-commit hook in a project, and see what happens when a commit carries a secret. What the tool is and why it exists are covered in [What sekretbarilo is for]({{ '/what-sekretbarilo-is-for/' | relative_url }}).
 

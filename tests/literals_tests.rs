@@ -190,6 +190,17 @@ fn go_struct_tags_keep_keys_whole_values_and_comma_items() {
 }
 
 #[test]
+fn go_struct_tag_crash_seed_keeps_contained_item_ranges() {
+    let line = include_bytes!("../fuzz/corpus/literals/overlapping-go-tag");
+    let result = LiteralTracker::new(Language::Go).feed(line, 1);
+    assert!(result.known);
+    assert_eq!(result.bodies, vec![16..20, 22..38, 22..25, 26..38]);
+    for range in result.bodies {
+        assert!(range.start <= range.end && range.end <= line.len());
+    }
+}
+
+#[test]
 fn go_malformed_tag_keeps_the_raw_body() {
     for tag in [
         r#"json:"broken" extra"#,

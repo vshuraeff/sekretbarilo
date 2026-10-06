@@ -62,7 +62,7 @@ pub(crate) fn check_predicates(data: &[u8]) {
             .strip_prefix(b"0x")
             .or_else(|| data.strip_prefix(b"0X"))
             .unwrap_or(data);
-        assert!(matches!(remainder.len(), 32 | 40 | 64));
+        assert!((32..=128).contains(&remainder.len()));
         assert!(remainder.iter().all(u8::is_ascii_hexdigit));
     }
 }
@@ -79,6 +79,21 @@ mod tests {
     #[test]
     fn weekly_control_byte_crash_is_valid_input() {
         check_predicates(b"[//hox](https\x1d\0\0\0ost/sample)\n");
+    }
+
+    #[test]
+    fn hex_policy_accepts_intermediate_lengths_and_checks_boundaries() {
+        for length in [31, 32, 36, 40, 64, 96, 128, 129] {
+            let value = vec![b'3'; length];
+            for prefix in [b"".as_slice(), b"0x", b"0X"] {
+                let input = [prefix, value.as_slice()].concat();
+                assert_eq!(
+                    super::is_hex_policy_candidate(Some(b"key"), &input),
+                    (32..=128).contains(&length),
+                );
+                check_predicates(&input);
+            }
+        }
     }
 
     #[test]

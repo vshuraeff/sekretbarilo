@@ -44,6 +44,11 @@ pub enum InstallError {
     NotARepository,
     GitNotFound,
     IoError(io::Error),
+    /// a local install under a `core.hooksPath` the repository does not own
+    BypassedByHooksPath {
+        dir: PathBuf,
+        scope: String,
+    },
 }
 
 impl std::fmt::Display for InstallError {
@@ -52,6 +57,27 @@ impl std::fmt::Display for InstallError {
             InstallError::NotARepository => write!(f, "not a git repository"),
             InstallError::GitNotFound => write!(f, "git not found in PATH"),
             InstallError::IoError(e) => write!(f, "io error: {}", e),
+            InstallError::BypassedByHooksPath { dir, scope } => {
+                write!(
+                    f,
+                    "core.hooksPath from the {scope} git config ({}) replaces .git/hooks, so a local hook would never run and nothing was installed; ",
+                    dir.display()
+                )?;
+                // `--global` writes the global value, which only names this directory when it
+                // came from the global config; for a system or command value it would override
+                // that shared directory for every repository instead.
+                if scope == "global" {
+                    write!(
+                        f,
+                        "use `sekretbarilo install pre-commit --global` to install into that directory, or unset core.hooksPath to use per-repository hooks"
+                    )
+                } else {
+                    write!(
+                        f,
+                        "add the hook to that shared directory yourself, or set core.hooksPath in this repository's own config (`git config --local core.hooksPath .git/hooks`) to use per-repository hooks"
+                    )
+                }
+            }
         }
     }
 }
@@ -114,6 +140,36 @@ fn find_hooks_dir() -> Result<PathBuf, InstallError> {
     } else {
         Ok(path)
     }
+}
+
+/// where git runs the current repository's hooks from.
+#[derive(Debug, PartialEq, Eq)]
+pub enum LocalHooksDir {
+    /// the repository's own directory: `.git/hooks`, or a `core.hooksPath` set in the
+    /// repository's local or worktree config
+    Repository(PathBuf),
+    /// a `core.hooksPath` from the global, system or command-line config, which replaces
+    /// `.git/hooks` here and in every other repository it applies to
+    Shared { dir: PathBuf, scope: String },
+}
+
+/// resolve the hooks directory of the current repository and whether the repository owns it.
+pub fn find_local_hooks_dir() -> Result<LocalHooksDir, InstallError> {
+    let dir = find_hooks_dir()?;
+    let output = Command::new("git")
+        .args(["config", "--show-scope", "--get", "core.hooksPath"])
+        .output()
+        .map_err(InstallError::IoError)?;
+    // exit 1 means the key is unset; an empty value names no directory either.
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let (scope, value) = stdout.trim_end().split_once('\t').unwrap_or(("", ""));
+    if !output.status.success() || value.is_empty() || matches!(scope, "local" | "worktree") {
+        return Ok(LocalHooksDir::Repository(dir));
+    }
+    Ok(LocalHooksDir::Shared {
+        dir,
+        scope: scope.to_string(),
+    })
 }
 
 /// find the global hooks directory.
@@ -206,11 +262,17 @@ pub fn install_global() -> Result<InstallResult, InstallError> {
 }
 
 /// install the pre-commit hook into the given hooks directory.
-/// if hooks_dir is None, auto-detects using git rev-parse.
+/// if hooks_dir is None, auto-detects using git rev-parse, and refuses a directory the
+/// repository does not own rather than changing the hook of every repository using it.
 pub fn install(hooks_dir: Option<&Path>) -> Result<InstallResult, InstallError> {
     let hooks_path = match hooks_dir {
         Some(dir) => dir.to_path_buf(),
-        None => find_hooks_dir()?,
+        None => match find_local_hooks_dir()? {
+            LocalHooksDir::Repository(dir) => dir,
+            LocalHooksDir::Shared { dir, scope } => {
+                return Err(InstallError::BypassedByHooksPath { dir, scope });
+            }
+        },
     };
 
     // create hooks directory if it doesn't exist
@@ -282,6 +344,26 @@ fn make_executable(_path: &Path) -> Result<(), io::Error> {
 mod tests {
     use super::*;
     use std::fs;
+
+    #[test]
+    fn bypassed_by_hooks_path_advises_global_install_only_for_a_global_value() {
+        let message = |scope: &str| {
+            InstallError::BypassedByHooksPath {
+                dir: PathBuf::from("/shared/hooks"),
+                scope: scope.to_string(),
+            }
+            .to_string()
+        };
+        assert!(message("global").contains("install pre-commit --global"));
+        for scope in ["system", "command"] {
+            let text = message(scope);
+            assert!(!text.contains("--global"), "{scope}: {text}");
+            assert!(
+                text.contains("git config --local core.hooksPath"),
+                "{scope}: {text}"
+            );
+        }
+    }
 
     fn setup_temp_dir() -> tempfile::TempDir {
         tempfile::tempdir().unwrap()

@@ -154,12 +154,34 @@ fn quoted_values_keep_reading_across_line_breaks_around_the_separator() {
     for (key, rule) in [("secret", SECRET), ("api_key", API), ("token", TOKEN)] {
         for text in [
             format!("{key}:\n  \"{value}\""),
-            format!("{key}\n  = '{value}'"),
             format!("\"{key}\":\r\n\t\"{value}\""),
+            format!("\"{key}\"\n  = '{value}'"),
         ] {
             assert_detected(&text, &value, rule);
         }
+        if key == "token" {
+            // a bare token followed by a line break can be a slice index, not an assignment.
+            assert_clear(&format!("window[\n token\n :\n \"{value}\"\n]"));
+            assert_clear(&format!("token\n  = '{value}'"));
+        } else {
+            assert_detected(&format!("{key}\n  = '{value}'"), &value, rule);
+        }
     }
+}
+
+#[test]
+fn signature_payload_guards_preserve_prefix_length_and_entropy_boundaries() {
+    let openai_payload = alnum(511);
+    let openai = format!("sk-proj-{openai_payload}");
+    assert_detected(&openai, &openai, "openai-api-key");
+    assert_clear(&format!("sk-proj-{}", &openai_payload[..19]));
+    assert_clear(&format!("sk-proj-{}", "A".repeat(32)));
+
+    let facebook_payload = alnum(512);
+    let facebook = format!("EAA{facebook_payload}");
+    assert_detected(&facebook, &facebook, "facebook-access-token");
+    assert_clear(&format!("EAA{}", &facebook_payload[..19]));
+    assert_clear(&format!("EAA{}", hex(32, 513)));
 }
 
 #[test]
@@ -246,4 +268,74 @@ fn bash_redact_covers_json_hex_overlap_and_nul_dump() {
 
     let nul_dump = format!("USER=service\0API_KEY={value}\0HOME=/work");
     assert_bash_redaction(&env, &nul_dump, &nul_dump.replace(&value, "[REDACTED]"));
+}
+
+#[test]
+fn redact_argv_masks_named_environment_values() {
+    let env = IsolatedEnv::new();
+    let client = hex(32, 601);
+    let client_id = format!(
+        "{}-{}-{}-{}-{}",
+        &client[..8],
+        &client[8..12],
+        &client[12..16],
+        &client[16..20],
+        &client[20..]
+    );
+    let entries = [
+        ("INFISICAL_CLIENT_ID", client_id),
+        ("VAST_AI_API_KEY", hex(64, 602)),
+        ("ZEROENTROPY_API_KEY", alnum(603)),
+        ("PUSHOVER_APP_TOKEN", alnum(604)),
+    ];
+    let binary = std::env::var_os("SEKRETBARILO_PROBE_BIN")
+        .unwrap_or_else(|| env!("CARGO_BIN_EXE_sekretbarilo").into());
+    let mut misses = Vec::new();
+    for (name, value) in entries {
+        for surface in ["pgrep -fl", "ps -o command"] {
+            let text = format!("4321 /usr/bin/env {name}={value} jekyll serve\n");
+            let payload = json!({
+                "hook_event_name": "PostToolUse",
+                "tool_name": "Bash",
+                "cwd": env.home(),
+                "tool_response": {"stdout": text, "stderr": "", "interrupted": false, "returnCode": 0},
+                "tool_input": {"command": surface}
+            });
+            let mut child = Command::new(&binary)
+                .args(["redact-claude", "--stdin-json"])
+                .current_dir(env.home())
+                .env("HOME", env.home())
+                .env("CODEX_HOME", env.codex_home())
+                .env("GIT_CONFIG_GLOBAL", env.git_config_global())
+                .env("XDG_CONFIG_HOME", env.home().join(".config"))
+                .env_remove("CLAUDE_CONFIG_DIR")
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap();
+            child
+                .stdin
+                .take()
+                .unwrap()
+                .write_all(&serde_json::to_vec(&payload).unwrap())
+                .unwrap();
+            let output = child.wait_with_output().unwrap();
+            assert_eq!(output.status.code(), Some(0), "{name} on {surface}");
+            assert!(output.stderr.is_empty(), "{name} on {surface}");
+            let redacted = if output.stdout.is_empty() {
+                text.clone()
+            } else {
+                let envelope: Value = serde_json::from_slice(&output.stdout).unwrap();
+                envelope["hookSpecificOutput"]["updatedToolOutput"]["stdout"]
+                    .as_str()
+                    .unwrap()
+                    .to_string()
+            };
+            if redacted != text.replace(&value, "[REDACTED]") {
+                misses.push(format!("{name} on {surface}"));
+            }
+        }
+    }
+    assert!(misses.is_empty(), "not fully redacted: {misses:?}");
 }

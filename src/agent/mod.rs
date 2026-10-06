@@ -23,6 +23,7 @@ pub use codex::{
     CODEX_HOOK_COMMAND, CODEX_HOOK_EVENTS, CODEX_HOOK_MATCHER, CODEX_POST_HOOK_MATCHER,
     CODEX_POST_TOOL_USE, CODEX_PRE_TOOL_USE, CodexHookEvent, install_codex_hook, run_check_codex,
 };
+pub(crate) use codex::{LayerTrust, judge_layers};
 #[allow(unused_imports)]
 pub use hooks_json::HookInstallResult;
 pub use redact::{redact_cli_error, run_redact_claude};

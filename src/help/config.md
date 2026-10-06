@@ -11,7 +11,8 @@ continues to write stderr.
 Lowest to highest priority:
 1. /etc/sekretbarilo.toml
 2. $XDG_CONFIG_HOME/sekretbarilo/sekretbarilo.toml, falling back to
-   ~/.config/sekretbarilo/sekretbarilo.toml when XDG_CONFIG_HOME is unset
+   ~/.config/sekretbarilo/sekretbarilo.toml when XDG_CONFIG_HOME is unset,
+   empty or relative (a relative value is invalid and ignored)
 3. .sekretbarilo.toml in each directory from $HOME through the discovery start
    directory, inclusive (including ~/.sekretbarilo.toml)
 
@@ -148,6 +149,15 @@ secret_groups = []
 regexes = ['^MYCO_KNOWN_DOCUMENTATION_MARKER$']
 paths = []
 ```
+
+Signature rules can set `payload_group` to a payload capture, usually nested
+inside `secret_group`.
+`min_payload_entropy` then sets a Shannon entropy floor on that payload, and
+`reject_hex_payload = true` rejects a payload made entirely of hex digits.
+These guards require a valid, nonzero `payload_group`; invalid captures fail
+rule compilation, including when a custom rule replaces a built-in rule ID.
+The guards apply only to a match in which `payload_group` participates; a match
+through a regex branch without that group is reported without them.
 
 Required: id, description, regex, secret_group, keywords. keywords are lowercase
 prefilter strings; an empty list disables the keyword prefilter for that rule.

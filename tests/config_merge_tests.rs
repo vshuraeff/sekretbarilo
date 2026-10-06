@@ -84,6 +84,9 @@ fn rule_merge_child_overrides_parent_same_id() {
         secret_groups: Vec::new(),
         keywords: vec!["akia".to_string()],
         entropy_threshold: None,
+        payload_group: None,
+        min_payload_entropy: None,
+        reject_hex_payload: false,
         allowlist: RuleAllowlist::default(),
         class: None,
     };
@@ -95,6 +98,9 @@ fn rule_merge_child_overrides_parent_same_id() {
         secret_groups: Vec::new(),
         keywords: vec!["akia".to_string()],
         entropy_threshold: Some(3.5),
+        payload_group: None,
+        min_payload_entropy: None,
+        reject_hex_payload: false,
         allowlist: RuleAllowlist::default(),
         class: None,
     };
@@ -106,6 +112,9 @@ fn rule_merge_child_overrides_parent_same_id() {
         secret_groups: Vec::new(),
         keywords: vec!["custom".to_string()],
         entropy_threshold: None,
+        payload_group: None,
+        min_payload_entropy: None,
+        reject_hex_payload: false,
         allowlist: RuleAllowlist::default(),
         class: None,
     };

@@ -222,8 +222,10 @@ keywords = ["t3blbkfj"]
 id = "openai-api-key"
 class = "signature"
 description = "OpenAI API key (project format)"
-regex = "(?:%[0-9A-Fa-f]{2}|\\[[0-9;:]*[mK]|\\\\(?:u\\{[0-9A-Fa-f]{1,6}\\}|u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8}|x[0-9A-Fa-f]{2}|[0-7]{1,3}|[A-Za-z])|(?-u:\\b))(sk-proj-[0-9A-Za-z_-]{20,})"
+regex = "(?:%[0-9A-Fa-f]{2}|\\[[0-9;:]*[mK]|\\\\(?:u\\{[0-9A-Fa-f]{1,6}\\}|u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8}|x[0-9A-Fa-f]{2}|[0-7]{1,3}|[A-Za-z])|(?-u:\\b))(sk-proj-([0-9A-Za-z_-]{20,}))"
 secret_group = 1
+payload_group = 2
+min_payload_entropy = 3.0
 keywords = ["sk-proj-"]
 
 # credential context (contextual)
@@ -237,6 +239,15 @@ regex = "(?i)(?:aws_secret_access_key|aws_secret|secret_access_key)\\s*[=:]\\s*[
 secret_group = 1
 keywords = ["aws_secret", "secret_access_key"]
 entropy_threshold = 3.5
+
+[[rules]]
+id = "infisical-client-id"
+class = "contextual"
+description = "Infisical machine identity client ID"
+regex = '''(?i)(?:^|[\x00\t\x20;&|(",])INFISICAL_CLIENT_ID[\t\x20]*=[\t\x20]*['"]?([A-Za-z0-9_-]{20,})'''
+secret_group = 1
+keywords = ["infisical_client_id"]
+entropy_threshold = 3.0
 
 [[rules]]
 id = "database-connection-string-postgres"
@@ -788,8 +799,10 @@ keywords = ["shppa_"]
 id = "facebook-access-token"
 class = "signature"
 description = "Facebook access token"
-regex = "(?:%[0-9A-Fa-f]{2}|\\[[0-9;:]*[mK]|\\\\(?:u\\{[0-9A-Fa-f]{1,6}\\}|u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8}|x[0-9A-Fa-f]{2}|[0-7]{1,3}|[A-Za-z])|(?-u:\\b))(EAA[0-9a-zA-Z]{20,})"
+regex = "(?:%[0-9A-Fa-f]{2}|\\[[0-9;:]*[mK]|\\\\(?:u\\{[0-9A-Fa-f]{1,6}\\}|u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8}|x[0-9A-Fa-f]{2}|[0-7]{1,3}|[A-Za-z])|(?-u:\\b))(EAA([0-9a-zA-Z]{20,}))"
 secret_group = 1
+payload_group = 2
+reject_hex_payload = true
 keywords = ["eaa"]
 entropy_threshold = 3.5
 
@@ -1052,7 +1065,7 @@ description = "Generic token assignment"
 # key, and the unquoted one reads names ending in it (`GITHUB_TOKEN`, `HF_TOKEN`, `accessToken`).
 # the prefilter keyword is `token`.
 regex = '''(?i)(?x)
-(?:auth_token|access_token|secret_token|token)["'`]?\]?\s*(?::=|[=:])\s*['"]([^'"]{16,})['"]
+(?:(?:auth_token|access_token|secret_token)["'`]?\]?\s*|token(?:["'`]\]?\s*|\]\s*|[\t\x20]*))(?::=|[=:])\s*['"]([^'"]{16,})['"]
 |(?m:
   (?:
     (?:^|[\x00\t\x20;&|(",])

@@ -6,7 +6,7 @@ nav_order: 6
 
 # Rules Reference
 
-sekretbarilo ships **113 built-in rule definitions**, with **109 active by default**
+sekretbarilo ships **114 built-in rule definitions**, with **110 active by default**
 in 0.9.0. Each rule belongs to one rule class; the tables below give the class
 for every listed rule. Classes describe detection evidence, not a precision rank.
 
@@ -180,6 +180,7 @@ These rules require keyword context and apply additional validation (entropy thr
 | Rule ID | Keywords | Entropy | Class |
 |---------|----------|---------|-------|
 | `aws-secret-access-key` | `aws_secret`, `secret_access_key` | 3.5 | `contextual` |
+| `infisical-client-id` | `infisical_client_id` | 3.0 | `contextual` |
 | `azure-storage-account-key` | `accountkey` | — | `contextual` |
 | `azure-ad-client-secret` | `azure`, `client_secret` | 3.5 | `contextual` |
 | `azure-devops-pat` | `azure`, `devops` | 3.5 | `contextual` |
@@ -295,6 +296,8 @@ These named-key rules also have `class = "contextual"` and remain enabled by def
 `generic-api-key`, `generic-token-assignment` and `generic-secret-assignment` (listed under Generic Patterns) read two value forms, both after `=` or `:`:
 
 - A quoted value, `'…'` or `"…"`, after a key anywhere on the line that ends in one of the rule's names: `api_key`, `api-key`, `apikey`, `api_token`, `api-token`, `apitoken`; `token`, `auth_token`, `access_token`, `secret_token`; `secret`, `secret_key`, `secret_key_base`, `api_secret`, `client_secret`. The key may itself be quoted, as in `{"api_key":"…"}` or `{'token': '…'}`. The hex measure below applies to these values.
+
+  A bare `token` key must keep its separator on the same line; a quoted `"token"` key, and the other credential names, may have a line break before the separator.
 - An unquoted value under a credential name, wherever an assignment can start on the line. `NAME=value` and `NAME:=value`, with optional spaces or tabs around the separator, are read at line start and after a space or tab, a `;`, `&`, `|`, `(`, `"`, comma or NUL byte. That covers `export API_KEY=…`, `env API_KEY=… cmd`, `sudo API_KEY=… cmd`, `docker run -e API_KEY=… img`, `cmd; API_KEY=…`, `make && TOKEN:=…`, `--set a=1,token=…`, `-e "API_KEY=…"`, and NUL-separated environment dumps. The YAML form `name: value`, with at least one space or tab after the colon, is read only at the start of a logical line or after a YAML `- `, as in `  token: …` and `  - api_key: …`. Dockerfile `ENV NAME value` is read at line start for these names.
 
   The name, case-insensitive and optionally led by `_`, is one of the rule's key words or a longer name that ends in one. The key words are `api_key` and `api_token` for `generic-api-key`; `token`, `auth_token`, `access_token`, `secret_token` and `github_token` for `generic-token-assignment`; `secret`, `secret_key`, `secret_key_base`, `api_secret` and `client_secret` for `generic-secret-assignment`. Their words may be joined by `-`, `_` or nothing (`API_KEY`, `api-key`, `apikey`). A longer name reaches the key word through snake or kebab words (`HF_TOKEN`, `NPM_TOKEN`, `AWS_SESSION_TOKEN`, `DJANGO_SECRET_KEY`, `STRIPE_API_KEY`, `x-api-key`) or a camel hump (`openaiApiKey`, `jwtSecret`, `githubToken`). A name that continues past the key word (`MY_TOKENIZER`, `token_count`, `api_key_file`, `secret_name`) or glues it to a lowercase word (`xapi_key`, `mytoken`) is not read. A name after `.` (`self.token = …`, `x.API_KEY=…`) is a member rather than an assignment, and one after `-` is a flag (`--token=…`), so neither is read.
@@ -403,6 +406,10 @@ paths = ["test/.*"]
 
 - `secret_groups` — alternative capture group indices, checked in order if `secret_group` did not participate. Defaults to `[]`. If no configured group participates, the full match is used. Overrides replace the complete rule, including this list.
 - `entropy_threshold` — minimum Shannon entropy (typical: 3.0–4.0)
+- `payload_group` — a nonzero capture index selecting the payload without its provider prefix. An index missing from the regex is a configuration error.
+- `min_payload_entropy` — minimum Shannon entropy of that payload, from 0.0 through 8.0. Requires `payload_group`.
+- `reject_hex_payload` — reject a payload consisting entirely of hex digits; defaults to `false`. Requires `payload_group`.
+- Both payload checks apply only when `payload_group` participates in the match. A match through a regex branch without that group is reported without them.
 - `allowlist.regexes` — value patterns to skip
 - `allowlist.paths` — file path patterns to skip
 
@@ -424,7 +431,7 @@ the independent public-key gate. Unknown class names and rule ids are errors.
 
 Rules merge in this order (later overrides earlier):
 
-1. Built-in defaults (113 definitions, 109 enabled by default)
+1. Built-in defaults (114 definitions, 110 enabled by default)
 2. System config (`/etc/sekretbarilo.toml`)
 3. User config (`~/.config/sekretbarilo.toml`)
 4. Project config (`.sekretbarilo.toml`)

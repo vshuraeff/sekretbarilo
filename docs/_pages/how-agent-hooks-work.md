@@ -1,6 +1,6 @@
 ---
 title: How the agent hooks work
-description: Why the hooks guard both the read and the write direction, why configuration inside the repository must be committed, why some files are never scanned and .env files never read, and what a session looks like with the hooks in place.
+description: Why the hooks guard both the read and the write direction, the steps a Claude Code read goes through, why configuration inside the repository must be committed, why some files are never scanned and .env files never read, and what a session looks like with the hooks in place.
 section: explanation
 ---
 
@@ -15,7 +15,51 @@ sekretbarilo integrates into the agent's tool pipeline. Blocking hooks run befor
 3. If secrets are found, the tool call is blocked and the agent is told why
 4. If it is clean, the tool call proceeds normally
 
+In Codex CLI, the `PreToolUse` hook guards the write direction: it inspects the changes the agent is about to apply and the shell commands it is about to run. The `PostToolUse` hook guards the read direction. Codex has no Read tool and reads files through shell commands, so the output of a finished `Bash` call is where a secret would reach the model.
+
 Which hook covers which direction, on which tool and in which mode, is listed in the [Agent hooks reference]({{ '/agent-hooks/#supported-agents-and-modes' | relative_url }}).
+
+## What happens when Claude Code reads a file
+
+The steps below describe Claude `block` mode. For tool-output masking, see [Redact Mode]({{ '/agent-hooks/#redact-mode-output-editor' | relative_url }}).
+
+### 1. Hook trigger
+
+Claude Code is about to execute the `Read` tool to read a file. The `PreToolUse` hook fires, invoking:
+
+```sh
+sekretbarilo check-file --stdin-json
+```
+
+### 2. JSON payload
+
+Claude Code sends a JSON payload on stdin with the file path and optional working directory; its schema is under [Stdin JSON Payload]({{ '/agent-hooks/#stdin-json-payload' | relative_url }}).
+
+### 3. Path resolution
+
+sekretbarilo parses the JSON, extracts the file path, and resolves it by the rules under [Path Resolution]({{ '/agent-hooks/#path-resolution' | relative_url }}).
+
+### 4. Fast-path check
+
+Before scanning, sekretbarilo checks if the file is one that cannot contain readable secrets: a binary extension, a vendor directory or a lock file, listed under [Fast-Path Skipping]({{ '/agent-hooks/#fast-path-skipping' | relative_url }}). A match returns exit code 0 without reading the file. This avoids unnecessary scanning overhead for files that pose no secret risk.
+
+### 5. `.env` file blocking
+
+Files matching the `.env` pattern are always blocked, regardless of content, while the safe templates are allowed; both lists are under [.env File Blocking]({{ '/agent-hooks/#env-file-blocking' | relative_url }}). `.env` files almost always contain secrets (API keys, database passwords, tokens). Rather than scan them, sekretbarilo blocks them outright to prevent any possibility of exposure.
+
+### 6. Full scanning
+
+If the file passes fast-path checks and isn't a `.env` file, sekretbarilo reads it and runs the full detection engine:
+- Aho-corasick keyword pre-filter identifies candidate rules
+- Regex matching extracts potential secrets
+- Shannon entropy analysis filters low-randomness strings
+- Hash detection skips known hash formats (SHA-1, SHA-256, MD5, git commits)
+- Stopword filtering removes known-safe values like `example`, `test`, `placeholder`
+- Variable reference detection skips patterns like `${VAR}`, `process.env.VAR`
+
+### 7. Exit code
+
+Exit code 0 allows the read and exit code 2 blocks it, for secrets and errors alike; the table is under [check-file Exit Codes]({{ '/agent-hooks/#check-file-exit-codes' | relative_url }}).
 
 ## Why in-workspace config must be committed
 
@@ -44,7 +88,7 @@ In `block` mode and file-based scans, binary files, vendor directories and lock 
 - **Accuracy**: scanning binary content produces garbage matches (false positives)
 - **Usability**: AI agents need to read lock files, images, and dependencies without friction
 
-Even if a binary file somehow embeds a secret (e.g., an API key in image metadata), it's not accessible to the AI agent in a way that creates risk.
+Binary files cannot contain readable secrets in a form that matters for leakage. Even if a binary file somehow embeds a secret (e.g., an API key in image metadata), it's not accessible to the AI agent in a way that creates risk. Scanning a compressed or binary file is cheap and finds nothing, so the fast path stays deliberately short rather than trying to enumerate every binary format in existence.
 
 Vendor directories often contain thousands of files. Scanning them would:
 - Slow down the agent significantly
@@ -63,6 +107,8 @@ Lock files are often large (thousands of lines) and contain cryptographic hashes
 - OAuth secrets
 
 Allowing an AI agent to read a `.env` file is almost always a mistake. Even if the file happens to be clean at the moment, it's likely to contain secrets in the future.
+
+The template files `.env.example`, `.env.sample` and `.env.template` are safe for AI agents to read because they document the expected structure without exposing real secrets.
 
 The blocked and allowed names are listed under [.env File Blocking]({{ '/agent-hooks/#env-file-blocking' | relative_url }}).
 

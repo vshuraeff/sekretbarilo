@@ -135,27 +135,27 @@ fn check_git_hooks() -> Vec<CheckResult> {
 
 /// check the local git pre-commit hook
 fn check_local_git_hook() -> CheckResult {
-    // find git hooks dir via git rev-parse
-    let output = match std::process::Command::new("git")
-        .args(["rev-parse", "--git-path", "hooks"])
-        .output()
-    {
-        Ok(o) => o,
-        Err(_) => return CheckResult::error("git not found in PATH"),
-    };
-
-    if !output.status.success() {
-        return CheckResult::warn("not a git repository (local hook check skipped)");
-    }
-
-    let hooks_path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    let hooks_dir = if Path::new(&hooks_path).is_relative() {
-        match std::env::current_dir() {
-            Ok(cwd) => cwd.join(&hooks_path),
-            Err(_) => PathBuf::from(&hooks_path),
+    // a core.hooksPath from outside the repository replaces .git/hooks, so the file found
+    // there is another scope's hook, not a local install.
+    let hooks_dir = match crate::hook::find_local_hooks_dir() {
+        Ok(crate::hook::LocalHooksDir::Repository(dir)) => dir,
+        Ok(crate::hook::LocalHooksDir::Shared { dir, scope }) => {
+            return CheckResult::info(format!(
+                "local pre-commit hook bypassed by core.hooksPath from the {scope} git config ({}); git runs the hook there instead of .git/hooks",
+                dir.display()
+            ));
         }
-    } else {
-        PathBuf::from(&hooks_path)
+        Err(crate::hook::InstallError::NotARepository) => {
+            return CheckResult::warn("not a git repository (local hook check skipped)");
+        }
+        Err(crate::hook::InstallError::GitNotFound) => {
+            return CheckResult::error("git not found in PATH");
+        }
+        Err(error) => {
+            return CheckResult::error(format!(
+                "cannot resolve the local hooks directory: {error}"
+            ));
+        }
     };
 
     let hook_file = hooks_dir.join("pre-commit");
@@ -977,31 +977,45 @@ fn codex_approval_not_found(scope: &str, config_toml_path: &Path) -> CheckResult
     ))
 }
 
+/// the shell's `$PWD` when it spells the process cwd through a symlink: absolute, a different
+/// path than `current_dir()`, and the same directory once resolved. `None` otherwise.
+fn logical_cwd() -> Option<PathBuf> {
+    let pwd = PathBuf::from(std::env::var_os("PWD")?);
+    let physical = std::env::current_dir().ok()?;
+    if !pwd.is_absolute() || pwd == physical {
+        return None;
+    }
+    (pwd.canonicalize().ok()? == physical.canonicalize().ok()?).then_some(pwd)
+}
+
 /// check sekretbarilo configuration (discovery + rules compilation)
 fn check_config() -> Vec<CheckResult> {
     let mut results = Vec::new();
 
     // discover config files
     let repo_root = resolve_repo_root();
-    let start = repo_root
-        .clone()
-        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
-    let home = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| start.clone());
+    // a shell cwd reached through a symlink is what the hooks receive as payload cwd, and only
+    // that spelling shows the link, so judge from it as the hooks would.
+    let start = logical_cwd().unwrap_or_else(|| {
+        repo_root
+            .clone()
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
+    });
+    let home = crate::config::discovery::home_dir().unwrap_or_else(|| start.clone());
 
-    let config_files = crate::config::discovery::discover_configs(&start, &home);
-    if config_files.is_empty() {
+    let layers = crate::config::discovery::discover_layers(&start, &home);
+    if layers.is_empty() {
         results.push(CheckResult::ok(
             "no custom config files found (using defaults)",
         ));
     } else {
-        for f in &config_files {
-            results.push(CheckResult::ok(format!("config file: {}", f.display())));
+        for layer in &layers {
+            results.push(CheckResult::ok(format!(
+                "config file: {}",
+                layer.path.display()
+            )));
         }
-        if let Some(repo_root) = repo_root.as_deref() {
-            append_untrusted_inworkspace_config_notes(&mut results, &config_files, repo_root);
-        }
+        append_untrusted_inworkspace_config_notes(&mut results, layers, &start);
     }
 
     // try loading and compiling config + rules
@@ -1133,65 +1147,32 @@ fn append_rule_switch_report(
     }
 }
 
-/// warn about in-workspace config layers the agent hooks (check-file / check-codex) will
-/// not trust. those hooks require a layer to be git-tracked and unmodified relative to
-/// HEAD before honoring it (see `agent::codex::load_trusted_project_config`), so an
-/// untracked or dirty `.sekretbarilo.toml` inside the repo silently loses its allowlist
-/// contributions there even though `scan`/`audit` still apply it normally. this check
-/// only mirrors that trust rule for visibility; it proves nothing about what will happen
-/// on push or in CI, only about the current working tree.
+/// warn about the config layers the agent hooks (check-file, check-codex, redact-claude)
+/// drop when they run from `start`. the verdict comes from the hooks' own judgment
+/// (`agent::judge_layers`), so an untracked, dirty or symlinked `.sekretbarilo.toml` in the
+/// workspace is reported exactly when the hooks ignore it, even though `scan`/`audit` still
+/// apply it normally. it proves nothing about what will happen on push or in CI, only about
+/// the current working tree.
 fn append_untrusted_inworkspace_config_notes(
     results: &mut Vec<CheckResult>,
-    config_files: &[PathBuf],
-    repo_root: &Path,
+    layers: Vec<crate::config::discovery::ConfigLayer>,
+    start: &Path,
 ) {
-    let repo_root = repo_root
-        .canonicalize()
-        .unwrap_or_else(|_| repo_root.to_path_buf());
-    for path in config_files {
-        let canonical = path.canonicalize().unwrap_or_else(|_| path.clone());
-        if !canonical.starts_with(&repo_root) {
-            continue;
-        }
-        if !is_committed_in_git(&repo_root, &canonical) {
-            results.push(CheckResult::warn(format!(
-                "{} is untracked or has uncommitted changes; the check-file/check-codex agent hooks ignore this config layer entirely until it is committed",
-                canonical.display()
-            )));
-        }
+    for (layer, trust) in crate::agent::judge_layers(start, None, layers) {
+        let reason = match trust {
+            crate::agent::LayerTrust::Owned | crate::agent::LayerTrust::Committed(_) => continue,
+            crate::agent::LayerTrust::Symlinked => {
+                "is reached through a symlink inside the workspace; the check-file/check-codex agent hooks ignore this config layer entirely, committed or not, because git records only the link text"
+            }
+            crate::agent::LayerTrust::Uncommitted => {
+                "is untracked or has uncommitted changes; the check-file/check-codex agent hooks ignore this config layer entirely until it is committed"
+            }
+        };
+        results.push(CheckResult::warn(format!(
+            "{} {reason}",
+            layer.path.display()
+        )));
     }
-}
-
-/// check whether `path` (already inside `repo_root`) is git-tracked and unmodified
-/// relative to HEAD. mirrors the trust check in `agent::codex::is_committed_config` for
-/// doctor's read-only diagnostics; the two intentionally are not shared code, since a
-/// drift between them can only produce a wrong WARN here, never a security gap (doctor
-/// does not gate anything).
-fn is_committed_in_git(repo_root: &Path, path: &Path) -> bool {
-    let Ok(relative_path) = path.strip_prefix(repo_root) else {
-        return false;
-    };
-    let tracked = std::process::Command::new("git")
-        .arg("-C")
-        .arg(repo_root)
-        .args(["ls-files", "--error-unmatch", "--"])
-        .arg(relative_path)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status();
-    if !tracked.is_ok_and(|status| status.success()) {
-        return false;
-    }
-
-    std::process::Command::new("git")
-        .arg("-C")
-        .arg(repo_root)
-        .args(["diff", "--quiet", "HEAD", "--"])
-        .arg(relative_path)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .is_ok_and(|status| status.success())
 }
 
 /// check if the sekretbarilo binary is findable
@@ -2416,6 +2397,17 @@ mod tests {
 
     // -- config check tests --
 
+    fn layer(
+        path: PathBuf,
+        origin: crate::config::discovery::LayerOrigin,
+    ) -> crate::config::discovery::ConfigLayer {
+        crate::config::discovery::ConfigLayer { path, origin }
+    }
+
+    fn hierarchy_layer(path: PathBuf) -> crate::config::discovery::ConfigLayer {
+        layer(path, crate::config::discovery::LayerOrigin::Hierarchy)
+    }
+
     #[test]
     fn untrusted_inworkspace_config_notes_warns_when_untracked() {
         let repo = init_git_repo();
@@ -2423,7 +2415,11 @@ mod tests {
         std::fs::write(&config_path, "[settings]\n").unwrap();
 
         let mut results = Vec::new();
-        append_untrusted_inworkspace_config_notes(&mut results, &[config_path], repo.path());
+        append_untrusted_inworkspace_config_notes(
+            &mut results,
+            vec![hierarchy_layer(config_path)],
+            repo.path(),
+        );
 
         assert!(results.iter().any(|r| r.status == Status::Warn
             && r.message.contains("untracked or has uncommitted changes")));
@@ -2442,7 +2438,11 @@ mod tests {
         std::fs::write(&config_path, "[settings]\nentropy_threshold = 3.0\n").unwrap();
 
         let mut results = Vec::new();
-        append_untrusted_inworkspace_config_notes(&mut results, &[config_path], repo.path());
+        append_untrusted_inworkspace_config_notes(
+            &mut results,
+            vec![hierarchy_layer(config_path)],
+            repo.path(),
+        );
 
         assert!(results.iter().any(|r| r.status == Status::Warn));
     }
@@ -2459,7 +2459,11 @@ mod tests {
         );
 
         let mut results = Vec::new();
-        append_untrusted_inworkspace_config_notes(&mut results, &[config_path], repo.path());
+        append_untrusted_inworkspace_config_notes(
+            &mut results,
+            vec![hierarchy_layer(config_path)],
+            repo.path(),
+        );
 
         assert!(results.is_empty());
     }
@@ -2472,9 +2476,63 @@ mod tests {
         std::fs::write(&config_path, "[settings]\n").unwrap();
 
         let mut results = Vec::new();
-        append_untrusted_inworkspace_config_notes(&mut results, &[config_path], repo.path());
+        append_untrusted_inworkspace_config_notes(
+            &mut results,
+            vec![hierarchy_layer(config_path)],
+            repo.path(),
+        );
 
         assert!(results.is_empty());
+    }
+
+    #[test]
+    fn untrusted_inworkspace_config_notes_reports_a_committed_symlink() {
+        // the hooks drop it, so doctor must say so; its target lies outside the workspace.
+        let repo = init_git_repo();
+        let outside = tempfile::tempdir().unwrap();
+        let target = outside.path().join("target.toml");
+        std::fs::write(&target, "[settings]\n").unwrap();
+        let config_path = repo.path().join(".sekretbarilo.toml");
+        std::os::unix::fs::symlink(&target, &config_path).unwrap();
+        git_success(repo.path(), &["add", ".sekretbarilo.toml"]);
+        git_success(
+            repo.path(),
+            &["commit", "--no-verify", "-m", "add fixture config symlink"],
+        );
+
+        let mut results = Vec::new();
+        append_untrusted_inworkspace_config_notes(
+            &mut results,
+            vec![hierarchy_layer(config_path)],
+            repo.path(),
+        );
+
+        assert!(
+            results.iter().any(
+                |r| r.status == Status::Warn && r.message.contains("reached through a symlink")
+            ),
+            "{results:?}"
+        );
+    }
+
+    #[test]
+    fn untrusted_inworkspace_config_notes_silent_for_an_uncommitted_user_layer() {
+        // a dotfiles repository at HOME holds the user layer, which the hooks trust anyway.
+        let repo = init_git_repo();
+        let config_path = repo.path().join("sekretbarilo.toml");
+        std::fs::write(&config_path, "[settings]\n").unwrap();
+
+        let mut results = Vec::new();
+        append_untrusted_inworkspace_config_notes(
+            &mut results,
+            vec![layer(
+                config_path,
+                crate::config::discovery::LayerOrigin::Fixed,
+            )],
+            repo.path(),
+        );
+
+        assert!(results.is_empty(), "{results:?}");
     }
 
     #[test]

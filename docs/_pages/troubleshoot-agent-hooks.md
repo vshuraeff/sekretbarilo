@@ -143,6 +143,12 @@ A tracked file with uncommitted edits is untrusted too, so committing changes to
   [WARN] /home/user/project/.sekretbarilo.toml is untracked or has uncommitted changes; the check-file/check-codex agent hooks ignore this config layer entirely until it is committed
 ```
 
+A layer reached through a symlink gets a different line, because committing it does not help: replace the link with the file itself.
+
+```
+  [WARN] /home/user/project/.sekretbarilo.toml is reached through a symlink inside the workspace; the check-file/check-codex agent hooks ignore this config layer entirely, committed or not, because git records only the link text
+```
+
 If your allowlist works when you run `sekretbarilo audit` by hand but the agent hook still blocks the same file, this is almost always why.
 
 ## Related pages

@@ -74,6 +74,9 @@ fn fragment_scanner() -> CompiledScanner {
         secret_groups: Vec::new(),
         keywords: Vec::new(),
         entropy_threshold: Some(4.0),
+        payload_group: None,
+        min_payload_entropy: None,
+        reject_hex_payload: false,
         allowlist: RuleAllowlist::default(),
         class: None,
     }])

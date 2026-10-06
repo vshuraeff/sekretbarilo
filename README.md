@@ -13,7 +13,7 @@ High-performance secret scanner for git workflows and AI coding agents. Catches 
 ## Features
 
 - **Fast**: ~2.5 µs per commit, ~3.7 ms for 400-file diffs; parallel audit via rayon
-- **113 built-in rules** in three rule classes (`signature`, `contextual`, `heuristic`); 109 active by default — see [rules reference](https://vshuraeff.github.io/sekretbarilo/rules-reference/)
+- **114 built-in rules** in three rule classes (`signature`, `contextual`, `heuristic`); 110 active by default — see [rules reference](https://vshuraeff.github.io/sekretbarilo/rules-reference/)
 - **Low false positives**: entropy analysis, stopword filtering, hash/variable detection, template-aware, public key suppression
 - **Pre-commit hook**: scans staged changes on every commit
 - **Working tree & history audit**: scan tracked files or full git history with deduplication and branch resolution

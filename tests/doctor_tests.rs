@@ -575,6 +575,202 @@ fn e2e_doctor_detects_local_git_hook() {
     );
 }
 
+/// run git in the fixture with its isolated global config.
+fn fixture_git(dir: &tempfile::TempDir, args: &[&str]) {
+    let output = Command::new("git")
+        .args(args)
+        .env("GIT_CONFIG_GLOBAL", dir.path().join(".fake-gitconfig"))
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "git {args:?} failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+/// set a global core.hooksPath in the fixture's isolated git config and return that directory.
+fn global_hooks_path(dir: &tempfile::TempDir) -> std::path::PathBuf {
+    let hooks = dir.path().join("global-hooks");
+    std::fs::create_dir_all(&hooks).unwrap();
+    fixture_git(
+        dir,
+        &[
+            "config",
+            "--global",
+            "core.hooksPath",
+            hooks.to_str().unwrap(),
+        ],
+    );
+    hooks
+}
+
+#[test]
+fn e2e_doctor_reports_a_local_hook_bypassed_by_a_global_hooks_path() {
+    let dir = setup_git_repo();
+    let hooks = global_hooks_path(&dir);
+    let hook_file = hooks.join("pre-commit");
+    std::fs::write(&hook_file, "#!/bin/sh\n# sekretbarilo pre-commit hook\n").unwrap();
+    std::fs::set_permissions(&hook_file, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let output = isolated_doctor_command(&dir).output().unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains(
+            "[INFO] local pre-commit hook bypassed by core.hooksPath from the global git config"
+        ),
+        "{stderr}"
+    );
+    assert!(
+        !stderr.contains("local pre-commit hook installed"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("[OK] global pre-commit hook installed"),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn e2e_install_pre_commit_refuses_a_global_hooks_path() {
+    // a local install would otherwise write the hook every repository runs.
+    let dir = setup_git_repo();
+    let hooks = global_hooks_path(&dir);
+
+    let output = isolated_command(&dir, &["install", "pre-commit"])
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(2), "{stderr}");
+    assert!(
+        stderr.contains("core.hooksPath from the global git config"),
+        "{stderr}"
+    );
+    assert!(!hooks.join("pre-commit").exists());
+    assert!(!dir.path().join(".git/hooks/pre-commit").exists());
+}
+
+#[test]
+fn e2e_install_pre_commit_uses_a_repository_hooks_path() {
+    // a hooksPath the repository sets for itself is its own hook directory.
+    let dir = setup_git_repo();
+    global_hooks_path(&dir);
+    fixture_git(&dir, &["config", "--local", "core.hooksPath", ".githooks"]);
+
+    let install = isolated_command(&dir, &["install", "pre-commit"])
+        .output()
+        .unwrap();
+    assert_eq!(
+        install.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&install.stderr)
+    );
+    assert!(dir.path().join(".githooks/pre-commit").exists());
+
+    let output = isolated_doctor_command(&dir).output().unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("[OK] local pre-commit hook installed"),
+        "{stderr}"
+    );
+}
+
+/// doctor with a hermetic user config location under the fixture's HOME.
+fn doctor_with_xdg(dir: &tempfile::TempDir) -> Command {
+    let mut command = isolated_doctor_command(dir);
+    command.env("XDG_CONFIG_HOME", dir.path().join("home/.config"));
+    command
+}
+
+#[test]
+fn e2e_doctor_reports_a_committed_symlinked_workspace_layer() {
+    // the agent hooks drop it, so doctor has to say so, though its target lies outside.
+    let dir = setup_git_repo();
+    let outside = tempfile::tempdir().unwrap();
+    let target = outside.path().join("target.toml");
+    std::fs::write(&target, "[settings]\n").unwrap();
+    std::os::unix::fs::symlink(&target, dir.path().join(".sekretbarilo.toml")).unwrap();
+    fixture_git(&dir, &["add", ".sekretbarilo.toml"]);
+    fixture_git(
+        &dir,
+        &["commit", "--no-verify", "-m", "add fixture config symlink"],
+    );
+
+    let output = doctor_with_xdg(&dir).output().unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains(".sekretbarilo.toml is reached through a symlink inside the workspace"),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn e2e_doctor_judges_a_shell_cwd_through_a_link_into_another_repository() {
+    // the hooks drop the target repository's committed layer when the cwd crosses a link held
+    // by another repository; doctor run from that shell cwd has to see the same link.
+    let dir = setup_git_repo();
+    let root = canonical_root(&dir);
+    let nested = root.join("nested");
+    std::fs::create_dir_all(&nested).unwrap();
+    std::fs::write(nested.join(".sekretbarilo.toml"), "[settings]\n").unwrap();
+    for args in [
+        &["-C", "nested", "init", "-q"][..],
+        &["-C", "nested", "add", ".sekretbarilo.toml"],
+        &[
+            "-C",
+            "nested",
+            "commit",
+            "--no-verify",
+            "-q",
+            "-m",
+            "fixture",
+        ],
+    ] {
+        fixture_git(&dir, args);
+    }
+    let linked = root.join("linked");
+    std::os::unix::fs::symlink(&nested, &linked).unwrap();
+
+    let output = doctor_with_xdg(&dir)
+        .current_dir(&linked)
+        .env("PWD", &linked)
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("is reached through a symlink inside the workspace"),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn e2e_doctor_trusts_the_user_layer_of_a_dotfiles_repository_at_home() {
+    // the hooks trust the user layer wherever it sits, so an uncommitted one in a repository
+    // at HOME is no finding.
+    let dir = setup_git_repo();
+    let root = canonical_root(&dir);
+    let user_dir = root.join(".config/sekretbarilo");
+    std::fs::create_dir_all(&user_dir).unwrap();
+    std::fs::write(user_dir.join("sekretbarilo.toml"), "[settings]\n").unwrap();
+
+    let output = isolated_doctor_command(&dir)
+        .env("HOME", &root)
+        .env("XDG_CONFIG_HOME", root.join(".config"))
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("config file:") && stderr.contains("sekretbarilo/sekretbarilo.toml"),
+        "{stderr}"
+    );
+    assert!(
+        !stderr.contains("untracked or has uncommitted changes"),
+        "{stderr}"
+    );
+}
+
 #[test]
 fn e2e_built_cli_version_and_doctor_hook_identity() {
     let dir = setup_git_repo();

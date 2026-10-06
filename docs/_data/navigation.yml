@@ -13,7 +13,7 @@ groups:
     gloss: Complete a task
     eyebrow: How-to guide
     pages:
-      - title: Installation
+      - title: Install sekretbarilo and its hooks
         url: /installation/
       - title: Write a configuration file
         url: /write-a-configuration-file/
@@ -40,11 +40,11 @@ groups:
         url: /cli-reference/
       - title: Common commands
         url: /common-commands/
-      - title: Configuration
+      - title: Configuration reference
         url: /configuration/
       - title: Rules reference
         url: /rules-reference/
-      - title: Agent hooks
+      - title: Agent hooks reference
         url: /agent-hooks/
       - title: Troubleshooting reference
         url: /troubleshooting/

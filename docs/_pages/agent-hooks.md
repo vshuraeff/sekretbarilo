@@ -1,12 +1,10 @@
 ---
-layout: default
-title: Agent Hooks
-nav_order: 5
+title: Agent hooks reference
+description: What each Claude Code and Codex CLI hook intercepts, how it is configured, what it prints, its limits and exit codes, how the installers behave, and what doctor checks.
+section: reference
 ---
 
-# Agent Hooks
-
-This page is the reference for the agent hooks: what each hook intercepts, how it is configured, what it prints, its exit codes, and what `doctor` checks. Why the hooks are built this way, with illustrated sessions, is in [How the agent hooks work]({{ '/how-agent-hooks-work/' | relative_url }}). Installation steps are in [Installation]({{ '/installation/#agent-hooks-ai-coding-tool-protection' | relative_url }}), step-by-step fixes in [Troubleshoot the agent hooks]({{ '/troubleshoot-agent-hooks/' | relative_url }}), and running `check-file` by hand in [Scan a single file with check-file]({{ '/scan-a-file-with-check-file/' | relative_url }}).
+Why the hooks are built this way, with illustrated sessions, is in [How the agent hooks work]({{ '/how-agent-hooks-work/' | relative_url }}). Installation steps are in [Installation]({{ '/installation/#agent-hooks-ai-coding-tool-protection' | relative_url }}), step-by-step fixes in [Troubleshoot the agent hooks]({{ '/troubleshoot-agent-hooks/' | relative_url }}), and running `check-file` by hand in [Scan a single file with check-file]({{ '/scan-a-file-with-check-file/' | relative_url }}).
 
 ## Supported Agents and Modes
 
@@ -33,7 +31,7 @@ Claude Code is an official CLI tool from Anthropic that brings Claude AI directl
 - **Timeout**: 10 seconds
 - **Status message**: "Scanning file for secrets..."
 
-When Claude Code is about to read a file, it automatically calls sekretbarilo, sends the file path as JSON on stdin, and waits for the scan result. A clean file (exit code 0) allows the read to proceed; a blocked file (exit code 2) prevents Claude Code from accessing the content.
+When Claude Code is about to read a file, it automatically calls sekretbarilo, sends the file path as JSON on stdin, and waits for the scan result. A clean file (exit code 0) allows the read to proceed; a blocked file (exit code 2) prevents Claude Code from accessing the content. The order of the checks `check-file` runs on a `Read` is described in [How the agent hooks work]({{ '/how-agent-hooks-work/#what-happens-when-claude-code-reads-a-file' | relative_url }}); the payload, path policies and output of `block` mode are specified under [Stdin JSON Payload](#stdin-json-payload), [Fast-Path Skipping](#fast-path-skipping), [.env File Blocking](#env-file-blocking) and [Output Format](#output-format). For tool-output masking, see [Redact Mode](#redact-mode-output-editor).
 
 ### Redact Mode: Output Editor
 
@@ -124,7 +122,7 @@ Codex CLI is OpenAI's terminal coding agent. It has a hooks system of its own, a
 - **Timeout**: 10 seconds
 - **Config file**: `hooks.json`, global or project-local (see [Where the Configuration Lives](#where-the-configuration-lives))
 
-The `PreToolUse` hook guards the write direction: it inspects the changes the agent is about to apply and the shell commands it is about to run. The `PostToolUse` hook guards the read direction. Codex has no Read tool and reads files through shell commands, so the output of a finished `Bash` call is where a secret would reach the model. You never invoke `check-codex` yourself — Codex calls it and sends the hook payload on stdin. The `PostToolUse` hook arrived in sekretbarilo 0.10.0.
+Why the `PreToolUse` hook covers the write direction and the `PostToolUse` hook the read direction is explained in [How the agent hooks work]({{ '/how-agent-hooks-work/#two-directions-of-leakage' | relative_url }}). You never invoke `check-codex` yourself — Codex calls it and sends the hook payload on stdin. The `PostToolUse` hook arrived in sekretbarilo 0.10.0.
 
 `--stdin-json` is **mandatory** for `check-codex`. The bare command has no other input to read, so it refuses rather than guessing:
 
@@ -294,7 +292,7 @@ Codex also accepts a second, equivalent representation of the same hooks — a `
 
 ### Hook Trust
 
-**Codex does not run a newly installed hook until you approve it.** An unapproved hook is skipped silently — no error, no warning at the point of use — so the installation looks complete while nothing is actually being scanned. This is the single most common reason for "I installed the hook and it never fires".
+**Codex does not run a newly installed hook until you approve it.** An unapproved hook is skipped silently — no error, no warning at the point of use — so the installation looks complete while nothing is actually being scanned.
 
 Approve the hooks from the Codex TUI. sekretbarilo installs two, the `PreToolUse` one and the `PostToolUse` one, and each needs its own approval:
 
@@ -325,107 +323,15 @@ Know what the Codex hooks do not do:
 
 ## Claude Code Block Pipeline
 
-The following pipeline, path policies, and `check-file` examples describe Claude `block` mode. For tool-output masking, see [Redact Mode](#redact-mode-output-editor).
+The step-by-step walk through a `Read` in `block` mode is now in [How the agent hooks work]({{ '/how-agent-hooks-work/#what-happens-when-claude-code-reads-a-file' | relative_url }}). Each step:
 
-### 1. Hook Trigger
-
-Claude Code is about to execute the `Read` tool to read a file. The `PreToolUse` hook fires, invoking:
-
-```sh
-sekretbarilo check-file --stdin-json
-```
-
-### 2. JSON Payload
-
-Claude Code sends a JSON payload on stdin with the file path and optional working directory:
-
-```json
-{
-  "tool_input": { "file_path": "path/to/file" },
-  "cwd": "/optional/working/directory"
-}
-```
-
-### 3. Path Resolution
-
-sekretbarilo parses the JSON, extracts the file path, and resolves it:
-- Absolute paths are converted to relative paths when possible (using `cwd` context)
-- Relative paths are resolved against `cwd` or the current directory
-- Path traversal attempts (e.g., `../../etc/passwd`) are rejected
-
-### 4. Fast-Path Check: Binary Files, Vendor Dirs, Lock Files
-
-Before scanning, sekretbarilo checks if the file is one that cannot contain readable secrets:
-
-**Binary extensions** (images, executables, archives):
-```
-.png, .jpg, .jpeg, .gif, .bmp, .svg, .ico, .webp
-.pdf
-.exe, .dll, .so, .dylib
-.zip, .tar, .gz, .bz2, .7z, .rar, .xz
-.mp3, .mp4, .avi, .mov, .wav, .webm, .ogg
-.woff, .woff2, .ttf, .eot, .otf
-.min.js, .min.css
-```
-
-**Vendor directories** (dependencies, generated code):
-```
-node_modules/, vendor/, .bundle/, bower_components/
-__pycache__/, .git/
-```
-
-**Lock files** (package manifests, checksums):
-```
-package-lock.json, yarn.lock, pnpm-lock.yaml
-Cargo.lock, go.sum, Gemfile.lock, poetry.lock
-composer.lock, Pipfile.lock
-```
-
-If the file matches any fast-path pattern, sekretbarilo returns exit code 0 immediately without reading the file. This avoids unnecessary scanning overhead for files that pose no secret risk.
-
-### 5. .env File Blocking
-
-Files matching the `.env` pattern are **always blocked unconditionally**, regardless of content:
-
-**Blocked**:
-```
-.env
-.env.local
-.env.production
-.env.development
-.env.staging
-.env.test
-```
-
-**Allowed (safe templates)**:
-```
-.env.example
-.env.sample
-.env.template
-```
-
-`.env` files almost always contain secrets (API keys, database passwords, tokens). Rather than scan them, sekretbarilo blocks them outright to prevent any possibility of exposure.
-
-### 6. Full Scanning
-
-If the file passes fast-path checks and isn't a `.env` file, sekretbarilo reads it and runs the full detection engine:
-- Aho-corasick keyword pre-filter identifies candidate rules
-- Regex matching extracts potential secrets
-- Shannon entropy analysis filters low-randomness strings
-- Hash detection skips known hash formats (SHA-1, SHA-256, MD5, git commits)
-- Stopword filtering removes known-safe values like `example`, `test`, `placeholder`
-- Variable reference detection skips patterns like `${VAR}`, `process.env.VAR`
-
-### 7. Exit Code
-
-sekretbarilo returns an exit code to Claude Code:
-
-| Exit Code | Meaning | Claude Code Action |
-|-----------|---------|-------------------|
-| 0 | Clean (no secrets found, or file skipped via fast-path) | Allow read |
-| 2 | Secrets found, or error (file not found, JSON parse error, config failure) | Block read |
-
-Exit code 2 is used for both secrets and errors to block the `Read` call through `PreToolUse`.
+- <span id="1-hook-trigger"></span>[1. Hook trigger]({{ '/how-agent-hooks-work/#1-hook-trigger' | relative_url }})
+- <span id="2-json-payload"></span>[2. JSON payload]({{ '/how-agent-hooks-work/#2-json-payload' | relative_url }})
+- <span id="3-path-resolution"></span>[3. Path resolution]({{ '/how-agent-hooks-work/#3-path-resolution' | relative_url }})
+- <span id="4-fast-path-check-binary-files-vendor-dirs-lock-files"></span>[4. Fast-path check]({{ '/how-agent-hooks-work/#4-fast-path-check' | relative_url }})
+- <span id="5-env-file-blocking"></span>[5. `.env` file blocking]({{ '/how-agent-hooks-work/#5-env-file-blocking' | relative_url }})
+- <span id="6-full-scanning"></span>[6. Full scanning]({{ '/how-agent-hooks-work/#6-full-scanning' | relative_url }})
+- <span id="7-exit-code"></span>[7. Exit code]({{ '/how-agent-hooks-work/#7-exit-code' | relative_url }})
 
 ## Stdin JSON Payload
 
@@ -446,6 +352,13 @@ In `block` mode, Claude Code sends a JSON payload on stdin when the hook is trig
 |-------|----------|-------------|
 | `tool_input.file_path` | Yes | Path to the file Claude Code wants to read (absolute or relative) |
 | `cwd` | No | Working directory context (used to resolve relative paths and vendor dirs) |
+
+### Path Resolution
+
+sekretbarilo parses the JSON, extracts the file path, and resolves it:
+- Absolute paths are converted to relative paths when possible (using `cwd` context)
+- Relative paths are resolved against `cwd` or the current directory
+- Path traversal attempts (e.g., `../../etc/passwd`) are rejected
 
 ### Example Payloads
 
@@ -494,11 +407,11 @@ stdin input is limited to **1 MB** to prevent unbounded memory consumption. This
 
 Fast-path skipping applies to `check-file` / Claude `block` mode and file-based scans, not `redact`. It allows files considered low-risk by the configured path policy to pass through without scanning.
 
-Fast-path decisions are made based on **file path patterns only**, before the file is read. This keeps the check extremely fast. Why these files are skipped at all is explained in [How the agent hooks work]({{ '/how-agent-hooks-work/#why-some-files-are-never-scanned' | relative_url }}).
+Fast-path decisions are made based on **file path patterns only**, before the file is read. This keeps the check extremely fast. If the file matches any fast-path pattern, sekretbarilo returns exit code 0 immediately without reading the file. Why these files are skipped at all is explained in [How the agent hooks work]({{ '/how-agent-hooks-work/#why-some-files-are-never-scanned' | relative_url }}).
 
 ### Binary Files
 
-Binary files cannot contain readable secrets in a form that matters for leakage. The complete list:
+The complete list:
 
 ```
 images        .png, .jpg, .jpeg, .gif, .bmp, .svg, .ico, .webp
@@ -510,7 +423,7 @@ fonts         .woff, .woff2, .ttf, .eot, .otf
 generated     .min.js, .min.css
 ```
 
-Extensions outside this list are scanned, including ones that are usually binary — `.o`, `.class`, `.jar`, `.wasm`, `.db`, `.sqlite`, `.tgz`, `.docx`, `.flac`. Scanning a compressed or binary file is cheap and finds nothing, so the fast path stays deliberately short rather than trying to enumerate every binary format in existence. Add your own entries under `[allowlist] paths` if a particular format shows up often enough to matter.
+Extensions outside this list are scanned, including ones that are usually binary — `.o`, `.class`, `.jar`, `.wasm`, `.db`, `.sqlite`, `.tgz`, `.docx`, `.flac`. Add your own entries under `[allowlist] paths` if a particular format shows up often enough to matter.
 
 ### Vendor Directories
 
@@ -585,8 +498,6 @@ Template files are **not** blocked, because they contain placeholder values:
 .env.template
 ```
 
-These files are safe for AI agents to read because they document the expected structure without exposing real secrets.
-
 ### Output When Blocked
 
 When sekretbarilo blocks a `.env` file, it writes a message to stderr:
@@ -649,6 +560,17 @@ Errors (file not found, JSON parse failure, config load failure) also produce st
 ```
 
 This fail-closed behavior ensures that errors don't accidentally allow secrets through.
+
+### check-file Exit Codes
+
+sekretbarilo returns an exit code to Claude Code:
+
+| Exit Code | Meaning | Claude Code Action |
+|-----------|---------|-------------------|
+| 0 | Clean (no secrets found, or file skipped via fast-path) | Allow read |
+| 2 | Secrets found, or error (file not found, JSON parse error, config failure) | Block read |
+
+Exit code 2 is used for both secrets and errors to block the `Read` call through `PreToolUse`.
 
 ## Configuration
 
@@ -871,7 +793,7 @@ codex cli agent hook:
 
 configuration:
   [OK] no custom config files found (using defaults)
-  [OK] 113 rules loaded successfully
+  [OK] 114 rules loaded successfully
   [OK] rules compile successfully
 
 sekretbarilo binary:
@@ -950,13 +872,7 @@ claude code agent hook:
   [NOT INSTALLED] global claude code hook not found
 ```
 
-Fix by running:
-
-```sh
-sekretbarilo install agent-hook claude
-```
-
-The installer will update the command in place.
+Re-running the installer replaces the outdated command in place (see [Upgrade](#upgrade-outdated-command-detected) above); the procedure is in [Troubleshoot the agent hooks]({{ '/troubleshoot-agent-hooks/#hook-installed-but-doctor-shows-outdated' | relative_url }}).
 
 ---
 

@@ -29,7 +29,7 @@ src/
     allowlist.rs    - allowlist compilation
     discovery.rs    - hierarchical config file discovery
     merge.rs        - config merge logic
-    rules.toml      - 113 built-in rule definitions with explicit classes
+    rules.toml      - 114 built-in rule definitions with explicit classes
   diff/
     mod.rs          - git diff retrieval
     parser.rs       - unified diff parser

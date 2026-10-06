@@ -337,6 +337,16 @@ sekretbarilo audit --config .sekretbarilo.toml --config .sekretbarilo-ci.toml
 sekretbarilo scan --config .sekretbarilo.toml
 ```
 
+## Validate the configuration
+
+To validate a config file, run an audit with it:
+
+```sh
+sekretbarilo audit --config .sekretbarilo.toml
+```
+
+Loading and compiling happen before any file is scanned, so a parse error or a bad regex is reported immediately. To check the configs that hierarchical discovery finds, without naming them yourself, run `sekretbarilo doctor` — it lists every discovered file, reports whether the merged ruleset and allowlist load and compile, and shows the resolved rule classes. What counts as an error is listed under [Config Validation]({{ '/configuration/#config-validation' | relative_url }}).
+
 ## Related pages
 
 - [Configuration]({{ '/configuration/' | relative_url }}) for every section and key, discovery order and merge rules.
