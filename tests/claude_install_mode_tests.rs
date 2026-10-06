@@ -128,6 +128,21 @@ fn copied_cli_with_stable_symlink(fixture: &Fixture) -> (PathBuf, PathBuf) {
     (target, stable)
 }
 
+/// runs a freshly copied executable. a test thread forking while `copied_cli_with_stable_symlink`
+/// still held the copy open for writing leaves that write descriptor in the child until its exec,
+/// and linux refuses to exec the file meanwhile (ETXTBSY), so that one error is retried briefly.
+fn output_of_copied(command: &mut Command) -> Output {
+    for _ in 0..100 {
+        match command.output() {
+            Err(error) if error.kind() == std::io::ErrorKind::ExecutableFileBusy => {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            result => return result.unwrap(),
+        }
+    }
+    command.output().unwrap()
+}
+
 #[test]
 fn install_switch_reinstall_and_install_all_preserve_mode() {
     let fixture = Fixture::new();
@@ -572,11 +587,13 @@ fn claude_config_dir_does_not_require_home() {
 fn macos_installer_records_symlink_invocation_path() {
     let fixture = Fixture::new();
     let (_, stable) = copied_cli_with_stable_symlink(&fixture);
-    let output = fixture
-        .command_via(&stable)
-        .args(["install", "agent-hook", "claude", "--mode", "block"])
-        .output()
-        .unwrap();
+    let output = output_of_copied(fixture.command_via(&stable).args([
+        "install",
+        "agent-hook",
+        "claude",
+        "--mode",
+        "block",
+    ]));
     assert!(
         output.status.success(),
         "{}",
@@ -593,11 +610,13 @@ fn macos_installer_records_symlink_invocation_path() {
 fn linux_installer_records_resolved_target_and_reports_removed_target() {
     let fixture = Fixture::new();
     let (target, stable) = copied_cli_with_stable_symlink(&fixture);
-    let output = fixture
-        .command_via(&stable)
-        .args(["install", "agent-hook", "claude", "--mode", "block"])
-        .output()
-        .unwrap();
+    let output = output_of_copied(fixture.command_via(&stable).args([
+        "install",
+        "agent-hook",
+        "claude",
+        "--mode",
+        "block",
+    ]));
     assert!(
         output.status.success(),
         "{}",
