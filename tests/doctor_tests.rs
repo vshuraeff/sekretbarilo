@@ -721,6 +721,10 @@ fn e2e_doctor_judges_a_shell_cwd_through_a_link_into_another_repository() {
         &[
             "-C",
             "nested",
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@test.com",
             "commit",
             "--no-verify",
             "-q",
