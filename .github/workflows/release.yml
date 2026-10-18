@@ -103,10 +103,16 @@ jobs:
           done
 
   # the release-candidate.yml build job mirrors this one; keep the two in sync.
+  # the attestation steps are release-only: a candidate is never attested.
   build:
     name: Build ${{ matrix.target }}
     needs: ci-gate
     runs-on: ${{ matrix.runner }}
+    # id-token and attestations sign the build provenance of the packaged files
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     strategy:
       fail-fast: false
       matrix:
@@ -175,6 +181,18 @@ jobs:
           cd target/${{ matrix.target }}/release
           tar czf ../../../sekretbarilo-${{ steps.version.outputs.version }}-${{ matrix.target }}.tar.gz sekretbarilo
           cd ../../..
+
+      # attest the exact bytes that get uploaded; `gh attestation verify` checks them later
+      - name: Attest tarball provenance
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: sekretbarilo-${{ steps.version.outputs.version }}-${{ matrix.target }}.tar.gz
+
+      - name: Attest .deb provenance
+        if: matrix.os == 'linux'
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: target/${{ matrix.target }}/debian/*.deb
 
       - name: Upload tarball
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

@@ -39,6 +39,8 @@ Download pre-built binaries from the [releases page](https://github.com/vshuraef
 - `x86_64-unknown-linux-gnu` / `aarch64-unknown-linux-gnu` (Linux)
 - `.deb` packages for Debian/Ubuntu (amd64 + arm64)
 
+From v0.11.1 on, each file has a build provenance attestation; verify it with `gh attestation verify <file> --repo vshuraeff/sekretbarilo` before installing.
+
 ### From source
 
 ```sh

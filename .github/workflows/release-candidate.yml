@@ -47,6 +47,7 @@ jobs:
 
   # mirrors the build job of release.yml; only needs, the checkout ref and the version label differ.
   # keep the two in sync so a candidate is built exactly the way the tagged release will be.
+  # the build provenance attestation steps of release.yml are deliberately not mirrored.
   build:
     name: Build ${{ matrix.target }}
     needs: resolve

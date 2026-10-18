@@ -185,7 +185,7 @@ fn analyze_bounded_with_kinds(
         None,
         Some(ParseOptions::new().progress_callback(&mut progress)),
     )?;
-    // tree-sitter-swift can recover through a zero-width ordinary leaf that carries the error
+    // tree-sitter-swift has recovered through a zero-width ordinary leaf that carries the error
     // cost, so neither an error nor a missing node reaches the walk below.
     if tree.root_node().has_error() {
         return None;
@@ -1016,28 +1016,18 @@ mod tests {
                 "{source}"
             );
         }
-        // a recovered parse that shows no error or missing node to a tree walk.
-        let recovered = "let version = info?[\"key\"] as? String ?? \"unknown\"";
-        let mut parser = Parser::new();
-        parser
-            .set_language(&tree_sitter_swift::LANGUAGE.into())
-            .unwrap();
-        let tree = parser.parse(recovered, None).unwrap();
-        assert!(tree.root_node().has_error());
-        let mut cursor = tree.walk();
-        let mut hidden = true;
-        loop {
-            hidden &= !cursor.node().is_error() && !cursor.node().is_missing();
-            if cursor.goto_first_child() || cursor.goto_next_sibling() {
-                continue;
-            }
-            while cursor.goto_parent() && !cursor.goto_next_sibling() {}
-            if cursor.node() == tree.root_node() {
-                break;
-            }
-        }
-        assert!(hidden, "the recovery shape now shows an error node");
-        assert!(analyze("src/value.swift", recovered.as_bytes()).is_none());
+        // grammar 0.7.3 recovered this shape through a hidden zero-width leaf; 0.7.4 parses it.
+        let mut optional_chain = String::from("let version = info?[\"");
+        let mut spans = Vec::new();
+        append_body(&mut optional_chain, &mut spans, "key");
+        optional_chain.push_str("\"] as? String ?? \"");
+        append_body(&mut optional_chain, &mut spans, "unknown");
+        optional_chain.push('"');
+        assert!(
+            swift_parses_cleanly(&optional_chain),
+            "grammar error: {optional_chain}"
+        );
+        assert_oracle("src/value.swift", &optional_chain, &spans);
         for source in [
             &b"let value = ("[..],
             b"let value = \"unterminated\n",

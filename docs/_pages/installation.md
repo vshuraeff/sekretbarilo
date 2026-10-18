@@ -30,6 +30,19 @@ Download pre-built binaries from the [releases page](https://github.com/vshuraef
 - `aarch64-unknown-linux-gnu` (Linux ARM64)
 - `.deb` packages for Debian/Ubuntu (amd64 + arm64)
 
+#### Verify a download
+
+From v0.11.1 on, every tarball and `.deb` carries a GitHub build provenance attestation, signed by the release workflow that built it. Check a file before unpacking or installing it:
+
+```sh
+gh attestation verify sekretbarilo-v0.11.1-aarch64-apple-darwin.tar.gz \
+  --repo vshuraeff/sekretbarilo \
+  --signer-workflow vshuraeff/sekretbarilo/.github/workflows/release.yml \
+  --source-ref refs/tags/v0.11.1
+```
+
+A pass proves that the file's digest was attested by `release.yml` running on that tag. It says nothing about whether the code itself is free of defects. Releases before v0.11.1 have no attestation. Homebrew checks the SHA-256 written in the formula, not the attestation.
+
 ### From source
 
 If you have the Rust toolchain installed:
