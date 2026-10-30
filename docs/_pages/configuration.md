@@ -429,7 +429,7 @@ stopwords = [
 **Default stopwords** (always active, even if not listed):
 - `example`, `test`, `sample`, `placeholder`, `dummy`, `changeme`, `fake`, `mock`, `todo`, `fixme`, `xxx`, `lorem`, `default`, `replace_me`, `insert_here`, `your_`, `my_`
 
-Word-based stopwords are consulted only by the rules that carry an `entropy_threshold` (34 of the 114 built-in rules at the time of writing; `grep -c '^entropy_threshold' src/config/rules.toml` gives the current count). The other rules still reject the built-in placeholder examples, but ignore stopwords otherwise: a string matching `AKIA` plus sixteen key characters is an AWS key whatever else it contains.
+Word-based stopwords are consulted only by the rules that carry an `entropy_threshold` (35 of the 115 built-in rules at the time of writing; `grep -c '^entropy_threshold' src/config/rules.toml` gives the current count), except `wireguard-key-assignment`, whose exact key shape leaves the built-in words nothing to catch, so it checks only your own stopwords, as plain case-insensitive substrings, as the opt-in `generic-high-entropy-value` does. The other rules still reject the built-in placeholder examples, but ignore stopwords otherwise: a string matching `AKIA` plus sixteen key characters is an AWS key whatever else it contains.
 
 The split follows the entropy threshold, not the rule class. `mailchimp-api-key`, `facebook-access-token`, `dropbox-api-token` and `launchdarkly-sdk-key` are signature rules that do carry a threshold, so stopwords reach them. `airtable-api-key`, `twilio-api-key`, `azure-storage-account-key`, `password-in-url`, `webhook-url-with-token` and `generic-password-assignment` match case-insensitively but carry no threshold, so word-based stopwords do not apply to them. Password rules reject stopword values separately, and not the same way: `generic-password-assignment`
 requires the value to also clear the password-strength heuristic, while `password-in-url` instead
@@ -531,7 +531,7 @@ include_patterns = [
 
 ### `[[rules]]`
 
-Custom detection rules. These are merged with the 114 built-in rule definitions (110 enabled by default).
+Custom detection rules. These are merged with the 115 built-in rule definitions (111 enabled by default).
 
 ```toml
 [[rules]]

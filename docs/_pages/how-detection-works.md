@@ -20,7 +20,7 @@ rules that require the independent `detect_public_keys` opt-in.
 
 **Contextual rules need credential context.** A key such as `password` or `api_key`,
 an authentication header or a credential-bearing URL identifies what the value
-means. The 37 contextual rules include `generic-api-key`,
+means. The 39 contextual rules include `generic-api-key`,
 `generic-secret-assignment` and `generic-token-assignment`; all three remain
 enabled by default. Besides a quoted value, they read an unquoted value under a
 name that is or ends in a credential key such as `API_KEY`, `SECRET` or `TOKEN`,

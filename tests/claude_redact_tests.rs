@@ -1077,3 +1077,76 @@ fn vanished_cwd_through_a_dangling_symlink_stops() {
         assert_stopped(&run_bytes(&env, &clean_payload(&cwd)), &cwd);
     }
 }
+
+/// the base64 form of 32 synthetic bytes, the shape of a wireguard key.
+fn synthetic_wg_key(seed: u64) -> String {
+    const B64: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut state = seed;
+    let mut next = || {
+        state = state
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1);
+        state
+    };
+    let mut key: String = (0..42)
+        .map(|_| char::from(B64[(next() >> 58) as usize]))
+        .collect();
+    key.push(char::from(B64[((next() >> 60) as usize) * 4]));
+    key.push('=');
+    key
+}
+
+#[test]
+fn wireguard_keys_in_ansible_output_are_masked_with_default_rules() {
+    // the default configuration, heuristic rule off: the named-key rule alone must mask the key.
+    let env = IsolatedEnv::new();
+    let psk = synthetic_wg_key(11);
+    let public = synthetic_wg_key(12);
+    let line = format!(
+        "failed: [h] (item=awg0) => {{\"mode\": \"server\", \"psk\": \"{psk}\", \"nat\": false}}\n"
+    );
+    check_bash_redaction(&env, &line, &line.replace(&psk, "[REDACTED]"));
+    let output = run(
+        &env,
+        "Bash",
+        json!({"stdout": line, "stderr": "", "interrupted": false}),
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(!stdout.contains(&psk));
+    assert!(stdout.contains(r#"\"psk\": \"[REDACTED]\""#), "{stdout}");
+    let clean = format!("[Peer]\nPublicKey = {public}\nEndpoint = 192.0.2.1:51820\n");
+    check_bash_redaction(&env, &clean, &clean);
+}
+
+#[test]
+fn wireguard_keys_holding_builtin_stopwords_are_still_masked() {
+    // a random key holds a run of three `x` or a delimited word such as `/test+` now and then;
+    // the built-in word stopwords must not keep such a key from being masked. failure messages
+    // name the fragment only, never the key.
+    let config = sekretbarilo::config::ProjectConfig::default();
+    let rules = sekretbarilo::config::load_rules_with_config(&config).unwrap();
+    let allowlist = sekretbarilo::config::build_allowlist(&config, &rules).unwrap();
+    let env = IsolatedEnv::new();
+    let mut unmasked = Vec::new();
+    for (seed, fragment) in [(21, "xxx"), (22, "XXX"), (23, "/test+"), (24, "/fake/")] {
+        let base = synthetic_wg_key(seed);
+        // spliced ahead of the 43rd symbol, whose low bits stay zero
+        let psk = format!("{}{fragment}{}", &base[..10], &base[10 + fragment.len()..]);
+        assert_eq!(psk.len(), 44);
+        assert!(
+            allowlist.contains_stopword(psk.as_bytes()),
+            "{fragment}: not a built-in stopword"
+        );
+        let line = format!("{{\"psk\": \"{psk}\", \"nat\": false}}\n");
+        let output = run(
+            &env,
+            "Bash",
+            json!({"stdout": line, "stderr": "", "interrupted": false}),
+        );
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        if stdout.contains(&psk) || !stdout.contains(r#"\"psk\": \"[REDACTED]\""#) {
+            unmasked.push(fragment);
+        }
+    }
+    assert!(unmasked.is_empty(), "keys not masked: {unmasked:?}");
+}

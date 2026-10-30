@@ -29,7 +29,7 @@ src/
     allowlist.rs    - allowlist compilation
     discovery.rs    - hierarchical config file discovery
     merge.rs        - config merge logic
-    rules.toml      - 114 built-in rule definitions with explicit classes
+    rules.toml      - 115 built-in rule definitions with explicit classes
   diff/
     mod.rs          - git diff retrieval
     parser.rs       - unified diff parser
@@ -174,6 +174,7 @@ skips values that are template variables, not real secrets:
 rules with `entropy_threshold` check for common safe words:
 - built-in: `test`, `example`, `fake`, `placeholder`, `changeme`, `dummy`, `mock`
 - user-configurable via `[allowlist] stopwords = [...]`
+- **`generic-high-entropy-value` and `wireguard-key-assignment`** check only the user's own `[allowlist] stopwords`, as plain substrings
 - **rules without an entropy threshold** only check placeholder patterns (`XXXX...`, `****...`) to allow tokens like `sk_test_` that inherently contain "test"
 - **`password-in-url`** is neither: it checks the value against a fixed placeholder list
   (`is_url_password_placeholder` in `src/scanner/password.rs` — exact matches like `password`,
@@ -214,7 +215,7 @@ the user's own stopwords, so a weak but non-placeholder URL password is still re
 for rules with `entropy_threshold` set:
 - calculates shannon entropy over all 256 byte values
 - min length: 20 characters (shorter strings skip entropy check)
-- documentation file bonus: +1.0 to threshold (raises bar for false positives in docs)
+- documentation file bonus: +1.0 to threshold (raises bar for false positives in docs), except for `generic-high-entropy-value` and `wireguard-key-assignment`
 - global override: `--entropy-threshold` or `[settings] entropy_threshold = 3.5` sets a floor
 
 **Formula**: `H = -Σ(p_i * log2(p_i))` where `p_i` is frequency of byte `i`
@@ -496,7 +497,7 @@ entropy_threshold = 3.5
 
 ### Rule Compilation
 
-1. **load default rules**: embedded `config/rules.toml` (112 rules)
+1. **load default rules**: embedded `config/rules.toml` (115 rules)
 2. **merge user rules**: overrides by `id`, appends new rules
 3. **compile regexes**: `regex::bytes::RegexBuilder` with 1 MB size limit
 4. **build aho-corasick automaton**: all keywords (case-insensitive, deduplicated)
@@ -841,7 +842,7 @@ resolving branches only for commits that produced findings.
 
 ### Integration Tests
 one file per area under `tests/`:
-- default rules: all 112 rules compile and detect known secrets
+- default rules: all 115 rules compile and detect known secrets
 - false positives: a corpus that must stay clean
 - hook installation: idempotency, appending, preservation of existing hooks
 - claude agent hook: JSON parsing, path resolution, fast-path rejection

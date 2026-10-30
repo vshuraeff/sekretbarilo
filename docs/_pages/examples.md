@@ -778,7 +778,7 @@ The `doctor` command checks your sekretbarilo installation health.
 sekretbarilo doctor
 ```
 
-Doctor prints five groups of checks. The abbreviated examples below use `/home/user/project` and `/home/user` for local paths. Configuration class states, rule overrides and enabled/total counts are omitted from these transcripts; defaults enable 110 of 114 built-in rules. Doctor reports `rule class heuristic: disabled (default)` and shows any explicit rule-id exception separately.
+Doctor prints five groups of checks. The abbreviated examples below use `/home/user/project` and `/home/user` for local paths. Configuration class states, rule overrides and enabled/total counts are omitted from these transcripts; defaults enable 111 of 115 built-in rules. Doctor reports `rule class heuristic: disabled (default)` and shows any explicit rule-id exception separately.
 
 ### Example output: nothing installed yet
 

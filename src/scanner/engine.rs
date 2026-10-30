@@ -23,6 +23,13 @@ const PARALLEL_FILE_THRESHOLD: usize = 4;
 /// the keywordless tier-3 rule that the exemption layer and the source postures govern.
 const ENTROPY_RULE: &str = "generic-high-entropy-value";
 
+/// the named-key rule whose value is exactly a 32-byte base64 key. its shape and entropy gate
+/// already reject placeholders, so, as on the entropy rule, the built-in word stopwords and the
+/// documentation-file entropy bonus would only drop real keys (about one in 850 holds a run of
+/// three `x`, one in 670 measures below the raised 4.5 bits); user stopwords still apply. nor
+/// does a template expression elsewhere on the line skip it (step 6.5).
+const WIREGUARD_RULE: &str = "wireguard-key-assignment";
+
 /// the contextual rules that read a value under a credential name (`API_KEY`, `*_TOKEN`,
 /// `*_SECRET`) in quoted and unquoted form.
 const NAMED_KEY_RULES: [&str; 3] = [
@@ -183,9 +190,9 @@ pub struct Finding {
 ///      word value (independent of the exemption switch)
 ///   5. per-rule allowlist check (value regex + path match)
 ///   6. variable references (URL passwords skip pure references only, not defaults)
-///      6.5. template lines skip context-dependent and password/credential rules
-///   7. stopwords (entropy values use user words; URL passwords use user words
-///      and URL placeholders only; other rules retain their tier-specific filters)
+///      6.5. template lines skip context-dependent and password/credential rules (not wireguard keys)
+///   7. stopwords (entropy values and wireguard keys use user words; URL passwords use user
+///      words and URL placeholders only; other rules retain their tier-specific filters)
 ///   8. hash detection (skip if it's a hash)
 ///      8.5. password strength veto for generic-password-assignment only
 ///      8.6. credential strength with entropy fallback; 8.7. public key filtering
@@ -1098,6 +1105,8 @@ pub(super) fn scan_matches(
                 ctx.input,
                 rule.entropy_threshold,
             )
+        } else if rule.id == WIREGUARD_RULE {
+            value_end_captures(rule, ctx.input)
         } else {
             rule.regex.captures_iter(ctx.input).collect()
         };
@@ -1143,6 +1152,32 @@ pub(super) fn scan_matches(
             }
         }
     }
+}
+
+/// a capture cursor that resumes at the end of the secret value, not of the whole match: the
+/// byte an unquoted value's boundary consumes can be the `\` of a `\n` escape that leads the
+/// next key name in json-printed output.
+fn value_end_captures<'h>(
+    rule: &crate::scanner::rules::CompiledRule,
+    input: &'h [u8],
+) -> Vec<regex::bytes::Captures<'h>> {
+    let mut found = Vec::new();
+    let mut offset = 0;
+    while offset <= input.len() {
+        let Some(captures) = rule.regex.captures_at(input, offset) else {
+            break;
+        };
+        let Some(matched) = captures.get(0) else {
+            break;
+        };
+        let value_end = std::iter::once(&rule.secret_group)
+            .chain(&rule.secret_groups)
+            .find_map(|&group| captures.get(group))
+            .map_or(matched.end(), |value| value.end());
+        offset = value_end.max(matched.start() + 1);
+        found.push(captures);
+    }
+    found
 }
 
 /// the tier-3 rule's own capture cursor. an unquoted boundary may consume the next assignment's
@@ -2315,7 +2350,9 @@ fn evaluate_candidate(
     // skip findings from context-dependent rules (tier 2/3). tier 1
     // prefix rules are NOT affected — a real AKIA... key on a template
     // line is still a finding, even if the rule uses entropy.
+    // the wireguard value is an exact key shape a template expression can never take.
     if !is_entropy_value
+        && rule.id != WIREGUARD_RULE
         && (rule.context_dependent || is_password_rule(&rule.id) || is_credential_rule(&rule.id))
         && ctx.allowlist.is_template_line(line)
     {
@@ -2338,7 +2375,7 @@ fn evaluate_candidate(
         {
             return;
         }
-    } else if is_entropy_value {
+    } else if is_entropy_value || rule.id == WIREGUARD_RULE {
         if ctx.allowlist.contains_user_stopword(secret) {
             return;
         }
@@ -2443,7 +2480,7 @@ fn evaluate_candidate(
         && let Some(mut threshold) = effective_threshold(ctx, rule)
     {
         // apply doc file bonus (raise threshold = less likely to flag)
-        if ctx.is_doc_file && !is_entropy_value {
+        if ctx.is_doc_file && !is_entropy_value && rule.id != WIREGUARD_RULE {
             threshold += ctx.allowlist.doc_entropy_bonus();
         }
         if !entropy::passes_entropy_check(secret, threshold) {

@@ -409,6 +409,40 @@ secret_group = 1
 keywords = ["heroku"]
 entropy_threshold = 3.0
 
+[[rules]]
+id = "wireguard-key-assignment"
+class = "contextual"
+description = "WireGuard or AmneziaWG preshared or private key assignment"
+# the name, after a word boundary or a `\n`, `\r` or `\t` escape (a line break in json-printed
+# output) and optional leading `_`, is `psk`, `preshared key` or `private key` (words joined
+# by `-`, `_`, a space or nothing), alone or ending a longer snake, kebab or camel name
+# (`wireguard_private_key`, `peerPresharedKey`, `WGPrivateKey`, so also an all-caps `WGPSK`); a
+# name that continues past it (`psk_file`) or a lowercase run into `psk` (`mypsk`) is not read.
+# the value is exactly a wireguard key, 43 base64 bytes and `=`, double-quoted (json escaped
+# into json strings at any depth too, `\"...\"`, `\\\"...\\\"`), single-quoted or unquoted up
+# to a byte outside base64. the tight value shape is what keeps the common `private_key` name
+# safe; public keys have no such name and stay clear. the engine exempts this rule by id from
+# the template-line skip: a template expression can never be the value, and ansible prints a
+# failed result with `{{ ... }}` in its message on the same line as the key.
+regex = '''(?i)(?x)
+(?:(?-u:\b)|\\[nrt])_*
+(?:
+  (?:[A-Za-z0-9]+[-_])*(?:psk|preshared[-_\x20]?key|private[-_\x20]?key)
+  | (?-i:(?:[A-Za-z0-9][A-Za-z0-9_-]*)?[A-Za-z0-9]P)(?:sk|reshared[-_\x20]?key|rivate[-_\x20]?key)
+)
+(?:\\*["'`])?\]?[\t\x20]*(?::=|[=:])[\t\x20]*
+(?:
+  \\*"([A-Za-z0-9+/]{43}=)\\*"
+  | '([A-Za-z0-9+/]{43}=)'
+  | ([A-Za-z0-9+/]{43}=)(?:[^A-Za-z0-9+/=]|$)
+)'''
+secret_group = 1
+secret_groups = [2, 3]
+keywords = ["psk", "preshared", "private_key", "private-key", "privatekey", "private key"]
+# random keys measure above 4.2 bits (lowest of 200000 samples), a placeholder of a few repeated
+# symbols far below 3.5
+entropy_threshold = 3.5
+
 # generic fallbacks: generic-high-entropy-value is the only heuristic rule and is
 # off by default; generic-api-key is contextual
 # assignment or standalone token patterns + high entropy

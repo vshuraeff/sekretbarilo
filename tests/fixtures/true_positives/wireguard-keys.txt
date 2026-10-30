@@ -1,0 +1,10 @@
+# wireguard-keys: a wireguard or amneziawg preshared or private key under its key name.
+# format: <rule id> TAB <line>. the test expands the placeholder, so no key is stored here.
+wireguard-key-assignment	failed: [h] (item=awg0) => {"mode": "server", "psk": "{B64_44}", "nat": false}
+wireguard-key-assignment	PresharedKey = {B64_44}
+wireguard-key-assignment	PrivateKey = {B64_44}
+wireguard-key-assignment	  preshared key: {B64_44}
+wireguard-key-assignment	sops_amneziawg_awg0_psk: {B64_44}
+wireguard-key-assignment	wireguard_private_key: "{B64_44}"
+wireguard-key-assignment	{'psk': '{B64_44}'}
+wireguard-key-assignment	peerPresharedKey: "{B64_44}"

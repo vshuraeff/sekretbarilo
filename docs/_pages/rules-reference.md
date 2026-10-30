@@ -6,14 +6,13 @@ nav_order: 6
 
 # Rules Reference
 
-sekretbarilo ships **114 built-in rule definitions**, with **110 active by default**
-in 0.9.0. Each rule belongs to one rule class; the tables below give the class
+sekretbarilo ships **115 built-in rule definitions**, with **111 active by default**. Each rule belongs to one rule class; the tables below give the class
 for every listed rule. Classes describe detection evidence, not a precision rank.
 
 | Rule class | Rules | Default | Evidence |
 |------------|-------|---------|----------|
 | `signature` | 75 (including 3 public-key rules) | Enabled; public keys additionally require `detect_public_keys` | Credential format, marker, or provider-specific structure |
-| `contextual` | 37 | Enabled | Credential-naming key, authentication header, or credential-bearing URL |
+| `contextual` | 39 | Enabled | Credential-naming key, authentication header, or credential-bearing URL |
 | `heuristic` | 1 | Disabled | Generic value shape and entropy without credential-specific context |
 
 Use `[settings.rule_classes]` for class switches and `[settings.rules]` for
@@ -250,6 +249,14 @@ These rules require keyword context and apply additional validation (entropy thr
 |---------|----------|---------|-------|
 | `algolia-api-key` | `algolia` | 3.0 | `contextual` |
 
+### VPN
+
+| Rule ID | Keywords | Entropy | Class |
+|---------|----------|---------|-------|
+| `wireguard-key-assignment` | `psk`, `preshared`, `private_key`, `private-key`, `privatekey`, `private key` | 3.5 | `contextual` |
+
+`wireguard-key-assignment` reads a WireGuard or AmneziaWG preshared or private key under its key name: wg/awg configuration (`PresharedKey = …`, `PrivateKey = …`), YAML and JSON variables (`psk: …`, `"private_key": "…"`), Python reprs (`'psk': '…'`), JSON encoded inside a JSON string at any depth (`\"psk\": \"…\"`, as in ansible failed-task output), JSON-printed command output whose line breaks are `\n` escapes (`"stdout": "…\nprivate-key=…"`), and `--psk=…` style flags. The name, case-insensitive and optionally led by `_`, is `psk`, `preshared key` or `private key`, its words joined by `-`, `_`, a space or nothing, alone or ending a longer snake, kebab or camel name (`sops_amneziawg_awg0_psk`, `wireguard_private_key`, `peerPresharedKey`, `WGPrivateKey`, `AWGPsk`). A name that continues past it (`psk_file`, `private_key_path`) or a lowercase run into `psk` (`mypsk`) is not read; an all-caps run such as `WGPSK` is. The value must be exactly a WireGuard key, 43 base64 characters and one `=`, double-quoted, single-quoted or unquoted after `=`, `:` or `:=`, and no base64 character may follow it. That exact shape is what keeps the common `private_key` name from flagging file paths, template expressions and other key formats. A public key (`PublicKey`, `public_key`) and `wg show`'s `(hidden)` are not findings, and a placeholder of a few repeated characters stays below the entropy threshold. That shape and threshold are the rule's whole placeholder defense: the built-in stopwords and the documentation-file entropy bonus do not apply to it, because a random key holds a run of three `x` or a word such as `/test+` about once in 850 and would otherwise go unreported, while your own `[allowlist].stopwords` still apply as case-insensitive substrings of the key. Unlike other named-key rules, it still reports a key on a line that also carries a template expression (`{{ … }}`), because such an expression can never be the value and ansible prints one in the message of a failed result. Masking replaces the key and keeps the name and syntax around it.
+
 ### Generic Patterns
 
 | Rule ID | Keywords | Entropy | Class |
@@ -363,8 +370,8 @@ sekretbarilo audit --detect-public-keys
 
 ## False Positive Reduction
 
-1. **Entropy thresholds** — rules with entropy thresholds filter low-randomness strings; doc files get +1.0 bonus (the bonus does not apply to `generic-high-entropy-value`)
-2. **Stopwords** — `example`, `test`, `placeholder`, `changeme`, `fake`, `mock`, `dummy`, etc. (`generic-high-entropy-value` uses only explicit user-configured stopwords)
+1. **Entropy thresholds** — rules with entropy thresholds filter low-randomness strings; doc files get +1.0 bonus (the bonus does not apply to `generic-high-entropy-value` and `wireguard-key-assignment`)
+2. **Stopwords** — `example`, `test`, `placeholder`, `changeme`, `fake`, `mock`, `dummy`, etc. (`generic-high-entropy-value` and `wireguard-key-assignment` use only explicit user-configured stopwords)
 3. **Hash detection** — SHA-1, SHA-256, MD5, git commit hashes (`generic-high-entropy-value` bypasses this suppression)
 4. **Variable references** — `${VAR}`, `process.env.VAR`, `os.environ["VAR"]`, etc.
 5. **Template handling** — Jinja2/Helm/Mustache/Handlebars {% raw %}`{{ }}`{% endraw %}, GitHub Actions {% raw %}`${{ }}`{% endraw %}, ERB `<%= %>`, Terraform `${var.}`, etc. (`generic-high-entropy-value` bypasses this suppression)
@@ -431,7 +438,7 @@ the independent public-key gate. Unknown class names and rule ids are errors.
 
 Rules merge in this order (later overrides earlier):
 
-1. Built-in defaults (114 definitions, 110 enabled by default)
+1. Built-in defaults (115 definitions, 111 enabled by default)
 2. System config (`/etc/sekretbarilo.toml`)
 3. User config (`~/.config/sekretbarilo.toml`)
 4. Project config (`.sekretbarilo.toml`)
