@@ -147,13 +147,46 @@ fn folded_distinct_ratio(value: &[u8]) -> f64 {
     distinct as f64 / value.len().max(1) as f64
 }
 
-/// whether the unquoted value ending at `end` ends its word: the input ends there, or whitespace
-/// or nul follows. the value class stops at a quote, backtick, `(` or non-ascii byte, and a value cut
-/// there would be a prefix of the word, so the alternative is not read at all.
+/// whether the unquoted value ending at `end` ends its word: the input ends there, whitespace or
+/// nul follows, or a `\` that begins a `\n`, `\r` or `\t` escape (a line break or tab of
+/// json-printed output) or stands alone before whitespace, nul or the end. the value class stops at a
+/// quote, backtick, `(`, such an escape or a non-ascii byte, and a value cut anywhere else would be
+/// a prefix of the word, so the alternative is not read at all.
 fn ends_word(input: &[u8], end: usize) -> bool {
-    input
-        .get(end)
-        .is_none_or(|byte| byte.is_ascii_whitespace() || *byte == b'\0')
+    match input.get(end) {
+        None => true,
+        Some(b'\\') => input.get(end + 1).is_none_or(|next| {
+            matches!(next, b'n' | b'r' | b't' | b'\0') || next.is_ascii_whitespace()
+        }),
+        Some(byte) => byte.is_ascii_whitespace() || *byte == b'\0',
+    }
+}
+
+/// whether the unquoted value `start..end` ends the double-quoted string holding it: a `"`
+/// follows the value, whitespace, nul, `,`, `}`, `]` or the end of input follows that quote, and
+/// the value sits inside a string, an odd number of unescaped `"` lying between the start of its
+/// line and the value. this reads json-printed command output (`{"stdout":"x\nTOKEN=..."}`) and
+/// a container's environment list (`["TOKEN=...", ...]`); an escaped `\"` opens no string.
+fn ends_quoted_string(input: &[u8], start: usize, end: usize) -> bool {
+    if input.get(end) != Some(&b'"')
+        || !input.get(end + 1).is_none_or(|next| {
+            next.is_ascii_whitespace() || matches!(next, b'\0' | b',' | b'}' | b']')
+        })
+    {
+        return false;
+    }
+    let line_start = memchr::memrchr(b'\n', &input[..start]).map_or(0, |index| index + 1);
+    let (mut inside, mut escaped) = (false, false);
+    for &byte in &input[line_start..start] {
+        if escaped {
+            escaped = false;
+        } else if byte == b'\\' {
+            escaped = true;
+        } else if byte == b'"' {
+            inside = !inside;
+        }
+    }
+    inside
 }
 
 /// a detected secret finding
@@ -1991,11 +2024,7 @@ fn evaluate_candidate(
             .is_some_and(|value| value.range() == original_range);
     let unquoted_word_ends = unquoted_arm
         && (ends_word(ctx.input, original_range.end)
-            || (ctx.input.get(original_range.end) == Some(&b'"')
-                && captures
-                    .get(0)
-                    .is_some_and(|matched| ctx.input[matched.start()] == b'"')
-                && ends_word(ctx.input, original_range.end + 1)));
+            || ends_quoted_string(ctx.input, original_range.start, original_range.end));
     if unquoted_arm && matches!(secret.last(), Some(b',' | b';')) && secret.len() > 1 {
         secret_range.end -= 1;
         secret = &ctx.input[secret_range.clone()];
@@ -3508,5 +3537,26 @@ mod tests {
         assert!(ends_word(b"API_KEY=value\0next", 13));
         assert!(!ends_word(b"API_KEY=value\"x\"", 13));
         assert!(!ends_word(b"API_KEY=value(x)", 13));
+        assert!(ends_word(br"API_KEY=value\nnext", 13));
+        assert!(ends_word(br"API_KEY=value\r\n", 13));
+        assert!(ends_word(br"API_KEY=value\tnext", 13));
+        assert!(ends_word(br"API_KEY=value\ rest", 13));
+        assert!(ends_word(br"API_KEY=value\", 13));
+        assert!(ends_word(b"API_KEY=value\\\0next", 13));
+        assert!(!ends_word(br"API_KEY=value\Nnext", 13));
+        assert!(!ends_word(br"API_KEY=value\x41", 13));
+    }
+
+    #[test]
+    fn a_context_value_may_end_the_string_holding_it() {
+        assert!(ends_quoted_string(br#"{"stdout":"API_KEY=value"}"#, 19, 24));
+        assert!(ends_quoted_string(br#"["API_KEY=value", "X=1"]"#, 10, 15));
+        assert!(ends_quoted_string(br#"{"o": "x\nAPI_KEY=value"}"#, 18, 23));
+        assert!(ends_quoted_string(b"\"API_KEY=value\"", 9, 14));
+        assert!(ends_quoted_string(b"a\n\"API_KEY=value\" b", 11, 16));
+        assert!(!ends_quoted_string(br#"API_KEY=value" rest"#, 8, 13));
+        assert!(!ends_quoted_string(br#""API_KEY=value"x"#, 9, 14));
+        assert!(!ends_quoted_string(br#"x\"API_KEY=value\""#, 11, 16));
+        assert!(!ends_quoted_string(b"\"a\"\nAPI_KEY=value\"", 12, 17));
     }
 }

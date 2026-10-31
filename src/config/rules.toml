@@ -307,14 +307,20 @@ description = "Secret assignment in code and configuration"
 # the quoted alternative reads quoted json/dict keys too. the unquoted alternative (group context_unquoted) reads a
 # credential-named assignment wherever one can start: `NAME=value` (optional horizontal spacing
 # around `=`) after line start, a space or tab (`export`, `env`, `sudo`, `docker run -e`, a yaml
-# `- ` item) or a shell `;` `&` `|` `(`, a quote, comma or nul, and yaml `name: value` (whitespace after the colon) only
-# at logical line start or after a yaml `- `. the name, after optional leading `_`, is the key
+# `- ` item) or a shell `;` `&` `|` `(`, a quote, comma, nul or a `\n` `\r` `\t` escape (a line
+# break of json-printed output), and yaml `name: value` (whitespace after the colon) only at
+# logical line start, after a `\n` or `\r` escape or after a yaml `- `; dockerfile `ENV` reads the
+# same line starts. the name, after optional leading `_`, is the key
 # word alone or the key word ending a longer name: snake or kebab words before it
 # (`DJANGO_SECRET_KEY`) or a camel hump (`jwtSecret`), never a name that continues past it
 # (`secret_name`) or glues it to a lowercase word (`xsecret`); a `.` before the name (member
 # access), a `-` (a flag) or another byte outside the start set is no assignment start. the value
-# is the whole run of printable ascii and never starts with `=` (`==`); engine.rs rejects a run
-# that does not end its word at whitespace or end of input, so a quote, backtick or `(` in the
+# is the whole run of printable ascii and never starts with `=` (`==`); a backslash takes the
+# byte after it into the run, except a `\n` `\r` `\t` escape, which ends the run, so consecutive
+# assignments of json-printed output are each their own match. engine.rs rejects a run that does
+# not end its word at whitespace, such an escape, a lone `\` before whitespace, nul or end of input, or
+# the closing `"` of the string the assignment sits in (followed by whitespace, `,` `}` `]` or the
+# end), so a quote, backtick or `(` in the
 # word rejects the arm instead of cutting the value short, and drops a word that is a path, is
 # rooted at a variable reference or reads as code or words (`is_source_expression_value`). the
 # pattern keeps its leading `(?i)`, which marks the rule context dependent; `(?x)` ignores the
@@ -323,17 +329,17 @@ regex = '''(?i)(?x)
 (?:secret|secret[-_]?key(?:[-_]?base)?|(?:api|client)[-_]?secret)["'`]?\]?\s*(?::=|[=:])\s*['"]([^'"]{8,})['"]
 |(?m:
   (?:
-    (?:^|[\x00\t\x20;&|(",])
+    (?:^|[\x00\t\x20;&|(",]|(?-i:\\[nrt]))
     _*(?:(?:[A-Za-z0-9]+[-_])*(?:api|client)?secret(?:[-_]?key(?:[-_]?base)?)?|(?-i:(?:[A-Za-z0-9][A-Za-z0-9_-]*)?[a-z0-9]S)ecret(?:[-_]?key(?:[-_]?base)?)?)
     [\t\x20]*(?::=|=)[\t\x20]*
-  | ^[\t\x20]*(?:-[\t\x20]+)?
+  | (?:^|(?-i:\\[nr]))[\t\x20]*(?:-[\t\x20]+)?
     _*(?:(?:[A-Za-z0-9]+[-_])*(?:api|client)?secret(?:[-_]?key(?:[-_]?base)?)?|(?-i:(?:[A-Za-z0-9][A-Za-z0-9_-]*)?[a-z0-9]S)ecret(?:[-_]?key(?:[-_]?base)?)?)
     [\t\x20]*:[\t\x20]+
-  | ^[\t\x20]*ENV[\t\x20]+
+  | (?:^|(?-i:\\[nr]))[\t\x20]*ENV[\t\x20]+
     _*(?:(?:[A-Za-z0-9]+[-_])*(?:api|client)?secret(?:[-_]?key(?:[-_]?base)?)?|(?-i:(?:[A-Za-z0-9][A-Za-z0-9_-]*)?[a-z0-9]S)ecret(?:[-_]?key(?:[-_]?base)?)?)
     [\t\x20]+
   )
-  (?P<context_unquoted>[\x21-\x7e&&[^"'`(=]][\x21-\x7e&&[^"'`(]]{7,})
+  (?P<context_unquoted>(?:[\x21-\x7e&&[^"'`(=\\]]|\\(?-i:[\x21-\x7e&&[^nrt"'`(]]))(?:[\x21-\x7e&&[^"'`(\\]]|\\(?-i:[\x21-\x7e&&[^nrt"'`(]])){7,})
 )'''
 secret_group = 1
 secret_groups = [2]
@@ -517,17 +523,17 @@ regex = '''(?i)(?x)
 (?:api[-_]?key|apikey|api[-_]?token)["'`]?\]?\s*(?::=|[=:])\s*['"]([^'"]{16,})['"]
 |(?m:
   (?:
-    (?:^|[\x00\t\x20;&|(",])
+    (?:^|[\x00\t\x20;&|(",]|(?-i:\\[nrt]))
     _*(?:(?:[A-Za-z0-9]+[-_])*api[-_]?(?:key|token)|(?-i:(?:[A-Za-z0-9][A-Za-z0-9_-]*)?[a-z0-9]A)pi[-_]?(?:key|token))
     [\t\x20]*(?::=|=)[\t\x20]*
-  | ^[\t\x20]*(?:-[\t\x20]+)?
+  | (?:^|(?-i:\\[nr]))[\t\x20]*(?:-[\t\x20]+)?
     _*(?:(?:[A-Za-z0-9]+[-_])*api[-_]?(?:key|token)|(?-i:(?:[A-Za-z0-9][A-Za-z0-9_-]*)?[a-z0-9]A)pi[-_]?(?:key|token))
     [\t\x20]*:[\t\x20]+
-  | ^[\t\x20]*ENV[\t\x20]+
+  | (?:^|(?-i:\\[nr]))[\t\x20]*ENV[\t\x20]+
     _*(?:(?:[A-Za-z0-9]+[-_])*api[-_]?(?:key|token)|(?-i:(?:[A-Za-z0-9][A-Za-z0-9_-]*)?[a-z0-9]A)pi[-_]?(?:key|token))
     [\t\x20]+
   )
-  (?P<context_unquoted>[\x21-\x7e&&[^"'`(=]][\x21-\x7e&&[^"'`(]]{15,})
+  (?P<context_unquoted>(?:[\x21-\x7e&&[^"'`(=\\]]|\\(?-i:[\x21-\x7e&&[^nrt"'`(]]))(?:[\x21-\x7e&&[^"'`(\\]]|\\(?-i:[\x21-\x7e&&[^nrt"'`(]])){15,})
 )'''
 secret_group = 1
 secret_groups = [2]
@@ -1102,17 +1108,17 @@ regex = '''(?i)(?x)
 (?:(?:auth_token|access_token|secret_token)["'`]?\]?\s*|token(?:["'`]\]?\s*|\]\s*|[\t\x20]*))(?::=|[=:])\s*['"]([^'"]{16,})['"]
 |(?m:
   (?:
-    (?:^|[\x00\t\x20;&|(",])
+    (?:^|[\x00\t\x20;&|(",]|(?-i:\\[nrt]))
     _*(?:(?:[A-Za-z0-9]+[-_])*(?:auth|access|secret|github)?token|(?-i:(?:[A-Za-z0-9][A-Za-z0-9_-]*)?[a-z0-9]T)oken)
     [\t\x20]*(?::=|=)[\t\x20]*
-  | ^[\t\x20]*(?:-[\t\x20]+)?
+  | (?:^|(?-i:\\[nr]))[\t\x20]*(?:-[\t\x20]+)?
     _*(?:(?:[A-Za-z0-9]+[-_])*(?:auth|access|secret|github)?token|(?-i:(?:[A-Za-z0-9][A-Za-z0-9_-]*)?[a-z0-9]T)oken)
     [\t\x20]*:[\t\x20]+
-  | ^[\t\x20]*ENV[\t\x20]+
+  | (?:^|(?-i:\\[nr]))[\t\x20]*ENV[\t\x20]+
     _*(?:(?:[A-Za-z0-9]+[-_])*(?:auth|access|secret|github)?token|(?-i:(?:[A-Za-z0-9][A-Za-z0-9_-]*)?[a-z0-9]T)oken)
     [\t\x20]+
   )
-  (?P<context_unquoted>[\x21-\x7e&&[^"'`(=]][\x21-\x7e&&[^"'`(]]{15,})
+  (?P<context_unquoted>(?:[\x21-\x7e&&[^"'`(=\\]]|\\(?-i:[\x21-\x7e&&[^nrt"'`(]]))(?:[\x21-\x7e&&[^"'`(\\]]|\\(?-i:[\x21-\x7e&&[^nrt"'`(]])){15,})
 )'''
 secret_group = 1
 secret_groups = [2]
