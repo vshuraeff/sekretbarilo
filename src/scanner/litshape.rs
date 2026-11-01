@@ -178,7 +178,7 @@ const MAX_OPAQUE_SHORT_WORDS: usize = 1;
 /// cut into members or arguments of one to three letters (`\(qz.vk.rt…)`) leaves one per member.
 /// the expression is no literal text, but the chunk guard of a template reads it
 /// (`is_placeholder_template`).
-fn template_hole_end(value: &[u8], start: usize) -> Option<usize> {
+pub(super) fn template_hole_end(value: &[u8], start: usize) -> Option<usize> {
     let (open, close) = match (value[start], value.get(start + 1)) {
         (b'\\', Some(b'(')) => (start + 2, b')'),
         (b'\\', Some(b'#')) => {

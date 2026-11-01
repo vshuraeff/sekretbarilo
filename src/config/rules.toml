@@ -350,7 +350,9 @@ entropy_threshold = 3.5
 id = "password-in-url"
 class = "contextual"
 description = "Password embedded in URL"
-regex = "(?i)://[^:/?#\\s]+:([^@/?#\\s]+)@[^\\s'\"]+"
+# one host byte is enough: only the password group is read, and a host part running on to the next
+# whitespace would swallow every later url of a list, hiding their passwords.
+regex = "(?i)://[^:/?#\\s]+:((?:\\$\\{(?:[^@/\\s{}]|\\$\\{[^@/\\s{}]*\\})*\\}|\\\\#*\\((?:[^@/\\s()]|\\([^@/\\s()]*\\))*\\)|[^@/?#\\s])+)@[^\\s'\"]"
 secret_group = 1
 keywords = ["://"]
 

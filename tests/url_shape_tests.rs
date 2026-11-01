@@ -3,7 +3,7 @@
 //! every credential-bearing url is still reported on the diff and text surfaces.
 
 use sekretbarilo::config::allowlist::CompiledAllowlist;
-use sekretbarilo::config::{ProjectConfig, build_allowlist};
+use sekretbarilo::config::{ProjectConfig, build_allowlist, load_rules_with_config};
 use sekretbarilo::diff::parser::{AddedLine, DiffFile};
 use sekretbarilo::scanner::engine::{redact_text, scan, scan_text};
 use sekretbarilo::scanner::rules::{CompiledScanner, compile_rules, load_default_rules};
@@ -11,6 +11,15 @@ use std::sync::LazyLock;
 
 static SCANNER: LazyLock<CompiledScanner> =
     LazyLock::new(|| compile_rules(&load_default_rules().unwrap()).unwrap());
+
+static PASSWORD_SCANNER: LazyLock<CompiledScanner> = LazyLock::new(|| {
+    let rules: Vec<_> = load_default_rules()
+        .unwrap()
+        .into_iter()
+        .filter(|rule| rule.id == "password-in-url")
+        .collect();
+    compile_rules(&rules).unwrap()
+});
 
 static ALLOWLIST: LazyLock<CompiledAllowlist> = LazyLock::new(|| {
     build_allowlist(&ProjectConfig::default(), &load_default_rules().unwrap()).unwrap()
@@ -149,6 +158,219 @@ fn userinfo_in_the_authority_is_still_reported() {
     ] {
         assert_reported(&line, &secret);
     }
+}
+
+fn assert_password_rule(value: &str, expected: bool) {
+    let line = format!("let endpoint = \"https://deploy:{value}@git.example.internal/repo\";");
+    for path in PATHS
+        .iter()
+        .copied()
+        .chain(["src/main.swift", "scripts/connect.sh"])
+    {
+        let findings = scan(&[file(path, &line)], &PASSWORD_SCANNER, &ALLOWLIST);
+        assert_eq!(
+            findings
+                .iter()
+                .any(|finding| finding.rule_id == "password-in-url"),
+            expected,
+            "{path}: wrong password rule result"
+        );
+    }
+    let findings = scan_text(&line, &PASSWORD_SCANNER, &ALLOWLIST);
+    assert_eq!(
+        findings
+            .iter()
+            .any(|finding| finding.rule_id == "password-in-url"),
+        expected,
+        "text: wrong password rule result"
+    );
+    let redacted = redact_text(&line, &PASSWORD_SCANNER, &ALLOWLIST);
+    if expected {
+        assert!(
+            !redacted.contains(&format!("deploy:{value}@")),
+            "password was left unmasked"
+        );
+    } else {
+        assert!(redacted == line, "reference was redacted");
+    }
+}
+
+#[test]
+fn a_shell_parameter_must_fill_the_password_component() {
+    for reference in [
+        "${NAME}",
+        "${NAME:-}",
+        "${NAME-}",
+        "${NAME:=}",
+        "${NAME:-$OTHER}",
+        "${CI_TOKEN:-${CI_JOB_TOKEN}}",
+        "${NAME:-changeme}",
+        "${NAME:?x}",
+        "${NAME:?unset}",
+    ] {
+        assert_password_rule(reference, false);
+        for value in [
+            format!("{reference}literal"),
+            format!("literal{reference}"),
+            format!("{reference}${{OTHER}}"),
+            format!("{reference}literal${{OTHER}}"),
+        ] {
+            assert_password_rule(&value, true);
+        }
+    }
+    // a `-`/`=` default is the password while the variable is unset, so it is judged as a bare
+    // password: a literal word is as much a finding there as in the url itself.
+    let secret = opaque(32, 21);
+    for operator in [":-", "-", ":?", ":="] {
+        assert_password_rule(&format!("${{NAME{operator}{secret}}}"), true);
+    }
+    for operator in [":-", "-", ":=", "="] {
+        for default in ["x", "secret", "realpass", "Passw0rd"] {
+            assert_password_rule(&format!("${{NAME{operator}{default}}}"), true);
+            assert_password_rule(default, true);
+        }
+        assert_password_rule(&format!("${{NAME{operator}${{OTHER:-{secret}}}}}"), true);
+    }
+    assert_password_rule("${NAME:+x}", true);
+    assert_password_rule("${NAME!x}", true);
+    assert_password_rule("${NAME:-x", true);
+    assert_password_rule(&secret, true);
+}
+
+#[test]
+fn nested_defaults_are_bounded_and_still_judged() {
+    let nest = |depth: usize, inner: &str| {
+        format!("{}{inner}{}", "${A:-".repeat(depth), "}".repeat(depth))
+    };
+    // five expansions are the deepest reference: four defaults wrapping one more
+    assert_password_rule(&nest(4, "${B}"), false);
+    assert_password_rule(&nest(5, "${B}"), true);
+    assert_password_rule(&nest(8, "${B}"), true);
+    assert_password_rule(&nest(3, "realpass"), true);
+    // a crafted nesting deep enough to exhaust the stack of an unbounded reader
+    let line = format!(
+        "https://deploy:{}@git.example.internal/repo",
+        nest(100_000, "realpass")
+    );
+    assert!(
+        scan_text(&line, &PASSWORD_SCANNER, &ALLOWLIST)
+            .iter()
+            .any(|finding| finding.rule_id == "password-in-url")
+    );
+    assert_ne!(redact_text(&line, &PASSWORD_SCANNER, &ALLOWLIST), line);
+}
+
+#[test]
+fn one_reference_alternative_never_spans_two_url_parts() {
+    for line in [
+        "url = http://localhost:${PORT}?to=${USER}@${DOMAIN}",
+        "url = http://localhost:${PORT}#to=${USER}@${DOMAIN}",
+        r#"let url = "http://localhost:\(port)?to=\(user)@\(domain)""#,
+        r#"let url = "http://localhost:\(port)#to=\(user)@\(domain)""#,
+    ] {
+        assert!(
+            scan_text(line, &PASSWORD_SCANNER, &ALLOWLIST).is_empty(),
+            "{line}"
+        );
+        assert_eq!(redact_text(line, &PASSWORD_SCANNER, &ALLOWLIST), line);
+    }
+}
+
+#[test]
+fn every_url_of_an_unseparated_run_is_reported() {
+    // a host part running to the next whitespace once swallowed every url after the first
+    let secret = opaque(16, 32);
+    let count = 2_000;
+    let line = format!(
+        "x{}",
+        format!("https://user:{secret}@host.example/").repeat(count)
+    );
+    assert_eq!(scan_text(&line, &PASSWORD_SCANNER, &ALLOWLIST).len(), count);
+    assert!(!redact_text(&line, &PASSWORD_SCANNER, &ALLOWLIST).contains(&secret));
+}
+
+#[test]
+fn a_skipped_reference_never_hides_the_next_url_of_a_list() {
+    let secret = opaque(24, 31);
+    for reference in ["${PG_PASS:?}", "${PG_PASS}", "${PG_PASS:-}", r"\(cfg?.pw)"] {
+        for separator in [",", " ", "/"] {
+            let line = format!(
+                "URLS=postgres://app:{reference}@db:5432/app{separator}redis://default:{secret}@cache:6379"
+            );
+            let findings = scan_text(&line, &PASSWORD_SCANNER, &ALLOWLIST);
+            assert_eq!(findings.len(), 1, "{reference}{separator}");
+            let start = line.rfind(&secret).unwrap();
+            assert_eq!(findings[0].range, start..start + secret.len());
+            let redacted = redact_text(&line, &PASSWORD_SCANNER, &ALLOWLIST);
+            assert!(!redacted.contains(&secret));
+            assert!(redacted.contains(reference));
+            let findings = scan(
+                &[file("deploy/env.sh", &line)],
+                &PASSWORD_SCANNER,
+                &ALLOWLIST,
+            );
+            assert_eq!(findings.len(), 1, "diff {reference}{separator}");
+        }
+    }
+}
+
+#[test]
+fn a_swift_interpolation_must_fill_the_password_component() {
+    for reference in [
+        r"\(value)",
+        r"\#(value)",
+        r"\##(value)",
+        r"\(config.password)",
+        r"\#(config?.password)",
+        r"\(value.prefix(8))",
+    ] {
+        assert_password_rule(reference, false);
+        for value in [
+            format!("{reference}abc"),
+            format!("abc{reference}"),
+            format!("{reference}{}", r"\(other)"),
+            format!("{reference}literal{}", r"\(other)"),
+        ] {
+            assert_password_rule(&value, true);
+        }
+    }
+    let secret = opaque(32, 22);
+    for value in [
+        format!(r"\({secret})"),
+        format!(r"\#({secret})"),
+        format!(r"\(value({secret}))"),
+        format!(r"\(value){secret}"),
+        format!(r"{secret}\#(value)"),
+        r"\\(value)".to_owned(),
+        r"\(value".to_owned(),
+    ] {
+        assert_password_rule(&value, true);
+    }
+}
+
+#[test]
+fn inline_markdown_code_preserves_secret_assignment_detection() {
+    let rules = load_rules_with_config(&ProjectConfig::default()).unwrap();
+    let scanner = compile_rules(&rules).unwrap();
+    let secret = opaque(64, 23);
+    let line = format!("The setting is `{{\"secret\":\"{secret}\"}}` in the example.");
+    for path in ["notes/review.md", "notes/review.txt"] {
+        let findings = scan(&[file(path, &line)], &scanner, &ALLOWLIST);
+        let ids: Vec<_> = findings
+            .iter()
+            .map(|finding| finding.rule_id.as_str())
+            .collect();
+        assert!(
+            ids.contains(&"generic-secret-assignment"),
+            "{path}: {ids:?}"
+        );
+    }
+    assert!(
+        scan_text(&line, &scanner, &ALLOWLIST)
+            .iter()
+            .any(|finding| finding.rule_id == "generic-secret-assignment")
+    );
+    assert!(!redact_text(&line, &scanner, &ALLOWLIST).contains(&secret));
 }
 
 #[test]

@@ -993,6 +993,42 @@ fn bash_payload(command: &str, cwd: &Path) -> Vec<u8> {
     .expect("failed to serialize PreToolUse payload")
 }
 
+#[test]
+fn check_codex_url_references_are_clean_but_literal_suffixes_are_blocked() {
+    let env = IsolatedEnv::new();
+    for reference in [
+        "${NAME:-}",
+        "${CI_TOKEN:-${CI_JOB_TOKEN}}",
+        "${NAME:?x}",
+        "${NAME:=$OTHER}",
+        r"\(value)",
+        r"\#(value)",
+    ] {
+        let url = format!("https://deploy:{reference}@git.example.internal/repo");
+        let output = format!("{url}\n{}", "x".repeat(70 * 1024));
+        for payload in [
+            bash_payload(&format!("curl \"{url}\""), env.home()),
+            post_tool_use_payload(&output, env.home()),
+        ] {
+            let result = run_check_codex_in(&env, &payload, env.home());
+            assert_eq!(result.status.code(), Some(0), "reference was blocked");
+            assert!(result.stdout.is_empty());
+            assert!(result.stderr.is_empty());
+        }
+        let mixed = format!("{reference}literal");
+        let url = format!("https://deploy:{mixed}@git.example.internal/repo");
+        for payload in [
+            bash_payload(&format!("curl \"{url}\""), env.home()),
+            post_tool_use_payload(&url, env.home()),
+        ] {
+            let result = run_check_codex_in(&env, &payload, env.home());
+            assert_eq!(result.status.code(), Some(2), "literal suffix was allowed");
+            assert!(result.stdout.is_empty());
+            assert!(!String::from_utf8_lossy(&result.stderr).contains(&mixed));
+        }
+    }
+}
+
 /// disables the built-in rule that catches `generated_github_token`.
 const DISABLE_GITHUB_PAT: &str = "[settings.rules]\n\"github-personal-access-token\" = false\n";
 

@@ -462,6 +462,15 @@ pub fn is_url_password_placeholder(value: &[u8]) -> bool {
 ///
 /// `<PASSWORD>` intentionally overlaps with `is_url_password_placeholder`.
 pub fn is_pure_reference(value: &[u8]) -> bool {
+    reference_at(value, 0)
+}
+
+/// how many shell default expansions may nest inside one another (`${A:-${B:-$C}}`) before a
+/// value stops reading as a reference; the bound keeps a crafted nesting from exhausting the stack.
+const MAX_REFERENCE_DEPTH: usize = 4;
+
+fn reference_at(value: &[u8], depth: usize) -> bool {
+    let nested = |operand: &[u8]| depth < MAX_REFERENCE_DEPTH && reference_at(operand, depth + 1);
     let is_name = |name: &[u8]| {
         matches!(name.first(), Some(byte) if byte.is_ascii_alphabetic() || *byte == b'_')
             && name[1..]
@@ -470,6 +479,44 @@ pub fn is_pure_reference(value: &[u8]) -> bool {
     };
     let has_unquoted_template_content =
         |content: &[u8]| !content.iter().any(|byte| matches!(*byte, b'\'' | b'\"'));
+
+    if value.starts_with(b"\\")
+        && super::litshape::template_hole_end(value, 0) == Some(value.len())
+        && !wordshape::is_chunked_with_digits(value, b"")
+    {
+        return true;
+    }
+
+    if let Some(body) = value
+        .strip_prefix(b"${")
+        .and_then(|body| body.strip_suffix(b"}"))
+    {
+        let name_end = body
+            .iter()
+            .position(|byte| !byte.is_ascii_alphanumeric() && *byte != b'_')
+            .unwrap_or(body.len());
+        let (name, operator) = body.split_at(name_end);
+        let operator = operator.strip_prefix(b":").unwrap_or(operator);
+        // the `-`/`=` operand is the password while the variable is unset, so it is judged as a
+        // bare password would be. the `?` operand is an error message and never a value, but an
+        // opaque one is still read as a credential.
+        if is_name(name)
+            && let Some((&op, operand)) = operator.split_first()
+            && match op {
+                b'?' => {
+                    operand.is_empty()
+                        || nested(operand)
+                        || wordshape::wordlike_piece(operand).is_some()
+                }
+                b'-' | b'=' => {
+                    operand.is_empty() || nested(operand) || is_url_password_placeholder(operand)
+                }
+                _ => false,
+            }
+        {
+            return true;
+        }
+    }
 
     if value.len() >= 5
         && value.starts_with(b"${{")
@@ -916,7 +963,32 @@ mod tests {
             (b"<NAME>", true),
             (b"<PASSWORD>", true),
             (b"${NAME:-x}", false),
+            (b"${NAME-x}", false),
             (b"${NAME:=x}", false),
+            (b"${NAME:-realpass}", false),
+            (b"${NAME:-Passw0rd}", false),
+            (b"${NAME:-}", true),
+            (b"${NAME=}", true),
+            (b"${NAME:-$OTHER}", true),
+            (b"${NAME:-${OTHER}}", true),
+            (b"${NAME-${OTHER:-}}", true),
+            (b"${NAME:=changeme}", true),
+            (b"${NAME:-${OTHER:-realpass}}", false),
+            (b"${NAME:?x}", true),
+            (b"${NAME:?unset}", true),
+            (b"${NAME?}", true),
+            (b"${NAME:?q8Vn3sY6}", false),
+            (b"${NAME:+x}", false),
+            (br"\(value)", true),
+            (br"\#(value)", true),
+            (br"\(value)abc", false),
+            (br"abc\(value)", false),
+            (br"\(value)\(other)", false),
+            (br"\\(value)", false),
+            (b"${NAME:-x}suffix", false),
+            (b"${NAME:-x}${OTHER}", false),
+            (b"${NAME:-x}literal${OTHER}", false),
+            (b"${NAME!x}", false),
             (b"${NAME}suffix", false),
             (b"prefix$NAME", false),
             (b"$NAME/suffix", false),

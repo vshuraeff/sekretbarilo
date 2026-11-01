@@ -267,6 +267,15 @@ These rules require keyword context and apply additional validation (entropy thr
 
 `generic-secret-assignment` reads quoted values and unquoted `NAME=value` / `name: value` assignments the same way as the [generic credential assignments](#generic-credential-assignments) below.
 
+`password-in-url` skips a password component filled entirely by a reference:
+- **Shell parameter.** `$NAME`, `${NAME}`, or a default or error expansion of one.
+  - A `${NAME:-default}`, `${NAME-default}`, `${NAME:=default}` or `${NAME=default}` default is the password whenever the variable is unset, so it is judged as a bare password would be. It is skipped when empty, when it is itself a reference (`${CI_TOKEN:-${CI_JOB_TOKEN}}`, at most five expansions deep) or when it is a placeholder word such as `changeme`. A literal default such as `${NAME:-realpass}` remains a finding.
+  - The message of `${NAME:?message}` is skipped when it is empty, a reference, or reads as words. An opaque message remains a finding.
+  - `${NAME:+value}` is not a reference.
+- **Swift interpolation.** `\(value)` and raw `\#(value)` reuse the bounded template-expression reader.
+
+Literal text before or after either kind of reference, and several references joined together, remain findings. These checks apply to source scans and agent text alike. Markdown inline-code formatting does not exempt a secret assignment.
+
 Password rules (`generic-password-assignment`, `password-in-url`) only flag strong passwords: 8+ chars, mixed case, digits.
 
 Every prefix-anchored rule starts at a token boundary. The byte before the prefix must not be an ASCII word byte, unless it ends one of these:
