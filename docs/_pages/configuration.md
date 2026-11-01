@@ -64,6 +64,8 @@ The agent hooks — `check-file`, `check-codex`, and `redact-claude` — apply o
 
 Outside a git repository the workspace is the hook's working directory, and a `.sekretbarilo.toml` there is always dropped, because nothing vouches for it.
 
+This check trusts the repository's committed configuration; it does not establish who committed it. When the hook's working directory is directly inside a nested repository or another target repository, a regular `.sekretbarilo.toml` committed and unmodified in that repository is trusted within its boundary. Anyone who can commit there can therefore control its allowlists and detection rules, including those used for hook output. Review that repository's committed configuration before relying on its protection. The foreign-symlink restriction below still applies when the working directory is reached through another repository's link.
+
 A layer reached through a symlink inside the workspace is dropped even when the symlink is committed. Git records only the link text, so a clean `git status` says nothing about the file the link points to, which may sit anywhere the agent can write. The test uses the path where discovery found the layer, not its resolved target. A symlink outside the workspace that points into it is judged by its target, which must then be committed. A working directory reached through a symlink that one repository holds and that leads into another repository drops every layer inside that other repository, because its commits vouch for nothing in the workspace holding the link. A layer outside that other repository but inside the one holding the link, such as a layer above a nested repository the link leads into, must be committed unmodified in the repository holding the link. `sekretbarilo doctor` reports symlinked layers along with untracked and modified ones, using the hooks' own judgment.
 
 When a layer is dropped, the hook writes one line to stderr and carries on with the remaining layers:
@@ -418,7 +420,7 @@ paths = [
 ]
 
 # additional stopwords (findings containing these strings are skipped)
-# these are merged with the built-in default stopwords
+# user stopword matching is separate from the built-in placeholder boundaries
 stopwords = [
   "my-project-specific-safe-token",
   "known-test-api-key-12345",
@@ -426,18 +428,20 @@ stopwords = [
 ]
 ```
 
-**Default stopwords** (always active, even if not listed):
+**Built-in stopwords** (for rules whose policy enables them):
 - `example`, `test`, `sample`, `placeholder`, `dummy`, `changeme`, `fake`, `mock`, `todo`, `fixme`, `xxx`, `lorem`, `default`, `replace_me`, `insert_here`, `your_`, `my_`
 
-Word-based stopwords are consulted only by the rules that carry an `entropy_threshold` (35 of the 115 built-in rules at the time of writing; `grep -c '^entropy_threshold' src/config/rules.toml` gives the current count), except `wireguard-key-assignment`, whose exact key shape leaves the built-in words nothing to catch, so it checks only your own stopwords, as plain case-insensitive substrings, as the opt-in `generic-high-entropy-value` does. The other rules still reject the built-in placeholder examples, but ignore stopwords otherwise: a string matching `AKIA` plus sixteen key characters is an AWS key whatever else it contains.
+Entropy-gated rules retain the built-in word list, with placeholder boundaries at the value edges plus any punctuation or whitespace except `+`, `/` and `=`, that is, any ASCII byte other than a letter, a digit or one of those three. So `[example-token-…]`, `test:…`, `(sample-api-key-…)`, `test@…`, `mock,…`, `*placeholder*…` and `#dummy#…` still read as placeholders. The base64 symbols `+`, `/` and `=` do not create those boundaries: an incidental `/test+` or `.fake/` inside an opaque key is not a placeholder word. An `xxx` match must fill a complete component of at least three `x`/`X` characters, rather than occur inside a longer random run. Prefix-like words such as `your_`, `my-` and `<your` keep their self-delimiting edges. This preserves shapes such as `sample_api_key_…`, `your_token_goes_here_…`, `test-client-secret-…` and `dummy-secret-value-for-docs-…` without a guessed letter-percentage or run-length threshold. Base64url values can still collide with a placeholder component surrounded by `_` or `-`; this residual ambiguity is accepted rather than treated as proof that the value is safe.
 
-The split follows the entropy threshold, not the rule class. `mailchimp-api-key`, `facebook-access-token`, `dropbox-api-token` and `launchdarkly-sdk-key` are signature rules that do carry a threshold, so stopwords reach them. `airtable-api-key`, `twilio-api-key`, `azure-storage-account-key`, `password-in-url`, `webhook-url-with-token` and `generic-password-assignment` match case-insensitively but carry no threshold, so word-based stopwords do not apply to them. Password rules reject stopword values separately, and not the same way: `generic-password-assignment`
+`wireguard-key-assignment` explicitly sets `builtin_stopwords = false`, and the opt-in `generic-high-entropy-value` bypasses built-in words independently of this field. Those rules and the three generic credential assignments honor user stopwords as case-insensitive substrings. Other rules' explicit user words retain their existing word-boundary matching, including punctuation boundaries and embedded `x`/`X` runs for a user word `xxx`; the narrower built-in policy does not change that contract. Rules without an entropy threshold normally retain the legacy `x`/`X`-run placeholder check rather than consult the full built-in word list. Password rules have separate behavior: `generic-password-assignment`
 requires the value to also clear the password-strength heuristic, while `password-in-url` instead
 checks the value against a fixed placeholder list (`is_url_password_placeholder` in
 `src/scanner/password.rs`) plus the user's own stopwords, so a weak but non-placeholder URL
 password is still reported.
 
 To allowlist a value a stopword cannot reach, use a per-rule `regexes` entry (see [`[[allowlist.rules]]`](#allowlistrules)).
+
+Built-in rules whose entropy check is anchored by a credential name, authentication header or provider structure set `doc_entropy_bonus = false`. Their base entropy threshold applies equally to source and documentation paths; a credential does not become less sensitive in a README. This includes hex/UUID provider values and HTTP Basic credentials. The heuristic entropy rule already bypasses the documentation bonus in the engine. New custom rules keep both the built-in word list with the placeholder boundaries above and the default documentation entropy bonus unless they opt out. Same-ID overrides inherit omitted behavior fields from the built-in definition.
 
 **Default allowlisted paths** (built-in, automatically skipped):
 - Binary files: `.png`, `.jpg`, `.gif`, `.pdf`, `.exe`, `.dll`, `.zip`, `.gz`, `.tar`, `.mp3`, `.mp4`, etc.
@@ -531,7 +535,7 @@ include_patterns = [
 
 ### `[[rules]]`
 
-Custom detection rules. These are merged with the 115 built-in rule definitions (111 enabled by default).
+Custom detection rules. These are merged with the 116 built-in rule definitions (112 enabled by default).
 
 ```toml
 [[rules]]
@@ -571,7 +575,13 @@ paths = ["test/.*"]                   # skip findings in test files
 - `payload_group` - a nonzero capture group index selecting the payload without its provider prefix. An index missing from the regex is a configuration error.
 - `min_payload_entropy` - minimum Shannon entropy of that payload (0.0 - 8.0). Requires `payload_group`.
 - `reject_hex_payload` - reject a payload made entirely of hex digits. Defaults to `false`. Requires `payload_group`.
+- `builtin_stopwords` - set to `false` to check the value against only your own `[allowlist] stopwords`, not the built-in word list. Defaults to `true`.
+- `doc_entropy_bonus` - set to `false` to exempt the rule from the documentation-file entropy bonus. Defaults to `true`.
+- `skip_template_lines` - set to `false` to keep reporting the rule on a line with template syntax. Defaults to `true`; it matters only for the rules that skip template lines.
+- `resume_at_value_end` - set to `true` to resume scanning each line at the end of the secret value, not of the whole match, so a boundary character that leads the next assignment is not consumed. Defaults to `false`.
+- A same-id override of a built-in rule that omits any of these four behaviour fields, or `base64_credential` below, keeps the built-in rule's value; a new rule id gets the defaults.
 - The two payload checks apply only to a match in which `payload_group` participates. A match through a regex branch without that group is reported without them, so place the payload group inside every alternative the checks should cover.
+- `base64_credential` - keep the secret only when it decodes as HTTP Basic credentials (RFC 7617): standard base64 with optional `=` padding, which must complete the last group when present. The decoded bytes must contain a `:` and no ASCII control byte (0x00-0x1F, 0x7F). RFC 7617 leaves the default charset unspecified but US-ASCII compatible, such as ISO-8859-1 or UTF-8, so every byte from 0x80 up is accepted without inferring an encoding. The user-id may be empty or non-ASCII. Some slash-joined prose also passes these byte checks. Generated dictionary samples retained 0.126-0.136% of lowercase pairs/triples, 1.227-1.353% of capitalized pairs/triples and 1.130% of mixed-case pairs; these rates describe the sample, not arbitrary prose (counts in the rules reference). Defaults to `false`; the built-in `http-basic-auth` sets it.
 - `allowlist.regexes` - value patterns to skip (merged with `[[allowlist.rules]]` overrides)
 - `allowlist.paths` - file path patterns to skip (merged with `[[allowlist.rules]]` overrides)
 

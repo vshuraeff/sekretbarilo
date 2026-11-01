@@ -332,7 +332,7 @@ sekretbarilo check-codex --stdin-json
 ### `sekretbarilo doctor`
 
 Configuration diagnostics include resolved rule-class states, explicit rule-id
-overrides, and enabled/total counts. Defaults enable 111 of 115 built-in
+overrides, and enabled/total counts. Defaults enable 112 of 116 built-in
 rules: `signature` and `contextual` are on, `heuristic` is off, and the three
 public-key rules also require `detect_public_keys`. An explicit rule override is
 shown separately, so `rule class heuristic: disabled (default)` can coexist with

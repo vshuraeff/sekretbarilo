@@ -45,7 +45,7 @@ fn doctor_reports_default_class_states_and_counts() {
         stderr.contains("[INFO] rule class heuristic: disabled (default)"),
         "{stderr}"
     );
-    assert!(stderr.contains("[INFO] rules enabled: 111/115"), "{stderr}");
+    assert!(stderr.contains("[INFO] rules enabled: 112/116"), "{stderr}");
     assert!(
         stderr.contains("public-key rules held back by detect_public_keys = false"),
         "{stderr}"
@@ -82,7 +82,7 @@ fn doctor_counts_the_heuristic_rule_once_enabled() {
     let env = IsolatedEnv::with_heuristic();
     let repo = repo_with_config(&env, "[settings]\nexemption_layer = true\n");
     let (_, stderr) = run(&env, &repo, &["doctor"]);
-    assert!(stderr.contains("rules enabled: 112/115"), "{stderr}");
+    assert!(stderr.contains("rules enabled: 113/116"), "{stderr}");
     assert!(!stderr.contains("no effect on detection"), "{stderr}");
 }
 

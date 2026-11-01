@@ -1,6 +1,7 @@
 // core scanning engine (aho-corasick + regex)
 
 use rayon::prelude::*;
+use std::cell::Cell;
 use std::ops::Range;
 
 #[allow(unused_imports)]
@@ -22,13 +23,6 @@ const PARALLEL_FILE_THRESHOLD: usize = 4;
 
 /// the keywordless tier-3 rule that the exemption layer and the source postures govern.
 const ENTROPY_RULE: &str = "generic-high-entropy-value";
-
-/// the named-key rule whose value is exactly a 32-byte base64 key. its shape and entropy gate
-/// already reject placeholders, so, as on the entropy rule, the built-in word stopwords and the
-/// documentation-file entropy bonus would only drop real keys (about one in 850 holds a run of
-/// three `x`, one in 670 measures below the raised 4.5 bits); user stopwords still apply. nor
-/// does a template expression elsewhere on the line skip it (step 6.5).
-const WIREGUARD_RULE: &str = "wireguard-key-assignment";
 
 /// the contextual rules that read a value under a credential name (`API_KEY`, `*_TOKEN`,
 /// `*_SECRET`) in quoted and unquoted form.
@@ -95,6 +89,142 @@ fn is_source_expression_value(
     (letter_words >= 2 || (letter_words == 1 && value.len() < LONE_WORD_MAX_LEN))
         // recall guard: an opaque value cut into short groups reads as words piece by piece
         && !wordshape::is_chunked_with_digits(value, b"")
+}
+
+/// how many `${A:-${B}}` defaults may nest in a value made of expansions alone.
+const MAX_EXPANSION_DEPTH: usize = 4;
+
+/// the separator bytes that may stand between expansions in a value made of expansions alone.
+const EXPANSION_SEPARATORS: &[u8] = b"-_.:/@+,=~[]()#%?&";
+
+/// total literal separator bytes, including default operands: enough for `}://${` plus one
+/// separator, but below the shortest named-key rule's eight-byte value minimum.
+const MAX_EXPANSION_SEPARATORS: usize = 4;
+
+/// whether a named value is one or more shell parameter expansions and separators alone
+/// (`[${TASK_ID:0:8}]`, `${PREFIX}-${RUN_ID}`): the value is whatever the variables hold, not a
+/// credential. an expansion reads a name or positional parameter, with an optional `#` length or
+/// `!` indirection, an `[@]`/`[*]`/`[n]`/`[name]` subscript, an offset and length of digits, or a
+/// default, alternative or error operator whose operand is empty or holds a nested expansion and
+/// is again expansions and separators alone. a separator is one of `EXPANSION_SEPARATORS`, at most
+/// `MAX_EXPANSION_SEPARATORS` in total across the value and its nested operands; any other byte
+/// outside an expansion (a letter, a digit, a space, a backslash, a non-ascii byte), more literal
+/// separators, a literal operand (`${TOKEN:-<opaque>}`, a
+/// symbols-only `${TOKEN:-<symbols>}` too: the fallback is the value while the variable is unset),
+/// a pattern or substitution operator, or unbalanced braces leave the value to the rule; the chunk
+/// guard keeps a value whose names are cut into short groups reported.
+fn is_expansion_only(value: &[u8]) -> bool {
+    fn holds_expansion(value: &[u8]) -> bool {
+        value.windows(2).any(|pair| pair == b"${")
+    }
+
+    fn expansion_only(value: &[u8], depth: usize, separators: &mut usize) -> bool {
+        let mut index = 0;
+        while index < value.len() {
+            if value[index..].starts_with(b"${") {
+                let Some(end) = expansion_end(value, index + 2, depth, separators) else {
+                    return false;
+                };
+                index = end;
+            } else if EXPANSION_SEPARATORS.contains(&value[index])
+                && *separators < MAX_EXPANSION_SEPARATORS
+            {
+                index += 1;
+                *separators += 1;
+            } else {
+                return false;
+            }
+        }
+        true
+    }
+
+    // the end of the `${...}` whose body starts at `start`, one past its `}`.
+    fn expansion_end(
+        value: &[u8],
+        start: usize,
+        depth: usize,
+        separators: &mut usize,
+    ) -> Option<usize> {
+        let ident = |from: usize| {
+            value[from..]
+                .iter()
+                .position(|byte| !byte.is_ascii_alphanumeric() && *byte != b'_')
+                .map_or(value.len(), |offset| from + offset)
+        };
+        let mut index = start + usize::from(matches!(value.get(start), Some(b'#' | b'!')));
+        let name_end = ident(index);
+        let name = &value[index..name_end];
+        if name.is_empty()
+            || !(name.iter().all(u8::is_ascii_digit)
+                || name[0].is_ascii_alphabetic()
+                || name[0] == b'_')
+        {
+            return None;
+        }
+        index = name_end;
+        if value.get(index) == Some(&b'[') {
+            let subscript_end = if matches!(value.get(index + 1), Some(b'@' | b'*')) {
+                index + 2
+            } else {
+                ident(index + 1)
+            };
+            if subscript_end == index + 1 || value.get(subscript_end) != Some(&b']') {
+                return None;
+            }
+            index = subscript_end + 1;
+        }
+        let digits = |from: usize| {
+            value[from..]
+                .iter()
+                .position(|byte| !byte.is_ascii_digit())
+                .map_or(value.len(), |offset| from + offset)
+        };
+        match value.get(index)? {
+            b'}' => Some(index + 1),
+            b':' if value.get(index + 1).is_some_and(u8::is_ascii_digit) => {
+                index = digits(index + 1);
+                if value.get(index) == Some(&b':') {
+                    let length_end = digits(index + 1);
+                    if length_end == index + 1 {
+                        return None;
+                    }
+                    index = length_end;
+                }
+                (value.get(index) == Some(&b'}')).then_some(index + 1)
+            }
+            b':' | b'-' | b'=' | b'+' | b'?' => {
+                if value[index] == b':' {
+                    index += 1;
+                    if !matches!(value.get(index), Some(b'-' | b'=' | b'+' | b'?')) {
+                        return None;
+                    }
+                }
+                let operand_start = index + 1;
+                let mut open = 1_usize;
+                let mut close = operand_start;
+                while open > 0 {
+                    match value.get(close)? {
+                        b'{' => open += 1,
+                        b'}' => open -= 1,
+                        _ => {}
+                    }
+                    close += 1;
+                }
+                let operand = &value[operand_start..close - 1];
+                (operand.is_empty()
+                    || (depth < MAX_EXPANSION_DEPTH
+                        && holds_expansion(operand)
+                        && expansion_only(operand, depth + 1, separators)))
+                .then_some(close)
+            }
+            _ => None,
+        }
+    }
+
+    let mut separators = 0;
+    holds_expansion(value)
+        && expansion_only(value, 0, &mut separators)
+        && !crate::scanner::wordshape::is_chunked_with_digits(value, b"")
 }
 
 /// whether the matched unquoted assignment names a secret reference rather than a secret value.
@@ -167,7 +297,9 @@ fn ends_word(input: &[u8], end: usize) -> bool {
 /// the value sits inside a string, an odd number of unescaped `"` lying between the start of its
 /// line and the value. this reads json-printed command output (`{"stdout":"x\nTOKEN=..."}`) and
 /// a container's environment list (`["TOKEN=...", ...]`); an escaped `\"` opens no string.
-fn ends_quoted_string(input: &[u8], start: usize, end: usize) -> bool {
+/// `parity` carries the quote state of an earlier call forward, so the values of one long line
+/// read its bytes once in all rather than once each.
+fn ends_quoted_string(input: &[u8], parity: &Cell<QuoteParity>, start: usize, end: usize) -> bool {
     if input.get(end) != Some(&b'"')
         || !input.get(end + 1).is_none_or(|next| {
             next.is_ascii_whitespace() || matches!(next, b'\0' | b',' | b'}' | b']')
@@ -175,18 +307,36 @@ fn ends_quoted_string(input: &[u8], start: usize, end: usize) -> bool {
     {
         return false;
     }
-    let line_start = memchr::memrchr(b'\n', &input[..start]).map_or(0, |index| index + 1);
-    let (mut inside, mut escaped) = (false, false);
-    for &byte in &input[line_start..start] {
-        if escaped {
-            escaped = false;
+    let mut state = parity.get();
+    if state.at > start {
+        state = QuoteParity::default();
+    }
+    if let Some(index) = memchr::memrchr(b'\n', &input[state.at..start]) {
+        state = QuoteParity {
+            at: state.at + index + 1,
+            ..QuoteParity::default()
+        };
+    }
+    for &byte in &input[state.at..start] {
+        if state.escaped {
+            state.escaped = false;
         } else if byte == b'\\' {
-            escaped = true;
+            state.escaped = true;
         } else if byte == b'"' {
-            inside = !inside;
+            state.inside = !state.inside;
         }
     }
-    inside
+    state.at = start;
+    parity.set(state);
+    state.inside
+}
+
+/// the quote state `ends_quoted_string` reached at byte `at`, from the start of that byte's line.
+#[derive(Clone, Copy, Default)]
+struct QuoteParity {
+    at: usize,
+    inside: bool,
+    escaped: bool,
 }
 
 /// a detected secret finding
@@ -204,7 +354,8 @@ pub struct Finding {
 /// pipeline per line:
 ///   1. global path allowlist (skip binary, vendor, generated files)
 ///   2. aho-corasick keyword pre-filter (single pass)
-///   3. regex matching (keywordless rules and rules whose keywords matched)
+///   3. regex matching (keywordless rules and rules whose keywords matched; a named-key quoted
+///      value whose quote closes the name's own literal is no candidate, `named_key_captures`)
 ///   4. extract secret via capture group
 ///      4a. source posture: classify paths only with path filters enabled; known
 ///      literal context gates code independently of exemption_layer. file/testpath
@@ -222,9 +373,10 @@ pub struct Finding {
 ///      rules drops a word it read only in part and a path-shaped, reference-rooted, code or
 ///      word value (independent of the exemption switch)
 ///   5. per-rule allowlist check (value regex + path match)
-///   6. variable references (URL passwords skip pure references only, not defaults)
-///      6.5. template lines skip context-dependent and password/credential rules (not wireguard keys)
-///   7. stopwords (entropy values and wireguard keys use user words; URL passwords use user
+///   6. variable references (URL passwords skip pure references only, not defaults; named-key
+///      values made of expansions and separators alone, `is_expansion_only`)
+///      6.5. template lines skip context-dependent and password/credential rules (unless a rule sets `skip_template_lines = false`)
+///   7. stopwords (entropy values and rules with `builtin_stopwords = false` use user words; URL passwords use user
 ///      words and URL placeholders only; other rules retain their tier-specific filters)
 ///   8. hash detection (skip if it's a hash)
 ///      8.5. password strength veto for generic-password-assignment only
@@ -438,28 +590,29 @@ fn is_password_rule(rule_id: &str) -> bool {
 
 // keep unquoted quote bytes only for line-start/export keys with whitespace and no `(` value byte.
 // other generic entropy shapes retain the legacy pre-quote truncation boundary.
+// the prefix is read back from the key over its blanks only, so a key late on a long line costs
+// those few bytes, not the line before it.
 fn is_env_style_assignment(input: &[u8], key_start: usize, value: &[u8]) -> bool {
     if value.contains(&b'(') {
         return false;
     }
 
-    let line_start = input[..key_start]
-        .iter()
-        .rposition(|&byte| byte == b'\n')
-        .map_or(0, |index| index + 1);
-    let prefix = &input[line_start..key_start];
-    if prefix.iter().all(|&byte| matches!(byte, b'\t' | b' ')) {
+    let blanks_before = |end: usize| {
+        end - input[..end]
+            .iter()
+            .rev()
+            .take_while(|&&byte| matches!(byte, b'\t' | b' '))
+            .count()
+    };
+    let starts_line = |index: usize| index == 0 || input[index - 1] == b'\n';
+    let gap_start = blanks_before(key_start);
+    if starts_line(gap_start) {
         return true;
     }
-
-    let prefix = &prefix[prefix
-        .iter()
-        .position(|&byte| !matches!(byte, b'\t' | b' '))
-        .unwrap_or(prefix.len())..];
-    let Some(prefix) = prefix.strip_prefix(b"export") else {
-        return false;
-    };
-    !prefix.is_empty() && prefix.iter().all(|&byte| matches!(byte, b'\t' | b' '))
+    gap_start < key_start
+        && gap_start.checked_sub(b"export".len()).is_some_and(|word| {
+            input[word..gap_start] == *b"export" && starts_line(blanks_before(word))
+        })
 }
 
 /// shell script extensions where an unquoted `KEY=value` word is source syntax, not incidental
@@ -707,20 +860,7 @@ fn is_config_value_literal(
         ConfigSyntax::Toml | ConfigSyntax::Env => separator.trim_ascii() == b"=",
     };
     let prefix_ok = match syntax {
-        ConfigSyntax::Yaml => {
-            let line_start = input[..key_start]
-                .iter()
-                .rposition(|&byte| byte == b'\n')
-                .map_or(0, |index| index + 1);
-            let mut prefix = input[line_start..key_start].trim_ascii_start();
-            while let Some(rest) = prefix.strip_prefix(b"-").filter(|rest| {
-                rest.first()
-                    .is_some_and(|&byte| matches!(byte, b' ' | b'\t'))
-            }) {
-                prefix = rest.trim_ascii_start();
-            }
-            prefix.is_empty()
-        }
+        ConfigSyntax::Yaml => starts_yaml_entry(input, key_start),
         _ => is_env_style_assignment(input, key_start, secret),
     };
     if !separator_ok || !prefix_ok {
@@ -737,6 +877,22 @@ fn is_config_value_literal(
     comment.is_empty()
         || (comment.len() < tail.len()
             && (comment[0] == b'#' || (syntax == ConfigSyntax::Ini && comment[0] == b';')))
+}
+
+/// whether only indentation and `- ` list markers lie between the start of its line and a yaml
+/// key: read back from the key while the bytes are whitespace or a `-` followed by a space or tab,
+/// so a key late on a long line stops at the text before it.
+fn starts_yaml_entry(input: &[u8], key_start: usize) -> bool {
+    let mut index = key_start;
+    while index > 0 {
+        let byte = input[index - 1];
+        let marker = byte == b'-' && index < key_start && matches!(input[index], b' ' | b'\t');
+        if byte == b'\n' || !(marker || byte.is_ascii_whitespace()) {
+            break;
+        }
+        index -= 1;
+    }
+    index == 0 || input[index - 1] == b'\n'
 }
 
 // find the legacy boundary when the env-style gate declines the full unquoted capture.
@@ -824,6 +980,7 @@ fn scan_line(ctx: &ScanLineContext<'_>, candidate_bits: &mut [bool], findings: &
         } else {
             ctx.literals
         },
+        lines: LineMemo::default(),
     };
     let clip = ctx.parsed.and_then(|parsed| {
         ctx.scanner
@@ -1038,6 +1195,28 @@ pub(super) struct MatchContext<'a> {
     pub is_doc_file: bool,
     pub generic_rule_skip: Option<&'static str>,
     pub literals: Option<&'a LineLiterals>,
+    /// per-input state; each context starts with a fresh `LineMemo::default()`.
+    pub lines: LineMemo,
+}
+
+/// the whole-line checks a candidate reads (`LineFact`), kept for the line of the latest candidate,
+/// and the quote state of `ends_quoted_string`. without them k candidates on one long line read the
+/// line k times, which makes a dense line quadratic. one rule's candidates arrive in input order, so
+/// one line slot is enough: it changes once per line and rule.
+#[derive(Default)]
+pub(super) struct LineMemo {
+    line: Cell<Option<(usize, usize)>>,
+    // one slot per `LineFact`, indexed by its discriminant.
+    facts: [Cell<Option<bool>>; 4],
+    quote_parity: Cell<QuoteParity>,
+}
+
+#[derive(Clone, Copy)]
+enum LineFact {
+    Import,
+    Template,
+    HashContext,
+    PublicKey,
 }
 
 /// diagnostic only; pseudo-findings count as findings for scan/audit exit codes when the flag is on, and the flag exists only on the CLI so hook surfaces never see them.
@@ -1055,6 +1234,26 @@ fn trace_exemption(
 impl MatchContext<'_> {
     fn surrounding_lines(&self, range: Range<usize>) -> &[u8] {
         &self.input[self.surrounding_range(range)]
+    }
+
+    /// `check` over the input bytes of `line`, computed once while candidates stay on that line.
+    fn line_fact(
+        &self,
+        line: &Range<usize>,
+        fact: LineFact,
+        check: impl FnOnce(&[u8]) -> bool,
+    ) -> bool {
+        let memo = &self.lines;
+        if memo.line.get() != Some((line.start, line.end)) {
+            memo.line.set(Some((line.start, line.end)));
+            memo.facts.iter().for_each(|slot| slot.set(None));
+        }
+        let slot = &memo.facts[fact as usize];
+        slot.get().unwrap_or_else(|| {
+            let value = check(&self.input[line.clone()]);
+            slot.set(Some(value));
+            value
+        })
     }
 
     fn surrounding_range(&self, range: Range<usize>) -> Range<usize> {
@@ -1138,8 +1337,10 @@ pub(super) fn scan_matches(
                 ctx.input,
                 rule.entropy_threshold,
             )
-        } else if rule.id == WIREGUARD_RULE {
+        } else if rule.resume_at_value_end {
             value_end_captures(rule, ctx.input)
+        } else if NAMED_KEY_RULES.contains(&rule.id.as_str()) {
+            named_key_captures(rule, ctx.input)
         } else {
             rule.regex.captures_iter(ctx.input).collect()
         };
@@ -1211,6 +1412,60 @@ fn value_end_captures<'h>(
         found.push(captures);
     }
     found
+}
+
+/// the named-key capture cursor. the quote after the separator opens a quoted value unless it
+/// closes a string literal that began right before the name: in `contains("token="), message, "x")`
+/// the name and separator are the literal's text and the argument tail after the quote is code.
+/// such a candidate is dropped and the scan resumes behind that quote, so a later assignment on the
+/// line is still read. the literal is recognised when the name, walked back over name bytes
+/// (letters, digits, `_`, `.`, `-`), starts right after the same quote character and no such quote
+/// lies between the name and the value's quote (`{"token": "..."}` closes its key before the
+/// separator). a name inside a longer literal (`"auth token="`) is not recognised and is read as
+/// before, only up to a quote on the same line.
+fn named_key_captures<'h>(
+    rule: &crate::scanner::rules::CompiledRule,
+    input: &'h [u8],
+) -> Vec<regex::bytes::Captures<'h>> {
+    let mut found = Vec::new();
+    let mut offset = 0;
+    while offset <= input.len() {
+        let Some(captures) = rule.regex.captures_at(input, offset) else {
+            break;
+        };
+        let Some(matched) = captures.get(0) else {
+            break;
+        };
+        let quoted = captures
+            .get(rule.secret_group)
+            .filter(|_| {
+                rule.capture_indices
+                    .context_unquoted
+                    .and_then(|group| captures.get(group))
+                    .is_none()
+            })
+            .filter(|value| value.start() > matched.start());
+        if let Some(value) = quoted
+            && closes_name_literal(input, matched.start(), value.start() - 1)
+        {
+            offset = value.start();
+            continue;
+        }
+        offset = matched.end().max(matched.start() + 1);
+        found.push(captures);
+    }
+    found
+}
+
+/// whether the quote at `quote` closes a string literal opened by the same quote character right
+/// before the name starting at `name_start` (see `named_key_captures`).
+fn closes_name_literal(input: &[u8], name_start: usize, quote: usize) -> bool {
+    let delimiter = input[quote];
+    let opener = input[..name_start]
+        .iter()
+        .rposition(|byte| !(byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'.' | b'-')));
+    opener.is_some_and(|index| input[index] == delimiter)
+        && !input[name_start..quote].contains(&delimiter)
 }
 
 /// the tier-3 rule's own capture cursor. an unquoted boundary may consume the next assignment's
@@ -1570,21 +1825,46 @@ fn is_class_escape(byte: u8) -> bool {
 /// regular expression: the word before its key, past one opening quote, is `grep`, `egrep`, `rg`,
 /// `sed` or `awk`, a `--regexp`, `--extended-regexp` or `--perl-regexp` option, or a short-option
 /// cluster carrying `E` or `P` (`-E`, `-Eqi`, `-oP`).
+/// the input is read back from `start` only as far as that word needs, so a key late on a long
+/// line costs the bytes before it on its own, not the line.
 fn follows_regex_command(input: &[u8], start: usize) -> bool {
-    let line_start = input[..start]
-        .iter()
-        .rposition(|&byte| matches!(byte, b'\n' | b'\r'))
-        .map_or(0, |index| index + 1);
-    let before = input[line_start..start].trim_ascii_end();
-    let before = before
-        .strip_suffix(b"'")
-        .or_else(|| before.strip_suffix(b"\""))
-        .unwrap_or(before)
-        .trim_ascii_end();
-    let word = &before[before
-        .iter()
-        .rposition(|byte| byte.is_ascii_whitespace())
-        .map_or(0, |index| index + 1)..];
+    // the longest word named above; a longer word can only be an option cluster.
+    const LONGEST_NAME: usize = b"--extended-regexp".len();
+    let blanks_before = |end: usize| {
+        end - input[..end]
+            .iter()
+            .rev()
+            .take_while(|byte| byte.is_ascii_whitespace() && !matches!(byte, b'\n' | b'\r'))
+            .count()
+    };
+    let mut end = blanks_before(start);
+    if end > 0 && matches!(input[end - 1], b'\'' | b'"') {
+        end = blanks_before(end - 1);
+    }
+    let word_start = end
+        - input[..end]
+            .iter()
+            .rev()
+            .take(LONGEST_NAME + 1)
+            .take_while(|byte| !byte.is_ascii_whitespace())
+            .count();
+    let word = if word_start == 0 || input[word_start - 1].is_ascii_whitespace() {
+        &input[word_start..end]
+    } else {
+        let letters = input[..end]
+            .iter()
+            .rev()
+            .take_while(|byte| byte.is_ascii_alphabetic())
+            .count();
+        let dash = end - letters;
+        if dash == 0
+            || input[dash - 1] != b'-'
+            || (dash > 1 && !input[dash - 2].is_ascii_whitespace())
+        {
+            return false;
+        }
+        &input[dash - 1..end]
+    };
     matches!(
         word,
         b"grep"
@@ -1986,6 +2266,55 @@ impl<'a> Candidate<'a> {
     }
 }
 
+/// http basic credentials (rfc 7617): standard base64 of `user-id ":" password`. rfc 7617 leaves
+/// the default charset to any us-ascii compatible encoding (iso-8859-1 and utf-8 among them), so
+/// the decoded bytes must hold a `:` and no ascii control byte (0x00..=0x1f, 0x7f), and every byte
+/// from 0x80 up is accepted, because inferring an encoding can suppress valid legacy credentials.
+/// the user-id may be empty. padding may be stripped, leaving a length of 2 or 3 mod 4; padding
+/// that is present must complete the last group. some slash-joined prose also meets these byte
+/// checks. a generated dictionary sample retained 0.126-0.136% of lowercase pairs/triples,
+/// 1.227-1.353% of capitalized pairs/triples and 1.130% of mixed-case pairs; these rates describe
+/// that sample, not all prose.
+fn is_basic_credential(value: &[u8]) -> bool {
+    let data = value
+        .strip_suffix(b"==")
+        .or_else(|| value.strip_suffix(b"="))
+        .unwrap_or(value);
+    let padded = data.len() != value.len();
+    if data.len() % 4 == 1 || (padded && !value.len().is_multiple_of(4)) {
+        return false;
+    }
+    let Some(decoded) = decode_base64(data) else {
+        return false;
+    };
+    decoded.contains(&b':') && !decoded.iter().any(u8::is_ascii_control)
+}
+
+/// standard-alphabet base64 without padding; a trailing group of 2 or 3 symbols yields 1 or 2
+/// bytes.
+fn decode_base64(data: &[u8]) -> Option<Vec<u8>> {
+    let sextet = |byte: u8| -> Option<u32> {
+        let value = match byte {
+            b'A'..=b'Z' => byte - b'A',
+            b'a'..=b'z' => byte - b'a' + 26,
+            b'0'..=b'9' => byte - b'0' + 52,
+            b'+' => 62,
+            b'/' => 63,
+            _ => return None,
+        };
+        Some(u32::from(value))
+    };
+    let mut decoded = Vec::with_capacity(data.len() / 4 * 3 + 2);
+    for group in data.chunks(4) {
+        let mut word = 0_u32;
+        for (index, &byte) in group.iter().enumerate() {
+            word |= sextet(byte)? << (18 - 6 * index);
+        }
+        decoded.extend_from_slice(&word.to_be_bytes()[1..group.len()]);
+    }
+    Some(decoded)
+}
+
 /// call bodies have no key: key allowances and the assignment-only hex bypass cannot apply.
 /// a 40-byte hex body below 4.0 bits therefore remains a recall residual.
 fn evaluate_candidate(
@@ -2024,7 +2353,12 @@ fn evaluate_candidate(
             .is_some_and(|value| value.range() == original_range);
     let unquoted_word_ends = unquoted_arm
         && (ends_word(ctx.input, original_range.end)
-            || ends_quoted_string(ctx.input, original_range.start, original_range.end));
+            || ends_quoted_string(
+                ctx.input,
+                &ctx.lines.quote_parity,
+                original_range.start,
+                original_range.end,
+            ));
     if unquoted_arm && matches!(secret.last(), Some(b',' | b';')) && secret.len() > 1 {
         secret_range.end -= 1;
         secret = &ctx.input[secret_range.clone()];
@@ -2118,6 +2452,9 @@ fn evaluate_candidate(
             return;
         }
     }
+    if rule.base64_credential && !is_basic_credential(secret) {
+        return;
+    }
     if rule.id == "generic-password-assignment"
         && let Some(key_match) = captures.named(rule.capture_indices.password_key)
     {
@@ -2164,7 +2501,8 @@ fn evaluate_candidate(
         return;
     }
 
-    let line = ctx.surrounding_lines(
+    // whole-line checks go through `line_fact`, so the candidates of one line share one reading.
+    let line_range = ctx.surrounding_range(
         captures
             .get(0)
             .map(|m| m.range())
@@ -2193,7 +2531,11 @@ fn evaluate_candidate(
             trace_exemption(ctx, emit, label, secret_range.clone());
             return;
         }
-        if kind != CaptureKind::Call && ctx.allowlist.is_import_line(line) {
+        if kind != CaptureKind::Call
+            && ctx.line_fact(&line_range, LineFact::Import, |line| {
+                ctx.allowlist.is_import_line(line)
+            })
+        {
             trace_exemption(ctx, emit, "import", secret_range.clone());
             return;
         }
@@ -2320,16 +2662,12 @@ fn evaluate_candidate(
         // own assignment carries a hash context word is a hash, not a secret. the word is looked
         // for in the stretch of the line the assignment owns, so a digest assigned before it on
         // the same line does not turn a later hex value into a hash.
-        let line_range = ctx.surrounding_range(
-            captures
-                .get(0)
-                .map(|m| m.range())
-                .unwrap_or_else(|| original_range.clone()),
-        );
-        let hash_scope = captures.scope().map_or(line, |scope| {
-            let start = scope.start.clamp(line_range.start, line_range.end);
-            &ctx.input[start..scope.end.clamp(start, line_range.end)]
-        });
+        let hash_scope = captures
+            .scope()
+            .map_or(&ctx.input[line_range.clone()], |scope| {
+                let start = scope.start.clamp(line_range.start, line_range.end);
+                &ctx.input[start..scope.end.clamp(start, line_range.end)]
+            });
         hex_bypass = matches!(
             kind,
             CaptureKind::Double
@@ -2369,6 +2707,7 @@ fn evaluate_candidate(
         password::is_pure_reference(secret)
     } else {
         ctx.allowlist.is_variable_reference(secret)
+            || (NAMED_KEY_RULES.contains(&rule.id.as_str()) && is_expansion_only(secret))
     };
     if is_reference {
         return;
@@ -2379,11 +2718,12 @@ fn evaluate_candidate(
     // skip findings from context-dependent rules (tier 2/3). tier 1
     // prefix rules are NOT affected — a real AKIA... key on a template
     // line is still a finding, even if the rule uses entropy.
-    // the wireguard value is an exact key shape a template expression can never take.
     if !is_entropy_value
-        && rule.id != WIREGUARD_RULE
+        && rule.skip_template_lines
         && (rule.context_dependent || is_password_rule(&rule.id) || is_credential_rule(&rule.id))
-        && ctx.allowlist.is_template_line(line)
+        && ctx.line_fact(&line_range, LineFact::Template, |line| {
+            ctx.allowlist.is_template_line(line)
+        })
     {
         return;
     }
@@ -2404,7 +2744,7 @@ fn evaluate_candidate(
         {
             return;
         }
-    } else if is_entropy_value || rule.id == WIREGUARD_RULE {
+    } else if is_entropy_value || !rule.builtin_stopwords {
         if ctx.allowlist.contains_user_stopword(secret) {
             return;
         }
@@ -2422,18 +2762,27 @@ fn evaluate_candidate(
     // step 8: hash detection - skip hashes
     // a named-key unquoted value reads hash context from its own assignment only, so a digest
     // elsewhere on the line (`CHECKSUM=<hex> API_KEY=<hex>`) cannot veto it.
-    let hash_scope = if unquoted_arm {
-        captures
-            .get(0)
-            .map_or(secret, |m| &ctx.input[m.start()..secret_range.end])
-    } else {
-        line
-    };
     let hash_value = secret
         .strip_prefix(b"0x")
         .or_else(|| secret.strip_prefix(b"0X"))
         .unwrap_or(secret);
-    if !is_entropy_value && hash_detect::is_hash_in_context(hash_value, hash_scope) {
+    if !is_entropy_value
+        && if unquoted_arm {
+            hash_detect::is_hash_in_context(
+                hash_value,
+                captures
+                    .get(0)
+                    .map_or(secret, |m| &ctx.input[m.start()..secret_range.end]),
+            )
+        } else {
+            hash_detect::is_hash_shaped(hash_value)
+                && ctx.line_fact(
+                    &line_range,
+                    LineFact::HashContext,
+                    hash_detect::is_git_context,
+                )
+        }
+    {
         return;
     }
 
@@ -2474,7 +2823,13 @@ fn evaluate_candidate(
     // step 8.7: OpenSSH public key detection (single-line format).
     // lines like "ssh-rsa AAAA... user@host" contain high-entropy
     // base64 that triggers token rules. skip unless detect_public_keys is on.
-    if !ctx.allowlist.detect_public_keys && pubkey::is_openssh_public_key(line) {
+    if !ctx.allowlist.detect_public_keys
+        && ctx.line_fact(
+            &line_range,
+            LineFact::PublicKey,
+            pubkey::is_openssh_public_key,
+        )
+    {
         return;
     }
 
@@ -2509,7 +2864,7 @@ fn evaluate_candidate(
         && let Some(mut threshold) = effective_threshold(ctx, rule)
     {
         // apply doc file bonus (raise threshold = less likely to flag)
-        if ctx.is_doc_file && !is_entropy_value && rule.id != WIREGUARD_RULE {
+        if ctx.is_doc_file && !is_entropy_value && rule.doc_entropy_bonus {
             threshold += ctx.allowlist.doc_entropy_bonus();
         }
         if !entropy::passes_entropy_check(secret, threshold) {
@@ -2628,6 +2983,7 @@ mod tests {
                 is_doc_file: false,
                 generic_rule_skip: generic_rule_disabled.then_some("file"),
                 literals: None,
+                lines: LineMemo::default(),
             };
             let mut found = Vec::new();
             scan_matches(&ctx, &mut [false], |id, range| {
@@ -2661,6 +3017,7 @@ mod tests {
             is_doc_file: false,
             generic_rule_skip: None,
             literals: None,
+            lines: LineMemo::default(),
         };
         let mut found = Vec::new();
         scan_matches(&ctx, &mut [false], |id, range| {
@@ -2683,6 +3040,7 @@ mod tests {
             is_doc_file: false,
             generic_rule_skip: None,
             literals: None,
+            lines: LineMemo::default(),
         };
         let mut found = Vec::new();
         scan_matches(&ctx, &mut [false], |id, range| {
@@ -2712,6 +3070,7 @@ mod tests {
             is_doc_file: false,
             generic_rule_skip: None,
             literals: None,
+            lines: LineMemo::default(),
         };
         let mut found = Vec::new();
         scan_matches(&ctx, &mut [false], |id, range| {
@@ -2746,6 +3105,11 @@ mod tests {
             payload_group: None,
             min_payload_entropy: None,
             reject_hex_payload: false,
+            builtin_stopwords: None,
+            doc_entropy_bonus: None,
+            skip_template_lines: None,
+            resume_at_value_end: None,
+            base64_credential: None,
             allowlist: RuleAllowlist::default(),
             class: None,
         }
@@ -2789,6 +3153,178 @@ mod tests {
     fn github_token() -> String {
         let body: String = generated_token().chars().cycle().take(36).collect();
         format!("ghp_{body}")
+    }
+
+    fn field_rule(pattern: &str, threshold: f64, tweak: impl FnOnce(&mut Rule)) -> CompiledScanner {
+        let mut rule = make_rule("field-rule", pattern, 1, vec!["tok"], Some(threshold));
+        tweak(&mut rule);
+        make_scanner(vec![rule])
+    }
+
+    fn field_hits(scanner: &CompiledScanner, path: &str, line: &str) -> usize {
+        let files = [make_file(path, vec![(1, line.as_bytes())])];
+        scan(&files, scanner, &default_al()).len()
+    }
+
+    #[test]
+    fn skip_template_lines_field_controls_the_template_skip() {
+        let value = generated_token();
+        let line = format!("tok={value} # {{{{ note }}}}");
+        for (skip, expected) in [(true, 0), (false, 1)] {
+            let scanner = field_rule(r"(?i)tok=([A-Za-z0-9]{20,})", 3.0, |r| {
+                r.skip_template_lines = Some(skip)
+            });
+            assert_eq!(field_hits(&scanner, "a.txt", &line), expected, "{skip}");
+        }
+    }
+
+    #[test]
+    fn builtin_stopwords_field_leaves_only_user_stopwords() {
+        let line = "tok=qwrtzpdkmn_example_hjklsfgcx";
+        for (builtin, expected) in [(true, 0), (false, 1)] {
+            let scanner = field_rule(r"(?i)tok=([A-Za-z0-9_]{20,})", 3.0, |r| {
+                r.builtin_stopwords = Some(builtin)
+            });
+            assert_eq!(field_hits(&scanner, "a.txt", line), expected, "{builtin}");
+        }
+        let scanner = field_rule(r"(?i)tok=([A-Za-z0-9_]{20,})", 3.0, |r| {
+            r.builtin_stopwords = Some(false)
+        });
+        let al = CompiledAllowlist::new(&[], &["hjkl".to_string()], None, &[], false).unwrap();
+        let files = [make_file("a.txt", vec![(1, line.as_bytes())])];
+        assert!(scan(&files, &scanner, &al).is_empty());
+    }
+
+    #[test]
+    fn doc_entropy_bonus_field_controls_the_doc_file_bonus() {
+        // twelve distinct symbols, each twice: 3.58 bits, above 3.0 and below the doc 4.0
+        let line = "tok=qwrtzpdkmnbvqwrtzpdkmnbv";
+        for (bonus, doc_hits) in [(true, 0), (false, 1)] {
+            let scanner = field_rule(r"(?i)tok=([A-Za-z0-9]{20,})", 3.0, |r| {
+                r.doc_entropy_bonus = Some(bonus)
+            });
+            assert_eq!(field_hits(&scanner, "a.txt", line), 1, "{bonus}");
+            assert_eq!(field_hits(&scanner, "README.md", line), doc_hits, "{bonus}");
+        }
+    }
+
+    #[test]
+    fn resume_at_value_end_field_reads_a_value_whose_boundary_leads_the_next() {
+        let (first, second) = (generated_token(), generated_token().to_uppercase());
+        let line = format!(";tok={first};tok={second};");
+        for (resume, expected) in [(false, 1), (true, 2)] {
+            let scanner = field_rule(r"(?i)(?:^|;)tok=([A-Za-z0-9]{20,})(?:;|$)", 3.0, |r| {
+                r.resume_at_value_end = Some(resume)
+            });
+            assert_eq!(field_hits(&scanner, "a.txt", &line), expected, "{resume}");
+        }
+    }
+
+    // a user rule merged over the embedded set under `id`, scanned alone
+    fn merged_rule_scanner(
+        id: &str,
+        pattern: &str,
+        tweak: impl FnOnce(&mut Rule),
+    ) -> CompiledScanner {
+        let mut rule = make_rule(id, pattern, 1, vec!["tok"], Some(3.0));
+        tweak(&mut rule);
+        let merged = crate::scanner::rules::merge_rules(load_default_rules().unwrap(), vec![rule]);
+        make_scanner(merged.into_iter().filter(|r| r.id == id).collect())
+    }
+
+    const WG: &str = "wireguard-key-assignment";
+
+    #[test]
+    fn wireguard_override_omitting_the_fields_keeps_the_builtin_behaviour() {
+        let alnum = r"(?i)tok=([A-Za-z0-9]{20,})";
+        let word = r"(?i)tok=([A-Za-z0-9_]{20,})";
+        let hits = |s: &CompiledScanner, path: &str, line: &str| field_hits(s, path, line);
+
+        // builtin stopword in the value is not a reason to drop it
+        let line = "tok=qwrtzpdkmn_example_hjklsfgcx";
+        assert_eq!(
+            hits(&merged_rule_scanner(WG, word, |_| {}), "a.txt", line),
+            1
+        );
+        assert_eq!(
+            hits(
+                &merged_rule_scanner(WG, word, |r| r.builtin_stopwords = Some(true)),
+                "a.txt",
+                line
+            ),
+            0
+        );
+        assert_eq!(
+            hits(&merged_rule_scanner("new-id", word, |_| {}), "a.txt", line),
+            0
+        );
+
+        // doc-file entropy bonus
+        let line = "tok=qwrtzpdkmnbvqwrtzpdkmnbv";
+        assert_eq!(
+            hits(&merged_rule_scanner(WG, alnum, |_| {}), "README.md", line),
+            1
+        );
+        assert_eq!(
+            hits(
+                &merged_rule_scanner(WG, alnum, |r| r.doc_entropy_bonus = Some(true)),
+                "README.md",
+                line
+            ),
+            0
+        );
+        assert_eq!(
+            hits(
+                &merged_rule_scanner("new-id", alnum, |_| {}),
+                "README.md",
+                line
+            ),
+            0
+        );
+
+        // template-line skip
+        let line = format!("tok={} # {{{{ note }}}}", generated_token());
+        assert_eq!(
+            hits(&merged_rule_scanner(WG, alnum, |_| {}), "a.txt", &line),
+            1
+        );
+        assert_eq!(
+            hits(
+                &merged_rule_scanner(WG, alnum, |r| r.skip_template_lines = Some(true)),
+                "a.txt",
+                &line
+            ),
+            0
+        );
+        assert_eq!(
+            hits(
+                &merged_rule_scanner("new-id", alnum, |_| {}),
+                "a.txt",
+                &line
+            ),
+            0
+        );
+
+        // cursor resumes at the value end
+        let (first, second) = (generated_token(), generated_token().to_uppercase());
+        let line = format!(";tok={first};tok={second};");
+        let pair = r"(?i)(?:^|;)tok=([A-Za-z0-9]{20,})(?:;|$)";
+        assert_eq!(
+            hits(&merged_rule_scanner(WG, pair, |_| {}), "a.txt", &line),
+            2
+        );
+        assert_eq!(
+            hits(
+                &merged_rule_scanner(WG, pair, |r| r.resume_at_value_end = Some(false)),
+                "a.txt",
+                &line
+            ),
+            1
+        );
+        assert_eq!(
+            hits(&merged_rule_scanner("new-id", pair, |_| {}), "a.txt", &line),
+            1
+        );
     }
 
     #[test]
@@ -3326,6 +3862,11 @@ mod tests {
             payload_group: None,
             min_payload_entropy: None,
             reject_hex_payload: false,
+            builtin_stopwords: None,
+            doc_entropy_bonus: None,
+            skip_template_lines: None,
+            resume_at_value_end: None,
+            base64_credential: None,
             allowlist: RuleAllowlist {
                 regexes: vec!["AKIAIOSFODNN7EXAMPLE".to_string()],
                 paths: vec![],
@@ -3401,6 +3942,11 @@ mod tests {
             payload_group: None,
             min_payload_entropy: None,
             reject_hex_payload: false,
+            builtin_stopwords: None,
+            doc_entropy_bonus: None,
+            skip_template_lines: None,
+            resume_at_value_end: None,
+            base64_credential: None,
             allowlist: RuleAllowlist {
                 regexes: vec!["AKIAIOSFODNN7EXAMPLE".to_string()],
                 paths: vec![],
@@ -3549,14 +4095,257 @@ mod tests {
 
     #[test]
     fn a_context_value_may_end_the_string_holding_it() {
-        assert!(ends_quoted_string(br#"{"stdout":"API_KEY=value"}"#, 19, 24));
-        assert!(ends_quoted_string(br#"["API_KEY=value", "X=1"]"#, 10, 15));
-        assert!(ends_quoted_string(br#"{"o": "x\nAPI_KEY=value"}"#, 18, 23));
-        assert!(ends_quoted_string(b"\"API_KEY=value\"", 9, 14));
-        assert!(ends_quoted_string(b"a\n\"API_KEY=value\" b", 11, 16));
-        assert!(!ends_quoted_string(br#"API_KEY=value" rest"#, 8, 13));
-        assert!(!ends_quoted_string(br#""API_KEY=value"x"#, 9, 14));
-        assert!(!ends_quoted_string(br#"x\"API_KEY=value\""#, 11, 16));
-        assert!(!ends_quoted_string(b"\"a\"\nAPI_KEY=value\"", 12, 17));
+        let ends =
+            |input: &[u8], start, end| ends_quoted_string(input, &Cell::default(), start, end);
+        assert!(ends(br#"{"stdout":"API_KEY=value"}"#, 19, 24));
+        assert!(ends(br#"["API_KEY=value", "X=1"]"#, 10, 15));
+        assert!(ends(br#"{"o": "x\nAPI_KEY=value"}"#, 18, 23));
+        assert!(ends(b"\"API_KEY=value\"", 9, 14));
+        assert!(ends(b"a\n\"API_KEY=value\" b", 11, 16));
+        assert!(!ends(br#"API_KEY=value" rest"#, 8, 13));
+        assert!(!ends(br#""API_KEY=value"x"#, 9, 14));
+        assert!(!ends(br#"x\"API_KEY=value\""#, 11, 16));
+        assert!(!ends(b"\"a\"\nAPI_KEY=value\"", 12, 17));
+    }
+
+    #[test]
+    fn the_carried_quote_state_matches_a_fresh_reading() {
+        // values in and out of strings, an escaped quote, a line break and a value read again
+        // after a later one: one shared state gives what a fresh state gives each time.
+        let input: &[u8] = br#"["A=v1", B=v2" "C=v\"3", x
+"D=v4", E=v5" ["F=v6"]"#;
+        let values: Vec<Range<usize>> = [&b"v1"[..], b"v2", b"v\\\"3", b"v4", b"v5", b"v6"]
+            .iter()
+            .map(|value| {
+                let start = memchr::memmem::find(input, value).unwrap();
+                start..start + value.len()
+            })
+            .collect();
+        let shared = Cell::default();
+        for value in values.iter().chain([&values[1], &values[0], &values[5]]) {
+            assert_eq!(
+                ends_quoted_string(input, &shared, value.start, value.end),
+                ends_quoted_string(input, &Cell::default(), value.start, value.end),
+                "{value:?}"
+            );
+        }
+    }
+
+    /// the 0.12.2 readings, which took the whole line before the key: the backward readings that
+    /// replaced them must agree on every input.
+    mod line_start_oracles {
+        pub fn is_env_style_assignment(input: &[u8], key_start: usize) -> bool {
+            let line_start = input[..key_start]
+                .iter()
+                .rposition(|&byte| byte == b'\n')
+                .map_or(0, |index| index + 1);
+            let prefix = &input[line_start..key_start];
+            if prefix.iter().all(|&byte| matches!(byte, b'\t' | b' ')) {
+                return true;
+            }
+            let prefix = &prefix[prefix
+                .iter()
+                .position(|&byte| !matches!(byte, b'\t' | b' '))
+                .unwrap_or(prefix.len())..];
+            let Some(prefix) = prefix.strip_prefix(b"export") else {
+                return false;
+            };
+            !prefix.is_empty() && prefix.iter().all(|&byte| matches!(byte, b'\t' | b' '))
+        }
+
+        pub fn starts_yaml_entry(input: &[u8], key_start: usize) -> bool {
+            let line_start = input[..key_start]
+                .iter()
+                .rposition(|&byte| byte == b'\n')
+                .map_or(0, |index| index + 1);
+            let mut prefix = input[line_start..key_start].trim_ascii_start();
+            while let Some(rest) = prefix.strip_prefix(b"-").filter(|rest| {
+                rest.first()
+                    .is_some_and(|&byte| matches!(byte, b' ' | b'\t'))
+            }) {
+                prefix = rest.trim_ascii_start();
+            }
+            prefix.is_empty()
+        }
+
+        pub fn follows_regex_command(input: &[u8], start: usize) -> bool {
+            let line_start = input[..start]
+                .iter()
+                .rposition(|&byte| matches!(byte, b'\n' | b'\r'))
+                .map_or(0, |index| index + 1);
+            let before = input[line_start..start].trim_ascii_end();
+            let before = before
+                .strip_suffix(b"'")
+                .or_else(|| before.strip_suffix(b"\""))
+                .unwrap_or(before)
+                .trim_ascii_end();
+            let word = &before[before
+                .iter()
+                .rposition(|byte| byte.is_ascii_whitespace())
+                .map_or(0, |index| index + 1)..];
+            matches!(
+                word,
+                b"grep"
+                    | b"egrep"
+                    | b"rg"
+                    | b"sed"
+                    | b"awk"
+                    | b"--regexp"
+                    | b"--extended-regexp"
+                    | b"--perl-regexp"
+            ) || word.strip_prefix(b"-").is_some_and(|cluster| {
+                !cluster.is_empty()
+                    && cluster.iter().all(u8::is_ascii_alphabetic)
+                    && cluster.iter().any(|byte| matches!(byte, b'E' | b'P'))
+            })
+        }
+    }
+
+    #[test]
+    fn backward_line_readings_match_the_whole_line_readings() {
+        let tokens: [&[u8]; 18] = [
+            b" ",
+            b"\t",
+            b"\x0c",
+            b"\n",
+            b"\r",
+            b"-",
+            b"- ",
+            b"\"",
+            b"'",
+            b"x=1",
+            b"export",
+            b"grep",
+            b"--extended-regexp",
+            b"-oP",
+            b"-abcdefghijklmnopqrsE",
+            b"abcdefghijklmnopqrsE",
+            b"x-abcdefghijklmnopqrsE",
+            b"--extended-regexpx",
+        ];
+        let mut checked = 0;
+        let mut stack: Vec<usize> = Vec::new();
+        loop {
+            let mut input: Vec<u8> = stack
+                .iter()
+                .flat_map(|&token| tokens[token])
+                .copied()
+                .collect();
+            let key_start = input.len();
+            input.extend_from_slice(b"KEY=value");
+            let shown = String::from_utf8_lossy(&input).into_owned();
+            assert_eq!(
+                is_env_style_assignment(&input, key_start, b"value"),
+                line_start_oracles::is_env_style_assignment(&input, key_start),
+                "env {shown:?}"
+            );
+            assert_eq!(
+                starts_yaml_entry(&input, key_start),
+                line_start_oracles::starts_yaml_entry(&input, key_start),
+                "yaml {shown:?}"
+            );
+            assert_eq!(
+                follows_regex_command(&input, key_start),
+                line_start_oracles::follows_regex_command(&input, key_start),
+                "regex {shown:?}"
+            );
+            checked += 1;
+            // every token sequence up to four long, in order.
+            match stack.iter().rposition(|&token| token + 1 < tokens.len()) {
+                _ if stack.len() < 4 => stack.push(0),
+                Some(last) => {
+                    stack[last] += 1;
+                    stack.truncate(last + 1);
+                }
+                None => break,
+            }
+        }
+        assert!(checked > 100_000);
+    }
+
+    #[test]
+    fn expansions_and_punctuation_alone_are_no_value() {
+        for value in [
+            "[${TASK_ID:0:8}]",
+            "${PREFIX}-${RUN_ID}",
+            "${#ITEMS[@]}:${ITEMS[0]}",
+            "${CHANNELS[selected]}",
+            "${!REF}/${1}",
+            "${A:-}${B:=${C}}${D:+${E}}${F:?}",
+            "${A-${B-${C-${D-${E}}}}}",
+            "${SCHEME}://${HOST}",
+            "${HOST}:${PORT}/${PATH}",
+            "${A}-${B}_${C}",
+            "${A:-[${B}]}",
+        ] {
+            assert!(is_expansion_only(value.as_bytes()), "{value}");
+        }
+        // a non-ascii literal, a symbols-only fallback, a space, a backslash and a long separator
+        // run are no separators.
+        for value in [
+            "${A}-\u{6f22}\u{5b57}-${B}",
+            "${A:-\u{6f22}\u{5b57}}-${B}",
+            "${A:-\u{e9}}",
+            "${A:-:}",
+            "${TOKEN:-!*%^}-${RUN_ID}",
+            "${A:-%%}",
+            "${A} ${B}",
+            "${A}\\${B}",
+            "${A}-----${B}",
+            "${A}!${B}",
+        ] {
+            assert!(!is_expansion_only(value.as_bytes()), "{value}");
+        }
+        for value in [
+            "",
+            "[]",
+            "$PREFIX-${RUN_ID}",
+            "${PREFIX}x",
+            "${A:-word}",
+            "${A%.log}",
+            "${A/x/y}",
+            "${A:0:}",
+            "${A:x}",
+            "${A",
+            "${A:-${B}",
+            "${9A}",
+            "${A[]}",
+            "${A-${B-${C-${D-${E-${F}}}}}}",
+            // names cut into short groups with digits read as a cut token (the chunk guard).
+            "${Xk9q}${Pz4m}${Rt7w}${Lb2c}",
+        ] {
+            assert!(!is_expansion_only(value.as_bytes()), "{value}");
+        }
+    }
+
+    #[test]
+    fn expansion_separator_limit_is_shared_by_recursive_operands() {
+        for (at_limit, over_limit) in [
+            ("${A}-${B}_${C}:${D}/${E}", "${A}-${B}_${C}:${D}/${E}."),
+            ("${A:-[${B}]}${C:-[${D}]}", "${A:-[${B}]}-${C:-[${D}]}"),
+            ("${A:-[${B:-[${C}]}]}", "${A:-[${B:-[${C}]}]-}"),
+            ("${A:-[${B}]}:${C}/", "${A:-[${B}]}:${C}/-"),
+        ] {
+            assert!(is_expansion_only(at_limit.as_bytes()), "{at_limit}");
+            assert!(!is_expansion_only(over_limit.as_bytes()), "{over_limit}");
+        }
+    }
+
+    #[test]
+    fn a_quote_closing_the_names_own_literal_opens_no_value() {
+        let closes = |text: &str| {
+            let name = text.find("token").unwrap();
+            let quote = name + text[name..].find(['=', ':']).unwrap() + 1;
+            let quote = quote + text[quote..].find(['"', '\'']).unwrap();
+            closes_name_literal(text.as_bytes(), name, quote)
+        };
+        assert!(closes(r#"f("token="), x, "y""#));
+        assert!(closes(r#"f("GITHUB_token="), x, "y""#));
+        assert!(closes("f('token: '), x, 'y'"));
+        assert!(!closes(r#"{"token": "y"}"#));
+        assert!(!closes(r#"token = "y""#));
+        assert!(!closes(r#"f(token="y")"#));
+        assert!(!closes(r#"'token="y"'"#));
+        assert!(!closes(r#""auth token=""#));
     }
 }

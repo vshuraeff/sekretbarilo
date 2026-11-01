@@ -149,6 +149,7 @@ fn run_command(mut command: Command, env: &IsolatedEnv, bytes: &[u8]) -> Output 
         stdout.read_to_end(&mut bytes).unwrap();
         bytes
     });
+    // the child may exit before reading all input; callers assert its status and output
     let _ = stdin.write_all(bytes);
     drop(stdin);
     let mut output = child.wait_with_output().unwrap();
@@ -654,7 +655,8 @@ fn drifted_text_containers_are_erased_on_failure() {
         ),
     ] {
         let output = run(&env, tool, response);
-        let _ = replacement(&output);
+        // called for its assertions; the returned value is not needed here
+        replacement(&output);
         assert_eq!(
             serde_json::from_slice::<Value>(&output.stdout).unwrap()["continue"],
             false
@@ -664,7 +666,8 @@ fn drifted_text_containers_are_erased_on_failure() {
         &env,
         &serde_json::to_vec(&json!({"tool_response":{"stdout":SECRET}})).unwrap(),
     );
-    let _ = replacement(&output);
+    // called for its assertions; the returned value is not needed here
+    replacement(&output);
 }
 
 #[test]
@@ -954,13 +957,60 @@ fn vanished_cwd_keeps_the_user_layer_of_a_non_git_home() {
 }
 
 #[test]
-fn vanished_cwd_keeps_the_layer_of_a_non_git_parent() {
+fn vanished_cwd_stops_on_a_layer_of_a_non_git_parent() {
+    // the removed entry may have been a link elsewhere, so this layer may never have been on
+    // the cwd's path, and dropping it can lose a rule.
     let env = IsolatedEnv::new();
     let parent = env.home().join("work");
     std::fs::create_dir_all(&parent).unwrap();
     std::fs::write(parent.join(".sekretbarilo.toml"), CUSTOM_RULE).unwrap();
-    let output = run_bytes(&env, &custom_value_payload(&parent.join("repo-gone")));
-    assert_custom_value_masked(&output);
+    let cwd = parent.join("repo-gone");
+    assert_stopped(&run_bytes(&env, &clean_payload(&cwd)), &cwd);
+}
+
+#[test]
+fn vanished_cwd_stops_whether_a_link_or_a_directory_was_removed() {
+    // a removed directory and a removed symlink leave the same surviving state. through the
+    // link the holder's committed allowlist was never on the cwd's physical path.
+    let env = IsolatedEnv::new();
+    env.write_user_config(CUSTOM_RULE);
+    let git = |repo: &std::path::Path, args: &[&str]| {
+        let output = std::process::Command::new("git")
+            .args(args)
+            .current_dir(repo)
+            .env("GIT_CONFIG_GLOBAL", env.git_config_global())
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "git {args:?}");
+    };
+    let holder = env.home().join("holder");
+    let target = env.home().join("target");
+    for repo in [&holder, &target] {
+        std::fs::create_dir_all(repo).unwrap();
+        git(repo, &["init", "-q"]);
+        git(repo, &["config", "user.email", "test@test.invalid"]);
+        git(repo, &["config", "user.name", "Test"]);
+    }
+    std::fs::create_dir_all(target.join("sub")).unwrap();
+    std::fs::write(holder.join(".sekretbarilo.toml"), ALLOW_CUSTOM).unwrap();
+    git(&holder, &["add", ".sekretbarilo.toml"]);
+    git(
+        &holder,
+        &["commit", "--no-verify", "-m", "add fixture config"],
+    );
+    let linked = holder.join("linked");
+    let cwd = linked.join("sub");
+
+    // control: through the live link the target's chain applies and the value is masked.
+    std::os::unix::fs::symlink(&target, &linked).unwrap();
+    assert_custom_value_masked(&run_bytes(&env, &custom_value_payload(&cwd)));
+
+    std::fs::remove_file(&linked).unwrap();
+    assert_stopped(&run_bytes(&env, &clean_payload(&cwd)), &cwd);
+
+    std::fs::create_dir_all(&cwd).unwrap();
+    std::fs::remove_dir_all(&linked).unwrap();
+    assert_stopped(&run_bytes(&env, &clean_payload(&cwd)), &cwd);
 }
 
 #[test]
@@ -1134,8 +1184,8 @@ fn wireguard_keys_holding_builtin_stopwords_are_still_masked() {
         let psk = format!("{}{fragment}{}", &base[..10], &base[10 + fragment.len()..]);
         assert_eq!(psk.len(), 44);
         assert!(
-            allowlist.contains_stopword(psk.as_bytes()),
-            "{fragment}: not a built-in stopword"
+            !allowlist.contains_stopword(psk.as_bytes()),
+            "{fragment}: accidental fragment still matches a built-in stopword"
         );
         let line = format!("{{\"psk\": \"{psk}\", \"nat\": false}}\n");
         let output = run(

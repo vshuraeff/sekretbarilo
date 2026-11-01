@@ -658,6 +658,11 @@ entropy_threshold = 3.5
             payload_group: None,
             min_payload_entropy: None,
             reject_hex_payload: false,
+            builtin_stopwords: None,
+            doc_entropy_bonus: None,
+            skip_template_lines: None,
+            resume_at_value_end: None,
+            base64_credential: None,
             allowlist: rules::RuleAllowlist {
                 regexes: vec!["AKIAIOSFODNN7EXAMPLE".to_string()],
                 paths: vec![],

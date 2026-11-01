@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::ops::Range;
 
 use crate::config::allowlist::CompiledAllowlist;
-use crate::scanner::engine::{MatchContext, scan_matches};
+use crate::scanner::engine::{LineMemo, MatchContext, scan_matches};
 use crate::scanner::rules::CompiledScanner;
 
 /// a detected value's byte range in the original UTF-8 text.
@@ -47,6 +47,7 @@ pub fn scan_text(
         is_doc_file: false,
         generic_rule_skip: None,
         literals: None,
+        lines: LineMemo::default(),
     };
     let mut matches = Vec::new();
     let mut candidates = vec![false; scanner.rules.len()];
@@ -88,6 +89,7 @@ pub fn scan_text(
                     line_starts: &[],
                     generic_rule_skip: None,
                     literals: None,
+                    lines: LineMemo::default(),
                     ..ctx
                 };
                 scan_matches(&line_ctx, &mut candidates, |rule_id, range| {

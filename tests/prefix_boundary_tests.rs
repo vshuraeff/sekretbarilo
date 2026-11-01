@@ -83,6 +83,10 @@ const SHAPES: &[Shape] = &[
         &[Lit("ghp_"), Run(ALNUM, 36)],
     ),
     shape("github-oauth-token", &[Lit("gho_"), Run(ALNUM, 36)]),
+    shape(
+        "github-user-to-server-token",
+        &[Lit("ghu_"), Run(ALNUM, 36)],
+    ),
     shape("github-app-token", &[Lit("ghs_"), Run(ALNUM, 36)]),
     shape("github-refresh-token", &[Lit("ghr_"), Run(ALNUM, 36)]),
     shape(

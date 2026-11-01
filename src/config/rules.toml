@@ -35,10 +35,18 @@ secret_group = 1
 keywords = ["gho_"]
 
 [[rules]]
+id = "github-user-to-server-token"
+class = "signature"
+description = "GitHub App user-to-server token"
+regex = "(?:%[0-9A-Fa-f]{2}|\\[[0-9;:]*[mK]|\\\\(?:u\\{[0-9A-Fa-f]{1,6}\\}|u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8}|x[0-9A-Fa-f]{2}|[0-7]{1,3}|[A-Za-z])|(?-u:\\b))(ghu_[0-9a-zA-Z]{36,})"
+secret_group = 1
+keywords = ["ghu_"]
+
+[[rules]]
 id = "github-app-token"
 class = "signature"
 description = "GitHub app installation token"
-regex = "(?:%[0-9A-Fa-f]{2}|\\[[0-9;:]*[mK]|\\\\(?:u\\{[0-9A-Fa-f]{1,6}\\}|u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8}|x[0-9A-Fa-f]{2}|[0-7]{1,3}|[A-Za-z])|(?-u:\\b))(ghs_[0-9a-zA-Z]{36,})"
+regex = "(?:%[0-9A-Fa-f]{2}|\\[[0-9;:]*[mK]|\\\\(?:u\\{[0-9A-Fa-f]{1,6}\\}|u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8}|x[0-9A-Fa-f]{2}|[0-7]{1,3}|[A-Za-z])|(?-u:\\b))(ghs_(?:[0-9]+_[A-Za-z0-9_-]{10,}\\.[A-Za-z0-9_-]{10,}\\.[A-Za-z0-9_-]{10,}|[0-9a-zA-Z]{36,}))"
 secret_group = 1
 keywords = ["ghs_"]
 
@@ -234,6 +242,7 @@ keywords = ["sk-proj-"]
 [[rules]]
 id = "aws-secret-access-key"
 class = "contextual"
+doc_entropy_bonus = false
 description = "AWS secret access key"
 regex = "(?i)(?:aws_secret_access_key|aws_secret|secret_access_key)\\s*[=:]\\s*['\"]?([A-Za-z0-9/+=]{40})['\"]?"
 secret_group = 1
@@ -243,6 +252,7 @@ entropy_threshold = 3.5
 [[rules]]
 id = "infisical-client-id"
 class = "contextual"
+doc_entropy_bonus = false
 description = "Infisical machine identity client ID"
 regex = '''(?i)(?:^|[\x00\t\x20;&|(",])INFISICAL_CLIENT_ID[\t\x20]*=[\t\x20]*['"]?([A-Za-z0-9_-]{20,})'''
 secret_group = 1
@@ -285,14 +295,16 @@ keywords = ["redis://"]
 id = "generic-password-assignment"
 class = "contextual"
 description = "Quoted or unquoted password assignment in code and configuration"
-# alternative captures keep matching quote pairs and preserve surrounding syntax.
+# alternative captures keep matching quote pairs and preserve surrounding syntax. in the unquoted
+# value a backslash takes the byte after it, except a `\n` `\r` `\t` escape, which ends the value as
+# a line break of json-printed output does; a lone `\` is kept only before a line end or the end.
 regex = '''(?ix)
 (?P<password_key>[A-Za-z0-9_.-]*(?:password|passwd|pwd))["'`]?\]?[\t\x20]*[=:][\t\x20]*
 (?:
   "((?:\\[^\r\n]|[^"\\\r\n]){8,})"
   | '(?P<password_single>(?:\\[^\r\n]|''|[^'\\\r\n]){8,}\\?)'
   | `(?P<password_backtick>(?:\\[^\r\n]|[^`\\\r\n]){8,}\\?)`
-  | (?P<password_unquoted>(?:\\[^\r\n]|[^\s"'`,;\#()\[\]{}<>\\])(?:\\[^\r\n]|[^\s"'`,;()\[\]{}<>\\]){7,}\\?)
+  | (?P<password_unquoted>(?:\\(?-i:[^nrt\r\n])|[^\s"'`,;\#()\[\]{}<>\\])(?:\\(?-i:[^nrt\r\n])|[^\s"'`,;()\[\]{}<>\\]){7,}(?mR:\\$)?)
 )
 '''
 secret_group = 2
@@ -303,8 +315,13 @@ keywords = ["password", "passwd", "pwd"]
 [[rules]]
 id = "generic-secret-assignment"
 class = "contextual"
+doc_entropy_bonus = false
 description = "Secret assignment in code and configuration"
-# the quoted alternative reads quoted json/dict keys too. the unquoted alternative (group context_unquoted) reads a
+# the quoted alternative reads quoted json/dict keys too. its value stays on one line, so its quote
+# never pairs with a quote on a later line of multi-line agent output. a quote after the separator
+# that closes a string literal opened right before the name (the name and separator are that
+# literal's text and an argument tail follows) opens no value: `named_key_captures` in engine.rs
+# drops that candidate. the unquoted alternative (group context_unquoted) reads a
 # credential-named assignment wherever one can start: `NAME=value` (optional horizontal spacing
 # around `=`) after line start, a space or tab (`export`, `env`, `sudo`, `docker run -e`, a yaml
 # `- ` item) or a shell `;` `&` `|` `(`, a quote, comma, nul or a `\n` `\r` `\t` escape (a line
@@ -326,7 +343,7 @@ description = "Secret assignment in code and configuration"
 # pattern keeps its leading `(?i)`, which marks the rule context dependent; `(?x)` ignores the
 # layout whitespace.
 regex = '''(?i)(?x)
-(?:secret|secret[-_]?key(?:[-_]?base)?|(?:api|client)[-_]?secret)["'`]?\]?\s*(?::=|[=:])\s*['"]([^'"]{8,})['"]
+(?:secret|secret[-_]?key(?:[-_]?base)?|(?:api|client)[-_]?secret)["'`]?\]?\s*(?::=|[=:])\s*['"]([^'"\r\n]{8,})['"]
 |(?m:
   (?:
     (?:^|[\x00\t\x20;&|(",]|(?-i:\\[nrt]))
@@ -359,6 +376,7 @@ keywords = ["://"]
 [[rules]]
 id = "http-bearer-token"
 class = "contextual"
+doc_entropy_bonus = false
 description = "HTTP bearer token"
 regex = "(?i)(?:bearer|authorization)\\s+(?:bearer\\s+)?([a-zA-Z0-9_\\-\\.]{20,})"
 secret_group = 1
@@ -368,11 +386,16 @@ entropy_threshold = 3.5
 [[rules]]
 id = "http-basic-auth"
 class = "contextual"
+doc_entropy_bonus = false
 description = "HTTP basic auth header"
 regex = "(?i)(?:basic|authorization)\\s+(?:basic\\s+)?([A-Za-z0-9+/]{20,}={0,2})"
 secret_group = 1
 keywords = ["basic", "authorization"]
 entropy_threshold = 3.0
+# the value must decode to bytes containing a colon and no ascii control; no encoding is inferred.
+# generated dictionary samples retained 0.126-0.136% lowercase, 1.227-1.353% capitalized and 1.130%
+# mixed-case slash prose; these are sample-specific rates, not a guarantee for arbitrary prose.
+base64_credential = true
 
 [[rules]]
 id = "webhook-url-with-token"
@@ -393,6 +416,7 @@ keywords = ["accountkey"]
 [[rules]]
 id = "cloudflare-api-key"
 class = "contextual"
+doc_entropy_bonus = false
 description = "Cloudflare API key"
 regex = "(?i)(?:cloudflare|cf)[-_]?(?:api)?[-_]?key\\s*[=:]\\s*['\"]?([0-9a-f]{37})['\"]?"
 secret_group = 1
@@ -402,6 +426,7 @@ entropy_threshold = 3.0
 [[rules]]
 id = "datadog-api-key"
 class = "contextual"
+doc_entropy_bonus = false
 description = "Datadog API key"
 regex = "(?i)(?:datadog|dd)[-_]?(?:api)?[-_]?key\\s*[=:]\\s*['\"]?([0-9a-f]{32})['\"]?"
 secret_group = 1
@@ -411,6 +436,7 @@ entropy_threshold = 3.0
 [[rules]]
 id = "heroku-api-key"
 class = "contextual"
+doc_entropy_bonus = false
 description = "Heroku API key"
 regex = "(?i)heroku[-_]?(?:api)?[-_]?key\\s*[=:]\\s*['\"]?([0-9a-f-]{36})['\"]?"
 secret_group = 1
@@ -429,9 +455,13 @@ description = "WireGuard or AmneziaWG preshared or private key assignment"
 # the value is exactly a wireguard key, 43 base64 bytes and `=`, double-quoted (json escaped
 # into json strings at any depth too, `\"...\"`, `\\\"...\\\"`), single-quoted or unquoted up
 # to a byte outside base64. the tight value shape is what keeps the common `private_key` name
-# safe; public keys have no such name and stay clear. the engine exempts this rule by id from
-# the template-line skip: a template expression can never be the value, and ansible prints a
-# failed result with `{{ ... }}` in its message on the same line as the key.
+# safe; public keys have no such name and stay clear. the rule opts out of the template-line skip
+# (a template expression can never be the value, and ansible prints a failed result with
+# `{{ ... }}` in its message on the same line as the key), of the built-in stopword list and of
+# the doc-file entropy bonus, and resumes scanning at the end of the value. the shape and the
+# entropy gate already reject placeholders, so the word stopwords and the doc bonus would only
+# drop real keys (about one in 850 holds a run of three `x`, one in 670 measures below the raised
+# 4.5 bits); user stopwords still apply.
 regex = '''(?i)(?x)
 (?:(?-u:\b)|\\[nrt])_*
 (?:
@@ -447,6 +477,10 @@ regex = '''(?i)(?x)
 secret_group = 1
 secret_groups = [2, 3]
 keywords = ["psk", "preshared", "private_key", "private-key", "privatekey", "private key"]
+builtin_stopwords = false
+doc_entropy_bonus = false
+skip_template_lines = false
+resume_at_value_end = true
 # random keys measure above 4.2 bits (lowest of 200000 samples), a placeholder of a few repeated
 # symbols far below 3.5
 entropy_threshold = 3.5
@@ -519,10 +553,11 @@ entropy_threshold = 4.0
 [[rules]]
 id = "generic-api-key"
 class = "contextual"
+doc_entropy_bonus = false
 description = "Generic API key assignment"
 # quoted and unquoted alternatives as in generic-secret-assignment.
 regex = '''(?i)(?x)
-(?:api[-_]?key|apikey|api[-_]?token)["'`]?\]?\s*(?::=|[=:])\s*['"]([^'"]{16,})['"]
+(?:api[-_]?key|apikey|api[-_]?token)["'`]?\]?\s*(?::=|[=:])\s*['"]([^'"\r\n]{16,})['"]
 |(?m:
   (?:
     (?:^|[\x00\t\x20;&|(",]|(?-i:\\[nrt]))
@@ -613,6 +648,7 @@ keywords = ["r8_"]
 [[rules]]
 id = "discord-bot-token"
 class = "contextual"
+doc_entropy_bonus = false
 description = "Discord bot token"
 regex = "(?i)(?:discord|bot)[-_]?(?:token)?\\s*[=:]\\s*['\"]?([0-9]{17,20}\\.[A-Za-z0-9_-]{6}\\.[A-Za-z0-9_-]{27,})['\"]?"
 secret_group = 1
@@ -630,6 +666,7 @@ keywords = ["discord.com/api/webhooks", "discordapp.com/api/webhooks"]
 [[rules]]
 id = "telegram-bot-token"
 class = "contextual"
+doc_entropy_bonus = false
 description = "Telegram bot token"
 regex = "(?i)(?:telegram|tg|bot)[-_]?(?:token)?\\s*[=:]\\s*['\"]?([0-9]{8,10}:[A-Za-z0-9_-]{35})['\"]?"
 secret_group = 1
@@ -695,6 +732,7 @@ keywords = ["key-"]
 [[rules]]
 id = "mailchimp-api-key"
 class = "signature"
+doc_entropy_bonus = false
 description = "Mailchimp API key"
 regex = "(?:%[0-9A-Fa-f]{2}|\\[[0-9;:]*[mK]|\\\\(?:u\\{[0-9A-Fa-f]{1,6}\\}|u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8}|x[0-9A-Fa-f]{2}|[0-7]{1,3}|[A-Za-z])|(?-u:\\b{start-half}))([0-9a-f]{32}-us[0-9]{1,2})"
 secret_group = 1
@@ -840,6 +878,7 @@ keywords = ["shppa_"]
 [[rules]]
 id = "facebook-access-token"
 class = "signature"
+doc_entropy_bonus = false
 description = "Facebook access token"
 regex = "(?:%[0-9A-Fa-f]{2}|\\[[0-9;:]*[mK]|\\\\(?:u\\{[0-9A-Fa-f]{1,6}\\}|u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8}|x[0-9A-Fa-f]{2}|[0-7]{1,3}|[A-Za-z])|(?-u:\\b))(EAA([0-9a-zA-Z]{20,}))"
 secret_group = 1
@@ -891,6 +930,7 @@ keywords = ["pk."]
 [[rules]]
 id = "dropbox-api-token"
 class = "signature"
+doc_entropy_bonus = false
 description = "Dropbox API token"
 regex = "(?:%[0-9A-Fa-f]{2}|\\[[0-9;:]*[mK]|\\\\(?:u\\{[0-9A-Fa-f]{1,6}\\}|u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8}|x[0-9A-Fa-f]{2}|[0-7]{1,3}|[A-Za-z])|(?-u:\\b))(sl\\.[0-9a-zA-Z_-]{100,})"
 secret_group = 1
@@ -908,6 +948,7 @@ keywords = ["ingest.sentry.io"]
 [[rules]]
 id = "launchdarkly-sdk-key"
 class = "signature"
+doc_entropy_bonus = false
 description = "LaunchDarkly SDK key"
 regex = "(?:%[0-9A-Fa-f]{2}|\\[[0-9;:]*[mK]|\\\\(?:u\\{[0-9A-Fa-f]{1,6}\\}|u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8}|x[0-9A-Fa-f]{2}|[0-7]{1,3}|[A-Za-z])|(?-u:\\b))(sdk-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})"
 secret_group = 1
@@ -945,6 +986,7 @@ keywords = ["twilio"]
 [[rules]]
 id = "azure-ad-client-secret"
 class = "contextual"
+doc_entropy_bonus = false
 description = "Azure AD client secret"
 regex = "(?i)(?:azure|client_secret|client[-_]?secret)\\s*[=:]\\s*['\"]?([0-9a-zA-Z~._-]{34,})['\"]?"
 secret_group = 1
@@ -954,6 +996,7 @@ entropy_threshold = 3.5
 [[rules]]
 id = "azure-devops-pat"
 class = "contextual"
+doc_entropy_bonus = false
 description = "Azure DevOps personal access token"
 regex = "(?i)(?:azure|devops)[-_]?(?:pat|token)\\s*[=:]\\s*['\"]?([0-9a-z]{52})['\"]?"
 secret_group = 1
@@ -963,6 +1006,7 @@ entropy_threshold = 3.5
 [[rules]]
 id = "alibaba-secret-key"
 class = "contextual"
+doc_entropy_bonus = false
 description = "Alibaba Cloud secret key"
 regex = "(?i)(?:alibaba|aliyun)[-_]?(?:secret|access)[-_]?(?:key)?\\s*[=:]\\s*['\"]?([0-9a-zA-Z]{30})['\"]?"
 secret_group = 1
@@ -972,6 +1016,7 @@ entropy_threshold = 3.5
 [[rules]]
 id = "mssql-connection-string"
 class = "contextual"
+doc_entropy_bonus = false
 description = "MSSQL connection string with password"
 regex = "(?i)(?:Server|Data Source)\\s*=\\s*[^;]+;\\s*.*?(?:Password|Pwd)\\s*=\\s*([^;'\"]{8,})"
 secret_group = 1
@@ -981,6 +1026,7 @@ entropy_threshold = 3.0
 [[rules]]
 id = "pagerduty-api-key"
 class = "contextual"
+doc_entropy_bonus = false
 description = "PagerDuty API key"
 regex = "(?i)(?:pagerduty)[-_]?(?:api)?[-_]?(?:key|token)\\s*[=:]\\s*['\"]?([0-9a-zA-Z+/=-]{20,})['\"]?"
 secret_group = 1
@@ -990,6 +1036,7 @@ entropy_threshold = 3.0
 [[rules]]
 id = "circleci-api-token"
 class = "contextual"
+doc_entropy_bonus = false
 description = "CircleCI API token"
 regex = "(?i)(?:circleci|circle)[-_]?(?:api)?[-_]?(?:key|token)\\s*[=:]\\s*['\"]?([0-9a-f]{40})['\"]?"
 secret_group = 1
@@ -999,6 +1046,7 @@ entropy_threshold = 3.0
 [[rules]]
 id = "vercel-api-token"
 class = "contextual"
+doc_entropy_bonus = false
 description = "Vercel API token"
 regex = "(?i)(?:vercel)[-_]?(?:api)?[-_]?(?:key|token)\\s*[=:]\\s*['\"]?([0-9a-zA-Z]{24,})['\"]?"
 secret_group = 1
@@ -1008,6 +1056,7 @@ entropy_threshold = 3.5
 [[rules]]
 id = "netlify-access-token"
 class = "contextual"
+doc_entropy_bonus = false
 description = "Netlify access token"
 regex = "(?i)(?:netlify)[-_]?(?:api)?[-_]?(?:key|token|auth)\\s*[=:]\\s*['\"]?([0-9a-zA-Z_-]{40,})['\"]?"
 secret_group = 1
@@ -1017,6 +1066,7 @@ entropy_threshold = 3.5
 [[rules]]
 id = "atlassian-api-token"
 class = "contextual"
+doc_entropy_bonus = false
 description = "Atlassian/Jira API token"
 regex = "(?i)(?:atlassian|jira)[-_]?(?:api)?[-_]?(?:key|token)\\s*[=:]\\s*['\"]?([0-9a-zA-Z]{24,})['\"]?"
 secret_group = 1
@@ -1026,6 +1076,7 @@ entropy_threshold = 3.5
 [[rules]]
 id = "twitter-bearer-token"
 class = "contextual"
+doc_entropy_bonus = false
 description = "Twitter/X bearer token"
 regex = "(?i)(?:twitter|tweet)[-_]?(?:bearer)?[-_]?(?:token)\\s*[=:]\\s*['\"]?([0-9a-zA-Z%]{50,})['\"]?"
 secret_group = 1
@@ -1035,6 +1086,7 @@ entropy_threshold = 3.5
 [[rules]]
 id = "okta-api-token"
 class = "contextual"
+doc_entropy_bonus = false
 description = "Okta API token"
 regex = "(?i)(?:okta)[-_]?(?:api)?[-_]?(?:key|token)\\s*[=:]\\s*['\"]?([0-9a-zA-Z_-]{30,})['\"]?"
 secret_group = 1
@@ -1044,6 +1096,7 @@ entropy_threshold = 3.0
 [[rules]]
 id = "algolia-api-key"
 class = "contextual"
+doc_entropy_bonus = false
 description = "Algolia API key"
 regex = "(?i)(?:algolia)[-_]?(?:api)?[-_]?(?:key)\\s*[=:]\\s*['\"]?([0-9a-f]{32})['\"]?"
 secret_group = 1
@@ -1053,6 +1106,7 @@ entropy_threshold = 3.0
 [[rules]]
 id = "elastic-api-key"
 class = "contextual"
+doc_entropy_bonus = false
 description = "Elastic API key"
 regex = "(?i)(?:elastic|elasticsearch|kibana)[-_]?(?:api)?[-_]?(?:key|token)\\s*[=:]\\s*['\"]?([0-9a-zA-Z_-]{30,})['\"]?"
 secret_group = 1
@@ -1062,6 +1116,7 @@ entropy_threshold = 3.5
 [[rules]]
 id = "splunk-hec-token"
 class = "contextual"
+doc_entropy_bonus = false
 description = "Splunk HEC token"
 regex = "(?i)(?:splunk)[-_]?(?:hec)?[-_]?(?:token)\\s*[=:]\\s*['\"]?([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})['\"]?"
 secret_group = 1
@@ -1071,6 +1126,7 @@ entropy_threshold = 3.0
 [[rules]]
 id = "postmark-server-token"
 class = "contextual"
+doc_entropy_bonus = false
 description = "Postmark server token"
 regex = "(?i)(?:postmark)[-_]?(?:server)?[-_]?(?:token|key)\\s*[=:]\\s*['\"]?([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})['\"]?"
 secret_group = 1
@@ -1080,6 +1136,7 @@ entropy_threshold = 3.0
 [[rules]]
 id = "gitlab-deploy-token"
 class = "contextual"
+doc_entropy_bonus = false
 description = "GitLab deploy token"
 regex = "(?i)(?:gitlab)[-_]?(?:deploy)?[-_]?(?:token)\\s*[=:]\\s*['\"]?([0-9a-zA-Z_-]{20,})['\"]?"
 secret_group = 1
@@ -1089,6 +1146,7 @@ entropy_threshold = 3.0
 [[rules]]
 id = "cohere-api-key"
 class = "contextual"
+doc_entropy_bonus = false
 description = "Cohere API key"
 regex = "(?i)(?:cohere)[-_]?(?:api)?[-_]?(?:key|token)\\s*[=:]\\s*['\"]?([0-9a-zA-Z]{40})['\"]?"
 secret_group = 1
@@ -1102,12 +1160,13 @@ entropy_threshold = 3.5
 [[rules]]
 id = "generic-token-assignment"
 class = "contextual"
+doc_entropy_bonus = false
 description = "Generic token assignment"
 # quoted and unquoted alternatives as in generic-secret-assignment; both read a bare `token`
 # key, and the unquoted one reads names ending in it (`GITHUB_TOKEN`, `HF_TOKEN`, `accessToken`).
 # the prefilter keyword is `token`.
 regex = '''(?i)(?x)
-(?:(?:auth_token|access_token|secret_token)["'`]?\]?\s*|token(?:["'`]\]?\s*|\]\s*|[\t\x20]*))(?::=|[=:])\s*['"]([^'"]{16,})['"]
+(?:(?:auth_token|access_token|secret_token)["'`]?\]?\s*|token(?:["'`]\]?\s*|\]\s*|[\t\x20]*))(?::=|[=:])\s*['"]([^'"\r\n]{16,})['"]
 |(?m:
   (?:
     (?:^|[\x00\t\x20;&|(",]|(?-i:\\[nrt]))

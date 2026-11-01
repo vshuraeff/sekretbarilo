@@ -793,7 +793,7 @@ codex cli agent hook:
 
 configuration:
   [OK] no custom config files found (using defaults)
-  [OK] 114 rules loaded successfully
+  [OK] 115 rules loaded successfully
   [OK] rules compile successfully
 
 sekretbarilo binary:

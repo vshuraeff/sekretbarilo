@@ -181,6 +181,32 @@ fn consecutive_unquoted_named_values_on_real_lines_are_each_detected() {
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
+/// the unquoted password value ends at a `\n`, `\r` or `\t` escape as the other named values do,
+/// so two passwords of json-printed output are two findings and the name between them stays.
+#[test]
+fn consecutive_unquoted_passwords_behind_literal_escapes_are_each_detected() {
+    let (first, second) = (value(0x5EED_1007), value(0x5EED_1008));
+    let mut failures = Vec::new();
+    for shape in SHAPES {
+        let text = shape
+            .replace("{N1}", "DB_PASSWORD")
+            .replace("{N2}", "ADMIN_PASSWORD")
+            .replace("{A}", &first)
+            .replace("{B}", &second);
+        failures.extend(misses(
+            &text,
+            "generic-password-assignment",
+            &[&first, &second],
+        ));
+    }
+    assert!(
+        failures.is_empty(),
+        "{} failures:\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
+}
+
 #[test]
 fn consecutive_unquoted_named_values_behind_literal_escapes_are_each_detected() {
     let (first, second) = (value(0x5EED_1003), value(0x5EED_1004));

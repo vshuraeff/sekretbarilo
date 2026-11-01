@@ -465,6 +465,148 @@ fn check_codex_blocks_apply_patch_when_committed_config_has_invalid_allowlist_re
     );
 }
 
+/// every Add File target shape of a git-worktree cwd: relative and absolute-under-cwd targets are
+/// scanned with path filters (a `.md` target gets the documentation entropy bonus), while an
+/// absolute target outside the cwd and a `..` traversal are scanned without them.
+fn basic_auth_targets(repo: &Path, outside: &Path) -> Vec<String> {
+    vec![
+        "notes/report.md".to_owned(),
+        "notes/report.txt".to_owned(),
+        repo.join("notes/report.md").to_string_lossy().into_owned(),
+        outside.join("report.md").to_string_lossy().into_owned(),
+        outside.join("report.txt").to_string_lossy().into_owned(),
+        "../outside/report.md".to_owned(),
+    ]
+}
+
+fn add_file_patch(target: &str, line: &str) -> String {
+    format!("*** Begin Patch\n*** Add File: {target}\n+{line}\n*** End Patch\n")
+}
+
+#[test]
+fn check_codex_allows_basic_word_pair_prose_on_every_add_file_target() {
+    let env = IsolatedEnv::new();
+    let repo = env.git_repo();
+    let outside = env.root().join("outside");
+    let prose = "The parser keeps Basic comments/highlighting stable across reloads.";
+    for target in basic_auth_targets(&repo, &outside) {
+        let output = run_check_codex_in(
+            &env,
+            &apply_patch_payload(add_file_patch(&target, prose), &repo),
+            &repo,
+        );
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "{target}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(output.stderr.is_empty(), "{target}");
+    }
+}
+
+#[test]
+fn check_codex_blocks_a_generated_basic_credential_on_every_add_file_target() {
+    let env = IsolatedEnv::new();
+    let repo = env.git_repo();
+    let outside = env.root().join("outside");
+    let credential = common::generated_basic_credential(3);
+    let line = format!("Authorization: Basic {credential}");
+    for target in basic_auth_targets(&repo, &outside) {
+        let output = run_check_codex_in(
+            &env,
+            &apply_patch_payload(add_file_patch(&target, &line), &repo),
+            &repo,
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(output.status.code(), Some(2), "{target}: {stderr}");
+        assert!(
+            stderr.contains("rule: http-basic-auth"),
+            "{target}: {stderr}"
+        );
+        assert!(!stderr.contains(&credential), "{target}: credential leaked");
+    }
+}
+
+/// a printable ascii credential whose base64 is lowercase letters and slashes only, a utf-8
+/// credential, and iso-8859-1 and windows-1251 credentials (bytes that are no utf-8). a value with
+/// entropy below 4.0 skips the two path-filtered `.md` targets, which get the documentation bonus.
+#[test]
+fn check_codex_blocks_lowercase_slash_utf8_and_legacy_charset_basic_credentials() {
+    let env = IsolatedEnv::new();
+    let repo = env.git_repo();
+    let outside = env.root().join("outside");
+    let doc_bonus_targets = [
+        "notes/report.md".to_owned(),
+        repo.join("notes/report.md").to_string_lossy().into_owned(),
+    ];
+    let (_, lowercase_slash) = common::lowercase_slash_basic_credential(5, 10);
+    let (_, utf8) = common::utf8_basic_credential(5);
+    let mut credentials = vec![lowercase_slash, utf8];
+    for seed in 0..2 {
+        for (bytes, encoded) in [
+            common::iso_8859_1_basic_credential(seed),
+            common::windows_1251_basic_credential(seed),
+        ] {
+            assert!(std::str::from_utf8(&bytes).is_err(), "seed {seed}");
+            credentials.push(encoded);
+        }
+        credentials.extend(
+            common::reviewed_basic_credentials(seed)
+                .into_iter()
+                .map(|(_, _, encoded)| encoded),
+        );
+    }
+    for credential in credentials {
+        let skip_doc_bonus =
+            sekretbarilo::scanner::entropy::shannon_entropy(credential.as_bytes()) <= 4.0;
+        let line = format!("Authorization: Basic {credential}");
+        for target in basic_auth_targets(&repo, &outside) {
+            if skip_doc_bonus && doc_bonus_targets.contains(&target) {
+                continue;
+            }
+            let output = run_check_codex_in(
+                &env,
+                &apply_patch_payload(add_file_patch(&target, &line), &repo),
+                &repo,
+            );
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert_eq!(output.status.code(), Some(2), "{target}: {stderr}");
+            assert!(
+                stderr.contains("rule: http-basic-auth"),
+                "{target}: {stderr}"
+            );
+            assert!(!stderr.contains(&credential), "{target}: credential leaked");
+        }
+        let output = run_check_codex_in(&env, &post_tool_use_payload(&line, &repo), &repo);
+        assert_eq!(output.status.code(), Some(2));
+        assert!(
+            !String::from_utf8_lossy(&output.stderr).contains(&credential),
+            "credential leaked"
+        );
+    }
+}
+
+#[test]
+fn check_codex_drops_generated_basic_noncredentials_on_every_surface() {
+    let env = IsolatedEnv::new();
+    let repo = env.git_repo();
+    let outside = env.root().join("outside");
+    for (name, value) in common::generated_basic_noncredentials(5) {
+        let line = format!("Authorization: Basic {value}");
+        for target in basic_auth_targets(&repo, &outside) {
+            let output = run_check_codex_in(
+                &env,
+                &apply_patch_payload(add_file_patch(&target, &line), &repo),
+                &repo,
+            );
+            assert_eq!(output.status.code(), Some(0), "{name}, {target}");
+        }
+        let output = run_check_codex_in(&env, &post_tool_use_payload(&line, &repo), &repo);
+        assert_eq!(output.status.code(), Some(0), "{name}");
+    }
+}
+
 #[test]
 fn install_codex_hook_global_rejects_empty_home_and_creates_no_relative_hooks_file() {
     let current_dir = tempfile::tempdir().expect("failed to create empty current directory");
@@ -1470,16 +1612,21 @@ fn check_codex_pre_tool_use_relative_empty_or_file_cwd_fails_closed() {
 }
 
 #[test]
-fn check_codex_pre_tool_use_vanished_cwd_uses_its_nearest_existing_ancestor() {
-    // the layer of the vanished cwd's parent applies, not the layers of the process cwd.
+fn check_codex_pre_tool_use_vanished_cwd_keeps_its_fixed_layers() {
+    // the fixed layers apply, not the layers of the process cwd.
     let env = IsolatedEnv::new();
+    write_xdg_layer(&env, CANARY_RULE);
     let parent = env.home().join("work");
     std::fs::create_dir_all(&parent).unwrap();
-    std::fs::write(parent.join(".sekretbarilo.toml"), CANARY_RULE).unwrap();
+    let canary = generated_canary();
     let process_cwd = env.root().join("elsewhere");
     std::fs::create_dir_all(&process_cwd).unwrap();
+    std::fs::write(
+        process_cwd.join(".sekretbarilo.toml"),
+        canary_allowlist(&canary),
+    )
+    .unwrap();
     let vanished = parent.join("removed-worktree");
-    let canary = generated_canary();
 
     let bash = run_check_codex_in(
         &env,
@@ -1498,6 +1645,66 @@ fn check_codex_pre_tool_use_vanished_cwd_uses_its_nearest_existing_ancestor() {
     let stderr = String::from_utf8_lossy(&apply.stderr);
     assert_eq!(apply.status.code(), Some(2), "{stderr}");
     assert!(stderr.contains("rule: fixture-canary"), "{stderr}");
+}
+
+fn canary_allowlist(canary: &str) -> String {
+    let body = canary.trim_start_matches("CANARY=");
+    format!("[[allowlist.rules]]\nid = \"fixture-canary\"\nregexes = ['^{body}$']\n")
+}
+
+#[test]
+fn check_codex_vanished_cwd_stops_on_its_ancestor_hierarchy_whatever_was_removed() {
+    // a removed directory and a removed symlink leave the same surviving state. through the
+    // link the holder's committed allowlist was never on the cwd's physical path, so neither
+    // history may let the ancestor's hierarchy decide.
+    let env = IsolatedEnv::new();
+    write_xdg_layer(&env, CANARY_RULE);
+    let canary = generated_canary();
+    let holder = env.home().join("holder");
+    let target = env.home().join("target");
+    for repo in [&holder, &target] {
+        std::fs::create_dir_all(repo).unwrap();
+        git_success(&env, repo, &["init", "-q"]);
+        git_success(&env, repo, &["config", "user.email", "test@test.invalid"]);
+        git_success(&env, repo, &["config", "user.name", "Test"]);
+    }
+    std::fs::create_dir_all(target.join("sub")).unwrap();
+    std::fs::write(holder.join(".sekretbarilo.toml"), canary_allowlist(&canary)).unwrap();
+    git_success(&env, &holder, &["add", ".sekretbarilo.toml"]);
+    git_success(
+        &env,
+        &holder,
+        &["commit", "--no-verify", "-m", "add fixture config"],
+    );
+    let linked = holder.join("linked");
+    let cwd = linked.join("sub");
+    let payload = bash_payload(&format!("echo {canary}"), &cwd);
+
+    // control: through the live link the target's chain applies and the canary is caught.
+    std::os::unix::fs::symlink(&target, &linked).unwrap();
+    let live = run_check_codex_in(&env, &payload, env.home());
+    let stderr = String::from_utf8_lossy(&live.stderr);
+    assert_eq!(live.status.code(), Some(2), "{stderr}");
+    assert!(stderr.contains("rule: fixture-canary"), "{stderr}");
+
+    std::fs::remove_file(&linked).unwrap();
+    let deleted_link = run_check_codex_in(&env, &payload, env.home());
+
+    std::fs::create_dir_all(&cwd).unwrap();
+    std::fs::remove_dir_all(&linked).unwrap();
+    let removed_dir = run_check_codex_in(&env, &payload, env.home());
+
+    for (history, output) in [
+        ("deleted link", &deleted_link),
+        ("removed dir", &removed_dir),
+    ] {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(output.status.code(), Some(2), "{history}: {stderr}");
+        assert!(
+            stderr.contains("Codex Bash scanner setup failed"),
+            "{history}: {stderr}"
+        );
+    }
 }
 
 #[test]

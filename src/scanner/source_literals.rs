@@ -185,7 +185,9 @@ fn analyze_bounded_with_kinds(
         None,
         Some(ParseOptions::new().progress_callback(&mut progress)),
     )?;
-    // tree-sitter-swift has recovered through a zero-width ordinary leaf that carries the error
+    // the root can report an error that no visited node shows (c: a directive at eof without its
+    // newline; python: `a:c def f(): pass`), pinned by root_error_guard_rejects_errors_the_walk_cannot_see.
+    // tree-sitter-swift once did the same through a zero-width ordinary leaf that carries the error
     // cost, so neither an error nor a missing node reaches the walk below.
     if tree.root_node().has_error() {
         return None;
@@ -1170,6 +1172,53 @@ mod tests {
             assert!(analyze_bounded(dialect, b"", PARSE_CALLBACK_BUDGET).is_some());
             assert!(analyze_bounded(dialect, b"", 0).is_none());
             assert!(analyze_bounded(dialect, &oversized, PARSE_CALLBACK_BUDGET).is_none());
+        }
+    }
+
+    /// true when the root reports an error while no node the walk visits is an error or missing.
+    fn root_error_without_visible_node(language: tree_sitter::Language, source: &str) -> bool {
+        let mut parser = Parser::new();
+        parser.set_language(&language).unwrap();
+        let tree = parser.parse(source, None).unwrap();
+        let mut cursor = tree.walk();
+        loop {
+            let node = cursor.node();
+            if node.is_error() || node.is_missing() {
+                return false;
+            }
+            if cursor.goto_first_child() {
+                continue;
+            }
+            while !cursor.goto_next_sibling() {
+                if !cursor.goto_parent() {
+                    return tree.root_node().has_error();
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn root_error_guard_rejects_errors_the_walk_cannot_see() {
+        for (dialect, language, source) in [
+            (
+                Dialect::C,
+                tree_sitter_c::LANGUAGE.into(),
+                "int x = 1;\n#define A 1",
+            ),
+            (
+                Dialect::Python,
+                tree_sitter_python::LANGUAGE.into(),
+                "a:c def f():\n    pass\n",
+            ),
+        ] {
+            assert!(
+                root_error_without_visible_node(language, source),
+                "{dialect:?}: {source:?}"
+            );
+            assert!(
+                analyze_bounded(dialect, source.as_bytes(), PARSE_CALLBACK_BUDGET).is_none(),
+                "{dialect:?}: {source:?}"
+            );
         }
     }
 }

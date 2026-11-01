@@ -5,6 +5,8 @@
 //! finding of that rule covering the value. every line is synthetic, and an opaque value is written
 //! as a placeholder that this file expands, so the repository never stores one.
 
+mod common;
+
 use sekretbarilo::config::allowlist::CompiledAllowlist;
 use sekretbarilo::config::{ProjectConfig, SourcePosture, build_allowlist};
 use sekretbarilo::diff::parser::{AddedLine, DiffFile};
@@ -35,6 +37,7 @@ const SUPPORTED_PLACEHOLDERS: &[&str] = &[
     "HEX64",
     "HEX128",
     "B64_44",
+    "BASIC_40",
     "UUID",
     "DECIMAL_BYTES_32",
     "X_ESCAPED_BYTES_32",
@@ -142,6 +145,8 @@ fn placeholder_value(name: &str) -> Option<String> {
         "HEX64" => Some(hex(64)),
         "HEX128" => Some(hex(128)),
         "B64_44" => Some(base64_body(44)),
+        // base64 of a `user:pass`, which `http-basic-auth` requires; a b64 body decodes to bytes
+        "BASIC_40" => Some(common::generated_basic_credential(GENERATOR_SEED)),
         "UUID" => Some(uuid()),
         "DECIMAL_BYTES_32" => Some(decimal_bytes(32)),
         "X_ESCAPED_BYTES_32" => Some(x_escaped_bytes(32)),
@@ -155,13 +160,19 @@ fn looks_like_placeholder(name: &str) -> bool {
     if name == "UUID" {
         return true;
     }
-    ["S", "HEX", "B64_", "DECIMAL_BYTES_", "X_ESCAPED_BYTES_"]
-        .into_iter()
-        .any(|prefix| {
-            name.strip_prefix(prefix).is_some_and(|rest| {
-                !rest.is_empty() && rest.bytes().all(|byte| byte.is_ascii_digit())
-            })
-        })
+    [
+        "S",
+        "HEX",
+        "B64_",
+        "BASIC_",
+        "DECIMAL_BYTES_",
+        "X_ESCAPED_BYTES_",
+    ]
+    .into_iter()
+    .any(|prefix| {
+        name.strip_prefix(prefix)
+            .is_some_and(|rest| !rest.is_empty() && rest.bytes().all(|byte| byte.is_ascii_digit()))
+    })
 }
 
 struct Expansion {
@@ -632,6 +643,9 @@ fn generated_placeholders_have_valid_encodings() {
             % 4,
         0
     );
+    let basic = placeholder_value("BASIC_40").expect("basic placeholder");
+    assert_eq!(basic.len(), 40);
+    assert!(common::base64_decode(&basic).contains(&b':'));
     let decimal = decimal_bytes(32);
     let groups: Vec<_> = decimal.split(',').collect();
     assert_eq!(groups.len(), 32);

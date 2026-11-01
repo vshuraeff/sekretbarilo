@@ -112,18 +112,28 @@ const DOC_DIRS: &[&str] = &["docs/", "doc/", "documentation/", "wiki/"];
 /// punctuation or separators act as boundaries. a boundary at a needle edge
 /// self-delimits, while a word edge requires a non-word neighbor. this prevents
 /// "test" from matching inside "attestation" but still matches "test_key".
-/// special case: "xxx" matches any run of 3+ identical characters (placeholder pattern).
-fn contains_word(haystack: &str, needle: &str) -> bool {
+/// special case: "xxx" matches any run of 3+ x/X characters (placeholder pattern).
+/// built-in mode drops the base64 symbols `+`, `/` and `=` from the boundaries,
+/// and narrows x/X runs to whole components.
+fn contains_word(haystack: &str, needle: &str, placeholder_boundaries: bool) -> bool {
     fn is_word_byte(b: u8) -> bool {
         b.is_ascii_alphanumeric() || b >= 0x80
     }
 
+    let is_boundary = |byte: u8| {
+        !is_word_byte(byte) && !(placeholder_boundaries && matches!(byte, b'+' | b'/' | b'='))
+    };
     if needle.is_empty() {
         return false;
     }
     // special case: "xxx" detects X-placeholder patterns like "XXXX..." or "xxxx..."
     if needle == "xxx" {
         let bytes = haystack.as_bytes();
+        if placeholder_boundaries {
+            return bytes.split(|byte| is_boundary(*byte)).any(|part| {
+                part.len() >= 3 && part.iter().all(|byte| matches!(byte, b'x' | b'X'))
+            });
+        }
         let mut run = 0u8;
         for &b in bytes {
             if b == b'x' || b == b'X' {
@@ -141,14 +151,13 @@ fn contains_word(haystack: &str, needle: &str) -> bool {
     let mut start = 0;
     while let Some(pos) = memmem::find(&haystack.as_bytes()[start..], needle_bytes) {
         let abs_pos = start + pos;
-        let is_word_edge = |b: u8| is_word_byte(b);
-        let before_ok = !is_word_edge(needle_bytes[0])
+        let before_ok = !is_word_byte(needle_bytes[0])
             || abs_pos == 0
-            || !is_word_byte(haystack.as_bytes()[abs_pos - 1]);
+            || is_boundary(haystack.as_bytes()[abs_pos - 1]);
         let end_pos = abs_pos + needle.len();
-        let after_ok = !is_word_edge(needle_bytes[needle_bytes.len() - 1])
+        let after_ok = !is_word_byte(needle_bytes[needle_bytes.len() - 1])
             || end_pos >= haystack.len()
-            || !is_word_byte(haystack.as_bytes()[end_pos]);
+            || is_boundary(haystack.as_bytes()[end_pos]);
         if before_ok && after_ok {
             return true;
         }
@@ -551,13 +560,13 @@ impl CompiledAllowlist {
         let lower = String::from_utf8_lossy(secret).to_lowercase();
 
         for stopword in DEFAULT_STOPWORDS {
-            if contains_word(&lower, stopword) {
+            if contains_word(&lower, stopword, true) {
                 return true;
             }
         }
 
         for stopword in &self.user_stopwords {
-            if contains_word(&lower, stopword.as_str()) {
+            if contains_word(&lower, stopword.as_str(), false) {
                 return true;
             }
         }
@@ -574,11 +583,10 @@ impl CompiledAllowlist {
     }
 
     /// check if the captured secret is a placeholder pattern (e.g. XXXX...).
-    /// this is a subset of the stopword check that applies to all rules,
-    /// including tier 1 prefix-based rules.
+    /// preserves the legacy x/X-run check for rules without an entropy threshold.
     pub fn is_placeholder_pattern(&self, secret: &[u8]) -> bool {
         let lower = String::from_utf8_lossy(secret).to_lowercase();
-        contains_word(&lower, "xxx")
+        contains_word(&lower, "xxx", false)
     }
 
     /// check if the captured secret value is actually a variable reference

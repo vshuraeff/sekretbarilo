@@ -775,10 +775,10 @@ pub(crate) fn load_trusted_project_config(
 /// use the same trust boundary and strict parsing, and name no path in the warning about an
 /// untrusted layer.
 ///
-/// `vanished` is a cwd that no longer exists and `base_dir` its nearest existing ancestor. the
-/// result is never looser than the original path's surviving layers: every surviving layer it
-/// would have trusted is trusted, and where that cannot be established the load fails closed.
-/// layers inside the removed directory are lost with it.
+/// `vanished` is a cwd that no longer exists and `base_dir` its nearest existing ancestor. only
+/// the fixed layers are loaded for it, and the load fails closed when the ancestor's hierarchy
+/// holds a layer: the removed entry may have been a symlink, so that hierarchy may never have
+/// been on the cwd's physical path. layers on the original physical path are lost.
 pub(crate) fn load_trusted_redact_config(
     base_dir: &Path,
     vanished: Option<&Path>,
@@ -798,20 +798,20 @@ fn load_trusted_config(
         (None, None) => base_dir.to_path_buf(),
     };
     let layers = match vanished {
-        // the vanished path's own discovery: from a missing start `discover_layers` returns
-        // only the fixed system and XDG layers, and the home hierarchy above it is walked from
-        // the ancestor. the ancestor's own layer, which discovery outside HOME adds for a
-        // start directory, is one the vanished path never read.
+        // a removed directory and a removed symlink to elsewhere leave the same surviving
+        // state, so the ancestor's hierarchy may not be the vanished path's: keeping its layers
+        // can admit an allowlist and dropping them can lose a rule. from a missing start
+        // `discover_layers` returns only the fixed system and XDG layers, unless the path has
+        // reappeared since it was resolved.
         Some(vanished) => {
-            let mut layers = discovery::discover_layers(vanished, &home);
-            layers.extend(
-                discovery::discover_hierarchy(base_dir, &home)
-                    .into_iter()
-                    .map(|path| discovery::ConfigLayer {
-                        path,
-                        origin: LayerOrigin::Hierarchy,
-                    }),
-            );
+            let layers = discovery::discover_layers(vanished, &home);
+            if layers
+                .iter()
+                .any(|layer| layer.origin != LayerOrigin::Fixed)
+                || !discovery::discover_hierarchy(base_dir, &home).is_empty()
+            {
+                return Err("could not establish configuration trust".to_string());
+            }
             layers
         }
         None => discovery::discover_layers(base_dir, &home),
@@ -829,10 +829,8 @@ fn load_trusted_config(
             LayerTrust::Committed(content) => content,
             LayerTrust::Symlinked | LayerTrust::Uncommitted => {
                 if vanished.is_some() {
-                    // only reachable through the ancestor's repository, which may not have
-                    // been the vanished path's own: a removed nested checkout would have
-                    // trusted this layer. dropping it can lose a rule and keeping it can admit
-                    // an allowlist.
+                    // a fixed layer whose path the environment does not pin, judged against the
+                    // ancestor's repository, which may not have been the vanished path's own.
                     return Err("could not establish configuration trust".to_string());
                 }
                 if redact {

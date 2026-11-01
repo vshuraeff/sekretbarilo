@@ -1,0 +1,17 @@
+# basic-auth-prose: the word `basic` or `authorization` followed by lowercase words joined by
+# slashes, as release notes, feature tables and code comments name an area of work. each value is
+# twenty bytes or more and clears the 3.0 entropy gate of `http-basic-auth`. on a path without the
+# documentation bonus, the rule's `base64_credential` check rejects values with a bad base64
+# length, an ascii control byte or no colon. encoding and username content are not inferred.
+# known gap: some slash prose, including lowercase, passes these byte checks. the generated
+# `capitalised_and_mixed_prose_have_a_bounded_residual_on_every_library_surface` test bounds it.
+The parser keeps Basic comments/highlighting stable across reloads.
+- Basic structure/navigation for every supported grammar
+| Basic completion/signatures | done |
+Covers basic formatting/diagnostics for every grammar.
+## Basic queries/injections/locals
+authorization providers/middleware are registered at startup
+basic   operators/precedence follow the reference manual
+// basic tokenizer/highlighter coverage lives in the corpus
+See Basic examples/walkthroughs in the guide.
+basic basic records/navigation/tables

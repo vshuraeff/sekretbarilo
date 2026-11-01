@@ -159,6 +159,29 @@ rule compilation, including when a custom rule replaces a built-in rule ID.
 The guards apply only to a match in which `payload_group` participates; a match
 through a regex branch without that group is reported without them.
 
+Five more optional booleans tune how the engine treats a rule: `builtin_stopwords`
+(default `true`; `false` checks only the user's own stopwords), `doc_entropy_bonus`
+(default `true`; `false` skips the documentation-file entropy bonus),
+`skip_template_lines` (default `true`; `false` keeps reporting on a line with
+template syntax), `resume_at_value_end` (default `false`; `true` resumes
+scanning at the end of the secret value instead of the whole match) and
+`base64_credential`, described next.
+An override of a built-in rule ID that omits one of them keeps the built-in rule's
+value; a new rule ID gets the defaults.
+
+`base64_credential = true` (default false) keeps the secret only when it reads
+as HTTP Basic credentials: standard base64, `=` padding optional but complete
+when present, decoding to bytes with a `:` and no ASCII control byte. RFC 7617
+leaves the default charset to any US-ASCII compatible encoding (ISO-8859-1,
+UTF-8), so every byte from 0x80 up is accepted without inferring an encoding.
+The user-id may be empty or non-ASCII. Some slash-joined prose also passes
+these byte checks. Generated dictionary samples retained 0.126-0.136% of
+lowercase pairs/triples, 1.227-1.353% of capitalized pairs/triples and 1.130%
+of mixed-case pairs; these rates describe the sample, not arbitrary prose.
+The rules reference gives the counts. The built-in
+`http-basic-auth` rule sets it, and a custom rule that replaces that ID keeps it
+unless it sets `base64_credential = false`.
+
 Required: id, description, regex, secret_group, keywords. keywords are lowercase
 prefilter strings; an empty list disables the keyword prefilter for that rule.
 secret_group selects the captured value. Optional secret_groups supplies

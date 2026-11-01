@@ -15,7 +15,7 @@ which detectors run; they do not replace each detector's existing filters.
 
 **Signature rules match recognizable credential formats.** A provider-specific
 prefix, suffix or structural marker supplies the evidence. Some of these rules
-also require entropy checks. There are 75 definitions, including three public-key
+also require entropy checks. There are 76 definitions, including three public-key
 rules that require the independent `detect_public_keys` opt-in.
 
 **Contextual rules need credential context.** A key such as `password` or `api_key`,

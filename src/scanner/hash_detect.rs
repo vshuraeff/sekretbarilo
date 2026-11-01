@@ -6,20 +6,14 @@
 /// require hash/git context keywords on the line to avoid false negatives on
 /// hex-based API keys that happen to match hash lengths.
 pub fn is_hash_in_context(data: &[u8], line: &[u8]) -> bool {
-    if !is_hex_string(data) {
-        return false;
-    }
-    let len = data.len();
-    let has_context = is_git_context(line);
-    // full-length hashes: MD5 (32), SHA-1 (40), SHA-256 (64)
-    if (len == 32 || len == 40 || len == 64) && has_context {
-        return true;
-    }
-    // abbreviated git hashes (7-12 hex chars) with context
-    if (7..=12).contains(&len) && has_context {
-        return true;
-    }
-    false
+    is_hash_shaped(data) && is_git_context(line)
+}
+
+/// the value half of `is_hash_in_context`: a hex run of a full hash length, MD5 (32), SHA-1 (40)
+/// or SHA-256 (64), or of an abbreviated git hash (7-12). the engine pairs it with a line's
+/// context flag computed once per line.
+pub(crate) fn is_hash_shaped(data: &[u8]) -> bool {
+    is_hex_string(data) && matches!(data.len(), 7..=12 | 32 | 40 | 64)
 }
 
 /// check if all bytes are hex digits [0-9a-fA-F]
@@ -115,7 +109,7 @@ fn is_padded_base64(value: &[u8], bytes: usize) -> bool {
 /// word boundary = the byte before/after the keyword is not alphanumeric.
 /// this prevents "sha" from matching inside "shadow" or "hash" inside "HashMap".
 /// uses case-insensitive comparison without allocating a lowered copy.
-fn is_git_context(line: &[u8]) -> bool {
+pub(crate) fn is_git_context(line: &[u8]) -> bool {
     let keywords = [
         &b"commit"[..],
         b"merge",

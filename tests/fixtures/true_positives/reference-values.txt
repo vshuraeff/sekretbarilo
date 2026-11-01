@@ -29,3 +29,9 @@ generic-high-entropy-value	asset_url: //cdn.example.com/{S32}
 generic-high-entropy-value	asset_url: //cdn.example.com/assets/{S32}/app.js
 generic-high-entropy-value	notes: 2026-09-10-{S32}.md
 generic-high-entropy-value	usage: docs/<{S32}>/notes.md
+# a named-key value that mixes expansions with an opaque literal, or holds one as an operand.
+generic-token-assignment	token="${TOKEN_PREFIX}{S32}"
+generic-token-assignment	token="[${TASK_ID:0:8}]-{S32}"
+generic-token-assignment	token="${GITHUB_TOKEN:-{S32}}-${RUN_ID}"
+generic-api-key	api_key="${API_KEY_PREFIX}-{S32}"
+generic-secret-assignment	client_secret="${CLIENT_ID}:{S32}"

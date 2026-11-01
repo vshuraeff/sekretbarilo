@@ -778,7 +778,7 @@ The `doctor` command checks your sekretbarilo installation health.
 sekretbarilo doctor
 ```
 
-Doctor prints five groups of checks. The abbreviated examples below use `/home/user/project` and `/home/user` for local paths. Configuration class states, rule overrides and enabled/total counts are omitted from these transcripts; defaults enable 111 of 115 built-in rules. Doctor reports `rule class heuristic: disabled (default)` and shows any explicit rule-id exception separately.
+Doctor prints five groups of checks. The abbreviated examples below use `/home/user/project` and `/home/user` for local paths. Configuration class states, rule overrides and enabled/total counts are omitted from these transcripts; defaults enable 112 of 116 built-in rules. Doctor reports `rule class heuristic: disabled (default)` and shows any explicit rule-id exception separately.
 
 ### Example output: nothing installed yet
 
@@ -833,7 +833,7 @@ sekretbarilo binary:
   [OK] sekretbarilo found in PATH
 ```
 
-Exit code 1, because of the single `[WARN]`. With one new custom rule using the default contextual class, the enabled/total count is 111/115. A custom rule declared heuristic remains disabled unless its class or rule-id switch enables it.
+Exit code 1, because of the single `[WARN]`. With one new custom rule using the default contextual class, the enabled/total count is 113/117. A custom rule declared heuristic remains disabled unless its class or rule-id switch enables it.
 
 ### Example output: healthy installation
 

@@ -6,12 +6,12 @@ nav_order: 6
 
 # Rules Reference
 
-sekretbarilo ships **115 built-in rule definitions**, with **111 active by default**. Each rule belongs to one rule class; the tables below give the class
+sekretbarilo ships **116 built-in rule definitions**, with **112 active by default**. Each rule belongs to one rule class; the tables below give the class
 for every listed rule. Classes describe detection evidence, not a precision rank.
 
 | Rule class | Rules | Default | Evidence |
 |------------|-------|---------|----------|
-| `signature` | 75 (including 3 public-key rules) | Enabled; public keys additionally require `detect_public_keys` | Credential format, marker, or provider-specific structure |
+| `signature` | 76 (including 3 public-key rules) | Enabled; public keys additionally require `detect_public_keys` | Credential format, marker, or provider-specific structure |
 | `contextual` | 39 | Enabled | Credential-naming key, authentication header, or credential-bearing URL |
 | `heuristic` | 1 | Disabled | Generic value shape and entropy without credential-specific context |
 
@@ -43,7 +43,8 @@ entropy thresholds; class membership does not change their existing filters.
 |---------|-------------|--------|-------|
 | `github-personal-access-token` | GitHub PAT | `ghp_` + 36+ chars | `signature` |
 | `github-oauth-token` | GitHub OAuth token | `gho_` + 36+ chars | `signature` |
-| `github-app-token` | GitHub app token | `ghs_` + 36+ chars | `signature` |
+| `github-user-to-server-token` | GitHub App user-to-server token | `ghu_` + 36+ chars | `signature` |
+| `github-app-token` | GitHub app installation token | `ghs_` + 36+ alphanumeric chars, or `ghs_` + numeric app ID + `_` + three base64url JWT segments | `signature` |
 | `github-refresh-token` | GitHub refresh token | `ghr_` + 36+ chars | `signature` |
 | `github-fine-grained-pat` | GitHub fine-grained PAT | `github_pat_` + 82+ chars | `signature` |
 | `gitlab-personal-access-token` | GitLab PAT | `glpat-` + 20+ chars | `signature` |
@@ -379,8 +380,8 @@ sekretbarilo audit --detect-public-keys
 
 ## False Positive Reduction
 
-1. **Entropy thresholds** — rules with entropy thresholds filter low-randomness strings; doc files get +1.0 bonus (the bonus does not apply to `generic-high-entropy-value` and `wireguard-key-assignment`)
-2. **Stopwords** — `example`, `test`, `placeholder`, `changeme`, `fake`, `mock`, `dummy`, etc. (`generic-high-entropy-value` and `wireguard-key-assignment` use only explicit user-configured stopwords)
+1. **Entropy thresholds** — rules with entropy thresholds filter low-randomness strings. Built-in credential-anchored rules use the same threshold on documentation paths; custom rules receive a +1.0 documentation margin unless `doc_entropy_bonus = false`. The heuristic entropy rule bypasses this margin independently of the field.
+2. **Stopwords** — built-in words match placeholder components bounded by value edges, plus any punctuation or whitespace except `+`, `/` and `=`. A run of `x`/`X` must fill a component over the same boundaries; the base64 symbols `+`, `/`, `=` do not delimit words. WireGuard and the heuristic entropy rule keep their existing built-in-word exceptions. Explicit user-word contracts stay unchanged. See [stopword policy]({{ '/configuration/#allowlist' | relative_url }}) for the accepted base64url ambiguity and custom-rule defaults.
 3. **Hash detection** — SHA-1, SHA-256, MD5, git commit hashes (`generic-high-entropy-value` bypasses this suppression)
 4. **Variable references** — `${VAR}`, `process.env.VAR`, `os.environ["VAR"]`, etc.
 5. **Template handling** — Jinja2/Helm/Mustache/Handlebars {% raw %}`{{ }}`{% endraw %}, GitHub Actions {% raw %}`${{ }}`{% endraw %}, ERB `<%= %>`, Terraform `${var.}`, etc. (`generic-high-entropy-value` bypasses this suppression)
@@ -425,9 +426,25 @@ paths = ["test/.*"]
 - `payload_group` — a nonzero capture index selecting the payload without its provider prefix. An index missing from the regex is a configuration error.
 - `min_payload_entropy` — minimum Shannon entropy of that payload, from 0.0 through 8.0. Requires `payload_group`.
 - `reject_hex_payload` — reject a payload consisting entirely of hex digits; defaults to `false`. Requires `payload_group`.
+- `builtin_stopwords` — `false` checks the value against only the user's own stopwords, not the built-in word list; defaults to `true`.
+- `doc_entropy_bonus` — `false` exempts the rule from the documentation-file entropy bonus; defaults to `true`.
+- `skip_template_lines` — `false` keeps reporting the rule on a line with template syntax; defaults to `true`.
+- `resume_at_value_end` — `true` resumes scanning at the end of the secret value, not of the whole match; defaults to `false`.
+- A same-id override that omits any of these four fields, or `base64_credential` below, keeps the built-in rule's value; a new rule id gets the defaults.
 - Both payload checks apply only when `payload_group` participates in the match. A match through a regex branch without that group is reported without them.
+- `base64_credential` — keep the secret only when it decodes as HTTP Basic credentials (RFC 7617): standard base64 with optional `=` padding, which must complete the last group when present. The decoded bytes must contain a `:` and no ASCII control byte (0x00–0x1F, 0x7F). RFC 7617 leaves the default charset unspecified but US-ASCII compatible, such as ISO-8859-1 or UTF-8, so every byte from 0x80 up is accepted without inferring an encoding. The user-id may be empty or non-ASCII. Some slash-joined prose also passes these byte checks. Defaults to `false`; `http-basic-auth` sets it.
 - `allowlist.regexes` — value patterns to skip
 - `allowlist.paths` — file path patterns to skip
+
+The accepted prose residual is sample-specific. A deterministic dictionary sweep (198,510 lowercase words of length 3–14, seed 6,187,204, 40,000 draws per family) measured the following among values meeting the rule's length and entropy gates. The actual scanner agreed with the byte predicate on all 141,182 gated values. These rates are not a guarantee for arbitrary prose.
+
+| Slash-joined prose family | Retained / gated values | Residual |
+| --- | ---: | ---: |
+| Lowercase pairs | 28 / 20,589 | 0.1360% |
+| Capitalized pairs | 279 / 20,625 | 1.3527% |
+| Lowercase triples | 50 / 39,673 | 0.1260% |
+| Capitalized triples | 487 / 39,678 | 1.2274% |
+| Mixed-case pairs | 233 / 20,617 | 1.1301% |
 
 ### Override or disable built-in rules
 
@@ -447,7 +464,7 @@ the independent public-key gate. Unknown class names and rule ids are errors.
 
 Rules merge in this order (later overrides earlier):
 
-1. Built-in defaults (115 definitions, 111 enabled by default)
+1. Built-in defaults (116 definitions, 112 enabled by default)
 2. System config (`/etc/sekretbarilo.toml`)
 3. User config (`~/.config/sekretbarilo.toml`)
 4. Project config (`.sekretbarilo.toml`)

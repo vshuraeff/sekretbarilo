@@ -80,6 +80,11 @@ fn rule(id: &str, regex: &str, keyword: &str, entropy: Option<f64>) -> Rule {
         payload_group: None,
         min_payload_entropy: None,
         reject_hex_payload: false,
+        builtin_stopwords: None,
+        doc_entropy_bonus: None,
+        skip_template_lines: None,
+        resume_at_value_end: None,
+        base64_credential: None,
         allowlist: RuleAllowlist::default(),
         class: None,
     }

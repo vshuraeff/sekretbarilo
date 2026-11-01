@@ -29,12 +29,12 @@ git commit -m "add config"
 When sekretbarilo finds a secret in your staged changes, it blocks the commit and shows you exactly what was detected:
 
 ```
-[ERROR] secret detected in staged changes
+[ERROR] secret(s) detected in staged changes
 
   file: config.py
   line: 3
   rule: aws-access-key-id
-  match: AK**************QA
+  match: AK****************FG
 
 commit blocked. 1 secret(s) found.
 use `git commit --no-verify` to bypass (not recommended).
@@ -66,13 +66,23 @@ vim src/api_client.py
 git add src/api_client.py
 git commit -m "add api client"
 
-# sekretbarilo blocks the commit
-# [ERROR] secret detected in staged changes
-#   file: src/api_client.py
-#   line: 12
-#   rule: generic-api-key
-#   match: sk_live_***************************
+```
 
+With an AWS access key ID on line 12, the hook's `sekretbarilo scan` reports:
+
+```
+[ERROR] secret(s) detected in staged changes
+
+  file: src/api_client.py
+  line: 12
+  rule: aws-access-key-id
+  match: AK****************FG
+
+commit blocked. 1 secret(s) found.
+use `git commit --no-verify` to bypass (not recommended).
+```
+
+```sh
 # fix the issue
 vim src/api_client.py
 # (move key to environment variable)
@@ -80,7 +90,6 @@ vim src/api_client.py
 # commit successfully
 git add src/api_client.py
 git commit -m "add api client"
-# [INFO] no secrets detected. commit allowed.
 ```
 
 ## Next steps

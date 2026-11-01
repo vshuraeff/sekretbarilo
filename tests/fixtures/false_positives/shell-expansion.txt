@@ -18,6 +18,12 @@ extracted_log="${archive_name:0:12}/extracted.log"
 bundle_stem="${bundle_identifier%.appextension}"
 snapshot_file="$((${#history_stack[@]}-1))/snapshot.json"
 release_notes="$(basename)/release-notes.md"
+# a named-key value made of expansions and punctuation alone is whatever the variables hold.
+token="[${TASK_ID:0:8}]"
+GITHUB_TOKEN="${TOKEN_PREFIX}-${RUN_ID:0:12}"
+GITHUB_TOKEN=[${TASK_ID:0:8}]
+api_key="${API_KEY_PREFIX}:${API_KEY_SUFFIX}"
+client_secret="${CLIENT_SECRET:-${FALLBACK_CLIENT_SECRET}}"
 # known gap: references alone whose words are all chunk-sized (`${raw_path/#\~/$HOME}`) carry no
 # word a value cut into short groups could not, and stay reported.
 # known gap: a camel-case word in an operand (`${bundle_id%.appExtension}`) is read like the mixed

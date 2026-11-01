@@ -339,3 +339,321 @@ fn redact_argv_masks_named_environment_values() {
     }
     assert!(misses.is_empty(), "not fully redacted: {misses:?}");
 }
+
+/// run one agent hook on `payload` from the isolated home and return its exit code.
+fn hook_exit(env: &IsolatedEnv, args: &[&str], payload: Option<&Value>) -> Option<i32> {
+    let mut child = env
+        .command()
+        .args(args)
+        .current_dir(env.home())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    if let Some(payload) = payload {
+        stdin
+            .write_all(&serde_json::to_vec(payload).unwrap())
+            .unwrap();
+    }
+    drop(stdin);
+    child.wait_with_output().unwrap().status.code()
+}
+
+/// a `"token="` string literal closes on the quote the quoted alternative would open the value
+/// with, and the call's argument tail after it is code. the whole-text pass of the agent hooks
+/// used to read that tail across the line break up to the next line's quote, which the per-line
+/// diff surface of check-file never sees.
+#[test]
+fn a_named_string_literal_before_an_argument_tail_is_no_value() {
+    let value = alnum(701);
+    for key in ["token", "api_key", "secret"] {
+        for text in [
+            format!(
+                "    XCTAssertFalse(output.contains(\"{key}=\"), file: file, line: line)\n    XCTAssertTrue(output.contains(\"done\"), file: file, line: line)\n"
+            ),
+            format!("expect(out.includes(\"{key}=\"), message, \"{value}\")\n"),
+            format!("assert \"{key}:\" , \"{value}\"\n"),
+            format!("{key} = \"\n{value}\"\n"),
+        ] {
+            assert_clear(&text);
+        }
+    }
+    for (key, rule) in [("token", TOKEN), ("api_key", API), ("secret", SECRET)] {
+        assert_detected(
+            &format!("{key} = \"{value}\"\nnext(\"x\", file: file, line: line)\n"),
+            &value,
+            rule,
+        );
+    }
+
+    let env = IsolatedEnv::new();
+    let text = "func check(_ output: String) {\n    XCTAssertFalse(output.contains(\"token=\"), file: file, line: line)\n    XCTAssertTrue(output.contains(\"done\"), file: file, line: line)\n}\n";
+    let source = env.home().join("OutputTests.swift");
+    std::fs::write(&source, text).unwrap();
+    assert_eq!(
+        hook_exit(&env, &["check-file", source.to_str().unwrap()], None),
+        Some(0)
+    );
+    assert_eq!(
+        hook_exit(
+            &env,
+            &["check-codex", "--stdin-json"],
+            Some(&bash_output(&env, text))
+        ),
+        Some(0)
+    );
+    let with_token = format!("{text}GITHUB_TOKEN={value}\n");
+    assert_eq!(
+        hook_exit(
+            &env,
+            &["check-codex", "--stdin-json"],
+            Some(&bash_output(&env, &with_token))
+        ),
+        Some(2)
+    );
+}
+
+/// a value made of shell parameter expansions and punctuation alone is whatever the variables
+/// hold; an opaque literal beside the expansions, or as an operand of one, is still a credential.
+#[test]
+fn a_named_value_of_expansions_alone_is_no_credential() {
+    for text in [
+        "token=\"[${TASK_ID:0:8}]\"",
+        "token='${PREFIX}-${TASK_ID:0:8}'",
+        "GITHUB_TOKEN=[${TASK_ID:0:8}]",
+        "GITHUB_TOKEN=\"${TOKEN_PREFIX}${RUN_ID}\"",
+        "export ACCESS_TOKEN=${PREFIX}/${#ITEMS[@]}/${ITEMS[0]}",
+        "api_key=\"${API_KEY_PREFIX}:${API_KEY_SUFFIX:-}\"",
+        "client_secret=\"${CLIENT_SECRET:-${FALLBACK_CLIENT_SECRET}}\"",
+        "{\"stdout\":\"x\\ntoken=[${TASK_ID:0:8}]-${RUN_ID}\"}",
+    ] {
+        assert_clear(text);
+    }
+    let value = alnum(801);
+    for (text, rule) in [
+        (format!("token=\"${{PREFIX}}{value}\""), TOKEN),
+        (format!("token=\"[${{TASK_ID:0:8}}]-{value}\""), TOKEN),
+        (
+            format!("token=\"${{GITHUB_TOKEN:-{value}}}-${{RUN_ID}}\""),
+            TOKEN,
+        ),
+        (format!("GITHUB_TOKEN=${{PREFIX}}-{value}"), TOKEN),
+        (format!("api_key=\"${{API_KEY_PREFIX}}-{value}\""), API),
+        (format!("client_secret=\"${{CLIENT_ID}}:{value}\""), SECRET),
+        (format!("token=\"{value}\""), TOKEN),
+        (format!("GITHUB_TOKEN={value}"), TOKEN),
+    ] {
+        assert!(
+            reports(&text, &value, rule),
+            "{rule} missed the value in {text:?}"
+        );
+    }
+}
+
+/// whether the default scanner reports `literal` under `rule` somewhere in `text`.
+fn reports(text: &str, literal: &str, rule: &str) -> bool {
+    let config = ProjectConfig::default();
+    let rules = load_rules_with_config(&config).unwrap();
+    let scanner = compile_rules(&rules).unwrap();
+    let allowlist = build_allowlist(&config, &rules).unwrap();
+    scan_text(text, &scanner, &allowlist)
+        .iter()
+        .any(|found| found.rule_id == rule && text[found.range.clone()].contains(literal))
+}
+
+/// a codex `PostToolUse` payload whose Bash output is `text`.
+fn bash_output(env: &IsolatedEnv, text: &str) -> Value {
+    json!({
+        "session_id": "session-post",
+        "turn_id": "turn-post",
+        "cwd": env.home(),
+        "hook_event_name": "PostToolUse",
+        "model": "gpt-test",
+        "permission_mode": "default",
+        "tool_name": "Bash",
+        "tool_input": {"command": "cat fixture.txt"},
+        "tool_response": text,
+        "tool_use_id": "exec-post"
+    })
+}
+
+/// exit codes of check-file over `text` written to a file and of check-codex over it as Bash output.
+fn surface_exits(env: &IsolatedEnv, text: &str) -> (Option<i32>, Option<i32>) {
+    let source = env.home().join("fixture.txt");
+    std::fs::write(&source, text).unwrap();
+    (
+        hook_exit(env, &["check-file", source.to_str().unwrap()], None),
+        hook_exit(
+            env,
+            &["check-codex", "--stdin-json"],
+            Some(&bash_output(env, text)),
+        ),
+    )
+}
+
+/// a quoted value may open on any byte: only a quote that closes the name's own string literal
+/// opens none. `)`, `,` and a space leading a real value are part of it, and a later assignment
+/// behind a dropped literal is still read.
+#[test]
+fn a_quoted_value_may_open_on_a_parenthesis_comma_or_space() {
+    let value = alnum(901);
+    let env = IsolatedEnv::new();
+    let mut failures = Vec::new();
+    for (key, rule) in [("token", TOKEN), ("api_key", API), ("secret", SECRET)] {
+        for prefix in [")", ",", " "] {
+            let literal = format!("{prefix}{value}");
+            for text in [
+                format!("{key}=\"{literal}\"\n"),
+                format!("{key} = '{literal}'\n"),
+                format!("request({key}=\"{literal}\", retry: true)\n"),
+            ] {
+                if !reports(&text, &literal, rule) {
+                    failures.push(format!("scan_text {rule} {prefix:?} {}", text.len()));
+                }
+                let exits = surface_exits(&env, &text);
+                if exits != (Some(2), Some(2)) {
+                    failures.push(format!("hooks {rule} {prefix:?} {exits:?}"));
+                }
+            }
+        }
+        let text = format!(
+            "assert(out.contains(\"{key}=\"), message); let {key} = \"{value}\"\nnext(\"x\", file: file)\n"
+        );
+        if !reports(&text, &value, rule) {
+            failures.push(format!("scan_text {rule} behind a literal"));
+        }
+        let exits = surface_exits(&env, &text);
+        if exits != (Some(2), Some(2)) {
+            failures.push(format!("hooks {rule} behind a literal {exits:?}"));
+        }
+        for text in [
+            format!("expect(out.includes(\"{key}=\"), message, \"{value}\")\n"),
+            format!("expect(out.includes('{key}: '), message, '{value}')\n"),
+            format!("assert(out.contains(\"GITHUB_{key}=\"), message, \"{value}\")\n"),
+        ] {
+            let exits = surface_exits(&env, &text);
+            if exits != (Some(0), Some(0)) {
+                failures.push(format!("hooks {rule} literal tail {exits:?}"));
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// a literal beside the expansions or as a default operand is the value while it is read or the
+/// variable is unset, whatever its alphabet: non-ascii letters and a symbols-only fallback are
+/// no separators.
+#[test]
+fn a_non_ascii_or_symbol_literal_beside_expansions_is_still_a_credential() {
+    let mut state = 0x5EED_0907_u64;
+    let mut step = || {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        state
+    };
+    let cjk: String = (0..48)
+        .map(|_| char::from_u32(0x4E00 + (step() % 0x51FF) as u32).unwrap())
+        .collect();
+    let symbol_set = b"!@#%^&*_-+=:;,.?/~";
+    let symbols: String = (0..64)
+        .map(|_| char::from(symbol_set[(step() % symbol_set.len() as u64) as usize]))
+        .collect();
+    let env = IsolatedEnv::new();
+    let mut failures = Vec::new();
+    for (key, rule) in [("token", TOKEN), ("api_key", API), ("secret", SECRET)] {
+        for (case, literal, text) in [
+            ("cjk beside", &cjk, format!("{key}=\"{cjk}-${{RUN_ID}}\"\n")),
+            (
+                "cjk default",
+                &cjk,
+                format!("{key}=\"${{TOKEN:-{cjk}}}-${{RUN_ID}}\"\n"),
+            ),
+            (
+                "symbol default",
+                &symbols,
+                format!("{key}=\"${{TOKEN:-{symbols}}}-${{RUN_ID}}\"\n"),
+            ),
+        ] {
+            if !reports(&text, literal, rule) {
+                failures.push(format!("scan_text {rule} {case}"));
+            }
+            let exit = hook_exit(
+                &env,
+                &["check-codex", "--stdin-json"],
+                Some(&bash_output(&env, &text)),
+            );
+            if exit != Some(2) {
+                failures.push(format!("check-codex {rule} {case} {exit:?}"));
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[test]
+fn separator_literals_split_by_references_are_still_credentials() {
+    let symbols = opaque(68, 0x5EED_1102, b"-_.:/@+,=~[]()#%");
+    let split: String = symbols
+        .as_bytes()
+        .chunks(4)
+        .map(|chunk| {
+            format!(
+                "${{UNSET_separator}}{}",
+                std::str::from_utf8(chunk).unwrap()
+            )
+        })
+        .collect();
+    let env = IsolatedEnv::new();
+    let mut failures = Vec::new();
+    for (key, rule) in [("token", TOKEN), ("api_key", API), ("secret", SECRET)] {
+        for (case, value) in [
+            ("beside", split.clone()),
+            ("default", format!("${{TOKEN:-{split}}}-${{RUN_ID}}")),
+        ] {
+            let text = format!("{key}=\"{value}\"\n");
+            if !reports(&text, &value, rule) {
+                failures.push(format!("scan_text {rule} {case}"));
+            }
+            let exit = hook_exit(
+                &env,
+                &["check-codex", "--stdin-json"],
+                Some(&bash_output(&env, &text)),
+            );
+            if exit != Some(2) {
+                failures.push(format!("check-codex {rule} {case} {exit:?}"));
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[test]
+fn reference_compositions_within_the_separator_limit_stay_clear() {
+    let env = IsolatedEnv::new();
+    let mut failures = Vec::new();
+    for key in ["token", "api_key", "secret"] {
+        for (case, value) in [
+            ("host and path", "${HOST}:${PORT}/${PATH}"),
+            ("named parts", "${A}-${B}_${C}"),
+            ("scheme", "${SCHEME}://${HOST}"),
+            ("empty and reference defaults", "${A:-}${B:=${C}}"),
+            ("sibling defaults", "${A:-[${B}]}${C:-[${D}]}"),
+            ("nested defaults", "${A:-[${B:-[${C}]}]}"),
+        ] {
+            let text = format!("{key}=\"{value}\"\n");
+            assert_clear(&text);
+            let exit = hook_exit(
+                &env,
+                &["check-codex", "--stdin-json"],
+                Some(&bash_output(&env, &text)),
+            );
+            if exit != Some(0) {
+                failures.push(format!("check-codex {key} {case} {exit:?}"));
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}

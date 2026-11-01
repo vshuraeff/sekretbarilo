@@ -22,6 +22,24 @@ pub struct Rule {
     pub min_payload_entropy: Option<f64>,
     #[serde(default)]
     pub reject_hex_payload: bool,
+    // the five behaviour fields: omitted (None) inherits the built-in rule of the same id
+    // in `merge_rules`, else the default (true, true, true, false, false) at compile time
+    /// false: only user stopwords apply to the value, not the built-in word list
+    #[serde(default)]
+    pub builtin_stopwords: Option<bool>,
+    /// false: no extra entropy margin on doc files
+    #[serde(default)]
+    pub doc_entropy_bonus: Option<bool>,
+    /// false: a template-syntax line does not suppress a finding of this rule
+    #[serde(default)]
+    pub skip_template_lines: Option<bool>,
+    /// true: scanning resumes at the end of the secret value, not of the whole match
+    #[serde(default)]
+    pub resume_at_value_end: Option<bool>,
+    /// true: keep the secret only when it decodes as http basic credentials (see
+    /// `engine::is_basic_credential`)
+    #[serde(default)]
+    pub base64_credential: Option<bool>,
     #[serde(default)]
     pub allowlist: RuleAllowlist,
     /// rule class: what evidence the rule keys on. omitted on a user rule, it
@@ -158,6 +176,11 @@ pub struct CompiledRule {
     pub payload_group: Option<usize>,
     pub min_payload_entropy: Option<f64>,
     pub reject_hex_payload: bool,
+    pub builtin_stopwords: bool,
+    pub doc_entropy_bonus: bool,
+    pub skip_template_lines: bool,
+    pub resume_at_value_end: bool,
+    pub base64_credential: bool,
     pub capture_indices: CaptureIndices,
     /// true if the rule uses context-dependent matching (case-insensitive
     /// assignment patterns). set automatically from the regex pattern.
@@ -175,6 +198,11 @@ impl std::fmt::Debug for CompiledRule {
             .field("payload_group", &self.payload_group)
             .field("min_payload_entropy", &self.min_payload_entropy)
             .field("reject_hex_payload", &self.reject_hex_payload)
+            .field("builtin_stopwords", &self.builtin_stopwords)
+            .field("doc_entropy_bonus", &self.doc_entropy_bonus)
+            .field("skip_template_lines", &self.skip_template_lines)
+            .field("resume_at_value_end", &self.resume_at_value_end)
+            .field("base64_credential", &self.base64_credential)
             .field("capture_indices", &self.capture_indices)
             .finish()
     }
@@ -217,6 +245,14 @@ pub fn merge_rules(defaults: Vec<Rule>, user_rules: Vec<Rule>) -> Vec<Rule> {
             if user_rule.class.is_none() {
                 user_rule.class = merged[pos].class;
             }
+            let base = &merged[pos];
+            user_rule.builtin_stopwords = user_rule.builtin_stopwords.or(base.builtin_stopwords);
+            user_rule.doc_entropy_bonus = user_rule.doc_entropy_bonus.or(base.doc_entropy_bonus);
+            user_rule.skip_template_lines =
+                user_rule.skip_template_lines.or(base.skip_template_lines);
+            user_rule.resume_at_value_end =
+                user_rule.resume_at_value_end.or(base.resume_at_value_end);
+            user_rule.base64_credential = user_rule.base64_credential.or(base.base64_credential);
             merged[pos] = user_rule;
         } else {
             merged.push(user_rule);
@@ -269,6 +305,11 @@ pub fn compile_rules(rules: &[Rule]) -> Result<CompiledScanner, String> {
             payload_group: rule.payload_group,
             min_payload_entropy: rule.min_payload_entropy,
             reject_hex_payload: rule.reject_hex_payload,
+            builtin_stopwords: rule.builtin_stopwords.unwrap_or(true),
+            doc_entropy_bonus: rule.doc_entropy_bonus.unwrap_or(true),
+            skip_template_lines: rule.skip_template_lines.unwrap_or(true),
+            resume_at_value_end: rule.resume_at_value_end.unwrap_or(false),
+            base64_credential: rule.base64_credential.unwrap_or(false),
             capture_indices,
             context_dependent,
         });
@@ -319,6 +360,11 @@ mod tests {
             payload_group: None,
             min_payload_entropy: None,
             reject_hex_payload: false,
+            builtin_stopwords: None,
+            doc_entropy_bonus: None,
+            skip_template_lines: None,
+            resume_at_value_end: None,
+            base64_credential: None,
             allowlist: RuleAllowlist::default(),
             class: None,
         }
@@ -434,6 +480,166 @@ mod tests {
         assert!(compile_rules(&[hex_only.clone()]).is_err());
         hex_only.payload_group = Some(2);
         assert!(compile_rules(&[hex_only]).is_ok());
+    }
+
+    #[test]
+    fn rule_behaviour_fields_parse_and_default() {
+        let toml = r#"
+[[rules]]
+id = "plain"
+description = "plain"
+regex = "(x)"
+secret_group = 1
+keywords = ["x"]
+
+[[rules]]
+id = "tuned"
+description = "tuned"
+regex = "(x)"
+secret_group = 1
+keywords = ["x"]
+builtin_stopwords = false
+doc_entropy_bonus = false
+skip_template_lines = false
+resume_at_value_end = true
+"#;
+        let rules = load_rules_from_str(toml).unwrap();
+        let plain = &rules[0];
+        assert_eq!(
+            (plain.builtin_stopwords, plain.doc_entropy_bonus),
+            (None, None)
+        );
+        assert_eq!(
+            (plain.skip_template_lines, plain.resume_at_value_end),
+            (None, None)
+        );
+        let tuned = &rules[1];
+        assert_eq!(
+            (tuned.builtin_stopwords, tuned.doc_entropy_bonus),
+            (Some(false), Some(false))
+        );
+        assert_eq!(
+            (tuned.skip_template_lines, tuned.resume_at_value_end),
+            (Some(false), Some(true))
+        );
+        let compiled = compile_rules(&rules).unwrap();
+        assert!(compiled.rules[0].builtin_stopwords && !compiled.rules[0].resume_at_value_end);
+        assert!(!compiled.rules[1].skip_template_lines && compiled.rules[1].resume_at_value_end);
+    }
+
+    #[test]
+    fn only_wireguard_changes_stopword_template_and_resume_policies() {
+        let rules = load_default_rules().unwrap();
+        for rule in &rules {
+            let tuned = rule.builtin_stopwords.is_some()
+                || rule.skip_template_lines.is_some()
+                || rule.resume_at_value_end.is_some();
+            assert_eq!(tuned, rule.id == "wireguard-key-assignment", "{}", rule.id);
+        }
+    }
+
+    fn merged_fields(user: Rule) -> (Option<bool>, Option<bool>, Option<bool>, Option<bool>) {
+        let merged = merge_rules(load_default_rules().unwrap(), vec![user.clone()]);
+        let rule = merged.iter().find(|rule| rule.id == user.id).unwrap();
+        (
+            rule.builtin_stopwords,
+            rule.doc_entropy_bonus,
+            rule.skip_template_lines,
+            rule.resume_at_value_end,
+        )
+    }
+
+    #[test]
+    fn same_id_override_omitting_the_fields_inherits_all_four() {
+        let custom = make_rule("wireguard-key-assignment", r"(psk)", vec!["psk"]);
+        let fields = merged_fields(custom.clone());
+        assert_eq!(fields, (Some(false), Some(false), Some(false), Some(true)));
+        // each field inherited on its own while the others are set explicitly
+        let mut only_stopwords = custom.clone();
+        only_stopwords.doc_entropy_bonus = Some(true);
+        only_stopwords.skip_template_lines = Some(true);
+        only_stopwords.resume_at_value_end = Some(false);
+        assert_eq!(merged_fields(only_stopwords).0, Some(false));
+        let mut only_doc = custom.clone();
+        only_doc.builtin_stopwords = Some(true);
+        only_doc.skip_template_lines = Some(true);
+        only_doc.resume_at_value_end = Some(false);
+        assert_eq!(merged_fields(only_doc).1, Some(false));
+        let mut only_template = custom.clone();
+        only_template.builtin_stopwords = Some(true);
+        only_template.doc_entropy_bonus = Some(true);
+        only_template.resume_at_value_end = Some(false);
+        assert_eq!(merged_fields(only_template).2, Some(false));
+        let mut only_resume = custom;
+        only_resume.builtin_stopwords = Some(true);
+        only_resume.doc_entropy_bonus = Some(true);
+        only_resume.skip_template_lines = Some(true);
+        assert_eq!(merged_fields(only_resume).3, Some(true));
+    }
+
+    #[test]
+    fn same_id_override_explicit_fields_win() {
+        let mut custom = make_rule("wireguard-key-assignment", r"(psk)", vec!["psk"]);
+        custom.builtin_stopwords = Some(true);
+        custom.doc_entropy_bonus = Some(true);
+        custom.skip_template_lines = Some(true);
+        custom.resume_at_value_end = Some(false);
+        assert_eq!(
+            merged_fields(custom),
+            (Some(true), Some(true), Some(true), Some(false))
+        );
+    }
+
+    #[test]
+    fn same_id_basic_auth_override_inherits_or_sets_the_credential_check() {
+        let compiled = |user: Rule| {
+            let merged = merge_rules(load_default_rules().unwrap(), vec![user]);
+            let scanner = compile_rules(&merged).unwrap();
+            scanner
+                .rules
+                .iter()
+                .find(|r| r.id == "http-basic-auth")
+                .unwrap()
+                .base64_credential
+        };
+        let custom = make_rule("http-basic-auth", r"(basic)", vec!["basic"]);
+        assert_eq!(custom.base64_credential, None);
+        assert!(compiled(custom.clone()), "omitted field inherits the check");
+        let mut off = custom;
+        off.base64_credential = Some(false);
+        assert!(!compiled(off), "explicit false wins");
+        let new_id = make_rule("my-basic", r"(basic)", vec!["basic"]);
+        let merged = merge_rules(load_default_rules().unwrap(), vec![new_id]);
+        let scanner = compile_rules(&merged).unwrap();
+        assert!(
+            !scanner
+                .rules
+                .iter()
+                .find(|r| r.id == "my-basic")
+                .unwrap()
+                .base64_credential
+        );
+    }
+
+    #[test]
+    fn new_custom_id_compiles_with_the_defaults() {
+        let custom = make_rule("my-own-rule", r"(psk)", vec!["psk"]);
+        assert_eq!(merged_fields(custom.clone()), (None, None, None, None));
+        let merged = merge_rules(load_default_rules().unwrap(), vec![custom]);
+        let scanner = compile_rules(&merged).unwrap();
+        let rule = scanner
+            .rules
+            .iter()
+            .find(|r| r.id == "my-own-rule")
+            .unwrap();
+        assert!(rule.builtin_stopwords && rule.doc_entropy_bonus && rule.skip_template_lines);
+        assert!(!rule.resume_at_value_end);
+        let wireguard = scanner
+            .rules
+            .iter()
+            .find(|r| r.id == "wireguard-key-assignment")
+            .unwrap();
+        assert!(!wireguard.builtin_stopwords && wireguard.resume_at_value_end);
     }
 
     #[test]

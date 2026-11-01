@@ -310,10 +310,10 @@ fn every_random_key_clears_the_entropy_threshold_and_is_detected() {
 
     let doc_threshold = threshold + allowlist.doc_entropy_bonus();
     let keys: Vec<String> = (0..10_000).map(|_| wg_key(&mut state)).collect();
-    let mut with_stopword = 0;
+    let mut with_legacy_x_run = 0;
     let mut below_doc_threshold = 0;
     for key in &keys {
-        with_stopword += usize::from(allowlist.contains_stopword(key.as_bytes()));
+        with_legacy_x_run += usize::from(allowlist.is_placeholder_pattern(key.as_bytes()));
         below_doc_threshold += usize::from(shannon_entropy(key.as_bytes()) < doc_threshold);
         let text = format!(r#"{{"psk": "{key}"}}"#);
         assert!(
@@ -323,8 +323,8 @@ fn every_random_key_clears_the_entropy_threshold_and_is_detected() {
             "missed a random key"
         );
     }
-    // the seed reaches both paths the recall claim is about
-    assert!(with_stopword > 0 && below_doc_threshold > 0);
+    // the seed covers embedded x/X runs and values below the old documentation margin.
+    assert!(with_legacy_x_run > 0 && below_doc_threshold > 0);
 
     let doc: String = keys.iter().map(|key| format!("psk: {key}\n")).collect();
     let findings = scan(&[diff_file_at("docs/vpn.md", &doc)], &scanner, &allowlist);

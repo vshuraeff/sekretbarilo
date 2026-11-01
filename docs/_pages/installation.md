@@ -339,19 +339,23 @@ The checks below cover installation problems. For an agent hook that is installe
 
 If the pre-commit hook doesn't run when you commit:
 
-```sh
-# check if the hook file exists
-ls -la .git/hooks/pre-commit
+1. Check `core.hooksPath` from inside the affected repository:
 
-# check if it's executable
-chmod +x .git/hooks/pre-commit
+   ```sh
+   git config --show-origin --show-scope --get-all core.hooksPath
+   git rev-parse --git-path hooks/pre-commit
+   ```
 
-# check if git is skipping hooks (environment variable)
-echo $GIT_HOOKS_DISABLED
+   The first command lists every configured value and its scope (system, global, local, worktree, or command). No output means no value is configured. The second command resolves the hook path Git will use with the current configuration. A `git -c core.hooksPath=... commit` invocation can override that path for that one command, so also check the command or wrapper you use to commit.
 
-# try a test commit
-git commit --allow-empty -m "test commit"
-```
+2. Check that the resolved path names a file called exactly `pre-commit`, without an extension, and that it is executable:
+
+   ```sh
+   ls -la "$(git rev-parse --git-path hooks/pre-commit)"
+   chmod +x "$(git rev-parse --git-path hooks/pre-commit)"
+   ```
+
+3. Check that your commit command or wrapper does not pass `--no-verify` (or `-n`), which skips the pre-commit hook.
 
 ### Permission denied
 
