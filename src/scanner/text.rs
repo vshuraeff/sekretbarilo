@@ -113,9 +113,19 @@ pub fn scan_text(
 /// replace detected values in memory, retaining every original CR and LF byte.
 /// overlapping matches produce one replacement; multiline values retain their line breaks.
 pub fn redact_text(text: &str, scanner: &CompiledScanner, allowlist: &CompiledAllowlist) -> String {
+    redact_by_readings(text, &[(scanner, allowlist)])
+}
+
+/// `redact_text` under several configurations. each one scans the original text, so a mask from
+/// one cannot break a match of another, and a value stays visible only when all let it through.
+pub fn redact_by_readings(
+    text: &str,
+    readings: &[(&CompiledScanner, &CompiledAllowlist)],
+) -> String {
     let ranges = merge_ranges(
-        scan_text(text, scanner, allowlist)
-            .into_iter()
+        readings
+            .iter()
+            .flat_map(|(scanner, allowlist)| scan_text(text, scanner, allowlist))
             .map(|found| found.range)
             .collect(),
     );

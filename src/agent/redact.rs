@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use serde_json::{Value, json};
 
 use crate::config;
-use crate::scanner::{engine::redact_text, rules::compile_rules};
+use crate::scanner::{engine::redact_by_readings, rules::compile_rules};
 
 const MAX_BYTES: usize = 10 * 1024 * 1024;
 const STOP_REASON: &str = "sekretbarilo could not safely redact tool output; continuation stopped.";
@@ -104,12 +104,15 @@ fn evaluate(payload: &mut Value) -> Result<bool, ()> {
         return Ok(false);
     }
     visit_text(&tool, response, &mut |text| text.to_owned())?;
-    let project = super::codex::load_trusted_redact_config(&base, vanished).map_err(|_| ())?;
-    let rules = config::load_rules_with_config(&project).map_err(|_| ())?;
-    let allowlist = config::build_allowlist(&project, &rules).map_err(|_| ())?;
-    let scanner = compile_rules(&rules).map_err(|_| ())?;
+    let mut compiled = Vec::new();
+    for project in super::codex::load_redact_readings(&base, vanished).map_err(|_| ())? {
+        let rules = config::load_rules_with_config(&project).map_err(|_| ())?;
+        let allowlist = config::build_allowlist(&project, &rules).map_err(|_| ())?;
+        compiled.push((compile_rules(&rules).map_err(|_| ())?, allowlist));
+    }
+    let readings: Vec<_> = compiled.iter().map(|(s, a)| (s, a)).collect();
     visit_text(&tool, response, &mut |text| {
-        redact_text(text, &scanner, &allowlist)
+        redact_by_readings(text, &readings)
     })
 }
 

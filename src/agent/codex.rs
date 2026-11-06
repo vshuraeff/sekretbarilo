@@ -786,6 +786,37 @@ pub(crate) fn load_trusted_redact_config(
     load_trusted_config(base_dir, vanished, true)
 }
 
+/// the configurations a replacing redaction scans the same text with, so a value stays visible
+/// only when every reading lets it through.
+///
+/// a vanished cwd under a hierarchy layer has two readings, because a removed directory and a
+/// removed symlink leave the same surviving state. the fixed layers alone mask whatever an
+/// allowlist in that hierarchy would admit, and the fixed layers with the hierarchy keep the
+/// rules it defines. the second reading can only add masks, so the hierarchy cannot clear a value
+/// the fixed layers report. every other outcome is the single reading of
+/// `load_trusted_redact_config`.
+pub(crate) fn load_redact_readings(
+    base_dir: &Path,
+    vanished: Option<&Path>,
+) -> Result<Vec<config::ProjectConfig>, String> {
+    let (Some(vanished), Some(home)) = (vanished, discovery::home_dir()) else {
+        return Ok(vec![load_trusted_redact_config(base_dir, vanished)?]);
+    };
+    if discovery::discover_hierarchy(base_dir, &home).is_empty() {
+        return Ok(vec![load_trusted_redact_config(base_dir, Some(vanished))?]);
+    }
+    let fixed = discovery::discover_layers(vanished, &home);
+    // the path reappeared after it was resolved, so its own layers are not these.
+    if fixed.iter().any(|layer| layer.origin != LayerOrigin::Fixed) {
+        return Err("could not establish configuration trust".to_string());
+    }
+    let chain = discovery::discover_layers(base_dir, &home);
+    Ok(vec![
+        parse_trusted_layers(base_dir, Some(vanished), fixed, true)?,
+        parse_trusted_layers(base_dir, Some(vanished), chain, true)?,
+    ])
+}
+
 fn load_trusted_config(
     base_dir: &Path,
     vanished: Option<&Path>,
@@ -816,6 +847,16 @@ fn load_trusted_config(
         }
         None => discovery::discover_layers(base_dir, &home),
     };
+    parse_trusted_layers(base_dir, vanished, layers, redact)
+}
+
+/// judge the discovered layers and merge the trusted ones; see `load_trusted_project_config`.
+fn parse_trusted_layers(
+    base_dir: &Path,
+    vanished: Option<&Path>,
+    layers: Vec<discovery::ConfigLayer>,
+    redact: bool,
+) -> Result<config::ProjectConfig, String> {
     if layers.is_empty() {
         return Ok(config::ProjectConfig::default());
     }
@@ -829,8 +870,9 @@ fn load_trusted_config(
             LayerTrust::Committed(content) => content,
             LayerTrust::Symlinked | LayerTrust::Uncommitted => {
                 if vanished.is_some() {
-                    // a fixed layer whose path the environment does not pin, judged against the
-                    // ancestor's repository, which may not have been the vanished path's own.
+                    // a fixed layer whose path the environment does not pin, or a hierarchy layer
+                    // of the second reading, judged against the ancestor's repository, which may
+                    // not have been the vanished path's own.
                     return Err("could not establish configuration trust".to_string());
                 }
                 if redact {

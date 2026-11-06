@@ -5,7 +5,7 @@ use std::cell::Cell;
 use std::ops::Range;
 
 #[allow(unused_imports)]
-pub use crate::scanner::text::{TextMatch, redact_text, scan_text};
+pub use crate::scanner::text::{TextMatch, redact_by_readings, redact_text, scan_text};
 
 use crate::config::SourcePosture;
 use crate::config::allowlist::CompiledAllowlist;

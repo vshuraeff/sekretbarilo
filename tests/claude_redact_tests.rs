@@ -957,21 +957,98 @@ fn vanished_cwd_keeps_the_user_layer_of_a_non_git_home() {
 }
 
 #[test]
-fn vanished_cwd_stops_on_a_layer_of_a_non_git_parent() {
+fn vanished_cwd_keeps_the_rules_of_a_layer_of_a_non_git_parent() {
     // the removed entry may have been a link elsewhere, so this layer may never have been on
-    // the cwd's path, and dropping it can lose a rule.
+    // the cwd's path, and dropping it can lose a rule. it can only add masks.
     let env = IsolatedEnv::new();
     let parent = env.home().join("work");
     std::fs::create_dir_all(&parent).unwrap();
     std::fs::write(parent.join(".sekretbarilo.toml"), CUSTOM_RULE).unwrap();
     let cwd = parent.join("repo-gone");
+    let clean = run_bytes(&env, &clean_payload(&cwd));
+    assert!(
+        clean.stdout.is_empty(),
+        "{:?}",
+        String::from_utf8_lossy(&clean.stdout)
+    );
+    assert_custom_value_masked(&run_bytes(&env, &custom_value_payload(&cwd)));
+}
+
+#[test]
+fn vanished_cwd_masks_built_in_findings_under_a_hierarchy_layer() {
+    // `git worktree remove` run inside a worktree, under `~/work/.sekretbarilo.toml`.
+    let env = IsolatedEnv::new();
+    let parent = env.home().join("work");
+    std::fs::create_dir_all(&parent).unwrap();
+    std::fs::write(parent.join(".sekretbarilo.toml"), "[settings]\n").unwrap();
+    let cwd = parent.join(".worktrees/repo/unit-gone");
+    let payload = json!({"hook_event_name": "PostToolUse", "tool_name": "Bash", "cwd": cwd,
+        "tool_response": {"stdout": format!("removed\n{SECRET}\n"), "stderr": "", "interrupted": false}});
+    let output = run_bytes(&env, &serde_json::to_vec(&payload).unwrap());
+    let envelope: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(envelope.get("continue").is_none(), "unexpected stop");
+    assert_eq!(replacement(&output)["stdout"], "removed\n[REDACTED]\n");
+}
+
+#[test]
+fn vanished_cwd_ignores_a_hierarchy_allowlist_for_a_rule_of_the_fixed_layers() {
+    let env = IsolatedEnv::new();
+    env.write_user_config(CUSTOM_RULE);
+    let parent = env.home().join("work");
+    std::fs::create_dir_all(&parent).unwrap();
+    std::fs::write(parent.join(".sekretbarilo.toml"), ALLOW_CUSTOM).unwrap();
+    let live = parent.join("live");
+    std::fs::create_dir_all(&live).unwrap();
+    // control: from an existing cwd the same allowlist lets the value through.
+    assert!(
+        run_bytes(&env, &custom_value_payload(&live))
+            .stdout
+            .is_empty()
+    );
+    let cwd = parent.join("repo-gone");
+    assert_custom_value_masked(&run_bytes(&env, &custom_value_payload(&cwd)));
+}
+
+#[test]
+fn vanished_cwd_applies_each_reading_to_the_original_text() {
+    // `[` is outside the outer rule's class, so scanning the first reading's masked text would
+    // no longer match and would leave the head and tail of the outer value visible.
+    let env = IsolatedEnv::new();
+    env.write_user_config(
+        "[[rules]]\nid='inner'\ndescription='inner'\nregex='(INNER[0-9]+)'\nkeywords=['INNER']\nsecret_group=1\n",
+    );
+    let parent = env.home().join("work");
+    std::fs::create_dir_all(&parent).unwrap();
+    std::fs::write(
+        parent.join(".sekretbarilo.toml"),
+        "[[rules]]\nid='outer'\ndescription='outer'\nregex='OUTER=([A-Z0-9:]+);'\nkeywords=['OUTER']\nsecret_group=1\n",
+    )
+    .unwrap();
+    let cwd = parent.join("repo-gone");
+    let payload = json!({"hook_event_name": "PostToolUse", "tool_name": "Bash", "cwd": cwd,
+        "tool_response": {"stdout": "OUTER=KEEPVALUE:INNER123:TAILVALUE;", "stderr": "", "interrupted": false}});
+    let output = run_bytes(&env, &serde_json::to_vec(&payload).unwrap());
+    let envelope: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(envelope.get("continue").is_none(), "unexpected stop");
+    assert_eq!(replacement(&output)["stdout"], "OUTER=[REDACTED];");
+}
+
+#[test]
+fn vanished_cwd_stops_on_an_invalid_hierarchy_layer() {
+    // its rules cannot be applied, and dropping it can lose one.
+    let env = IsolatedEnv::new();
+    let parent = env.home().join("work");
+    std::fs::create_dir_all(&parent).unwrap();
+    std::fs::write(parent.join(".sekretbarilo.toml"), "not toml [").unwrap();
+    let cwd = parent.join("repo-gone");
     assert_stopped(&run_bytes(&env, &clean_payload(&cwd)), &cwd);
 }
 
 #[test]
-fn vanished_cwd_stops_whether_a_link_or_a_directory_was_removed() {
+fn vanished_cwd_masks_whether_a_link_or_a_directory_was_removed() {
     // a removed directory and a removed symlink leave the same surviving state. through the
-    // link the holder's committed allowlist was never on the cwd's physical path.
+    // link the holder's committed allowlist was never on the cwd's physical path, so it must
+    // not let the value through, and the turn goes on with the output masked.
     let env = IsolatedEnv::new();
     env.write_user_config(CUSTOM_RULE);
     let git = |repo: &std::path::Path, args: &[&str]| {
@@ -1006,11 +1083,11 @@ fn vanished_cwd_stops_whether_a_link_or_a_directory_was_removed() {
     assert_custom_value_masked(&run_bytes(&env, &custom_value_payload(&cwd)));
 
     std::fs::remove_file(&linked).unwrap();
-    assert_stopped(&run_bytes(&env, &clean_payload(&cwd)), &cwd);
+    assert_custom_value_masked(&run_bytes(&env, &custom_value_payload(&cwd)));
 
     std::fs::create_dir_all(&cwd).unwrap();
     std::fs::remove_dir_all(&linked).unwrap();
-    assert_stopped(&run_bytes(&env, &clean_payload(&cwd)), &cwd);
+    assert_custom_value_masked(&run_bytes(&env, &custom_value_payload(&cwd)));
 }
 
 #[test]

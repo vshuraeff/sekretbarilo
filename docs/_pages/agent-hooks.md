@@ -97,6 +97,8 @@ Input and the complete serialized hook response are each limited to **10 MiB (10
 
 Exit 2 is not a way to remove PostToolUse output: the tool has already executed. Stopping continuation is also not a substitute for a valid replacement when the original result exists.
 
+A command can remove its own working directory, as `git worktree remove` does when run from inside the worktree. With a `.sekretbarilo.toml` between the nearest surviving parent and your home directory, the output is scanned twice: by the system and user layers alone, and by those layers with the parents' layers. Whatever either scan finds is masked, so a parent's allowlist cannot clear a value the system and user layers report for this call, while the parents' rules still apply. Layers that were on the removed path are gone with it, so a rule defined only there does not apply to that call.
+
 #### Limits of This Version
 
 - Only successful `PostToolUse` results from `Bash`, text `Read`, and `Grep` are supported. `PostToolUseFailure` does not offer this replacement contract.
