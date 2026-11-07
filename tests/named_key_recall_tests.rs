@@ -4,10 +4,11 @@ use std::io::Write;
 use std::process::{Command, Stdio};
 
 use common::IsolatedEnv;
+use sekretbarilo::config::allowlist::CompiledAllowlist;
 use sekretbarilo::config::{ProjectConfig, build_allowlist, load_rules_with_config};
 use sekretbarilo::scanner::engine::{redact_text, scan_text};
 use sekretbarilo::scanner::entropy::shannon_entropy;
-use sekretbarilo::scanner::rules::compile_rules;
+use sekretbarilo::scanner::rules::{CompiledScanner, compile_rules};
 use serde_json::{Value, json};
 
 const API: &str = "generic-api-key";
@@ -75,12 +76,9 @@ fn assert_detected(text: &str, value: &str, rule: &str) {
 }
 
 fn assert_clear(text: &str) {
-    let config = ProjectConfig::default();
-    let rules = load_rules_with_config(&config).unwrap();
-    let scanner = compile_rules(&rules).unwrap();
-    let allowlist = build_allowlist(&config, &rules).unwrap();
-    assert!(scan_text(text, &scanner, &allowlist).is_empty(), "{text:?}");
-    assert_eq!(redact_text(text, &scanner, &allowlist), text);
+    let (scanner, allowlist) = &*DEFAULT_SCANNER;
+    assert!(scan_text(text, scanner, allowlist).is_empty(), "{text:?}");
+    assert_eq!(redact_text(text, scanner, allowlist), text);
 }
 
 fn assert_bash_redaction(env: &IsolatedEnv, text: &str, expected: &str) {
@@ -656,4 +654,208 @@ fn reference_compositions_within_the_separator_limit_stay_clear() {
         }
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// the default scanner, compiled once for the tests that scan thousands of samples.
+static DEFAULT_SCANNER: std::sync::LazyLock<(CompiledScanner, CompiledAllowlist)> =
+    std::sync::LazyLock::new(|| {
+        let config = ProjectConfig::default();
+        let rules = load_rules_with_config(&config).unwrap();
+        (
+            compile_rules(&rules).unwrap(),
+            build_allowlist(&config, &rules).unwrap(),
+        )
+    });
+
+fn scanned_values(text: &str, rule: &str) -> Vec<String> {
+    let (scanner, allowlist) = &*DEFAULT_SCANNER;
+    scan_text(text, scanner, allowlist)
+        .into_iter()
+        .filter(|finding| finding.rule_id == rule)
+        .map(|finding| text[finding.range].to_owned())
+        .collect()
+}
+
+#[test]
+fn an_opaque_shell_operand_is_the_value_and_the_only_part_reported() {
+    let value = alnum(1301);
+    for (key, rule) in [
+        ("token", TOKEN),
+        ("GITHUB_TOKEN", TOKEN),
+        ("api_key", API),
+        ("client_secret", SECRET),
+        ("SECRET_KEY", SECRET),
+    ] {
+        for operator in [":-", ":=", ":+", ":?"] {
+            for name in ["SOME_VAR", "TEST_EXAMPLE_TOKEN"] {
+                let expansion = format!("${{{name}{operator}{value}}}");
+                for text in [
+                    format!("{key}={expansion}"),
+                    format!("{key}=\"{expansion}\""),
+                    format!("{key}: {expansion}"),
+                ] {
+                    assert_eq!(
+                        scanned_values(&text, rule),
+                        [value.as_str()],
+                        "{rule} in {text:?}"
+                    );
+                }
+            }
+        }
+    }
+    // the unquoted password value stops at a brace, so only the quoted form reaches the rule.
+    for operator in [":-", ":=", ":+", ":?"] {
+        assert_eq!(
+            scanned_values(
+                &format!("PASSWORD=\"${{SOME_VAR{operator}{value}}}\""),
+                "generic-password-assignment"
+            ),
+            [value.as_str()]
+        );
+    }
+    let hex_key = hex(40, 1302);
+    assert_eq!(
+        scanned_values(&format!("token=${{SOME_VAR:-{hex_key}}}"), TOKEN),
+        [hex_key.as_str()]
+    );
+    let (scanner, allowlist) = &*DEFAULT_SCANNER;
+    assert_eq!(
+        redact_text(&format!("token=${{SOME_VAR:-{value}}}"), scanner, allowlist),
+        "token=${SOME_VAR:-[REDACTED]}"
+    );
+}
+
+#[test]
+fn a_chunked_shell_operand_is_still_a_credential() {
+    let value = opaque(32, 1401, b"abcdefghijklmnopqrstuvwxyz");
+    let cut = value
+        .as_bytes()
+        .chunks(4)
+        .map(|chunk| std::str::from_utf8(chunk).unwrap())
+        .collect::<Vec<_>>()
+        .join("-");
+    assert!(shannon_entropy(cut.as_bytes()) >= 4.0);
+    assert_eq!(
+        scanned_values(&format!("token=${{SOME_VAR:-{cut}}}"), TOKEN),
+        [cut.as_str()]
+    );
+}
+
+#[test]
+fn a_reference_or_word_operand_stays_exempt() {
+    for operand in [
+        "",
+        "changeme",
+        "fallback",
+        "defaultpass",
+        "default-secret-key",
+        "dev-secret-key-change-me",
+        "your-access-token-here",
+        "/var/lib/app/state",
+        "/run/secrets/x7k2-state/token",
+        "$OTHER_TOKEN",
+        "$(cat /run/secrets/token)",
+        "$(openssl rand -hex 32)",
+        "http://localhost:8080",
+        "SECRET_KEY must be set",
+        "toĸen is required, see the guide",
+        "8080",
+    ] {
+        for key in ["token", "api_key", "client_secret", "PASSWORD"] {
+            for operator in [":-", ":=", ":+", ":?"] {
+                let expansion = format!("${{SOME_VAR{operator}{operand}}}");
+                assert_clear(&format!("{key}=\"{expansion}\""));
+                if !operand.contains([' ', '(']) {
+                    assert_clear(&format!("{key}={expansion}"));
+                }
+            }
+        }
+    }
+    for reference in [
+        "${SOME_VAR}",
+        "$SOME_VAR",
+        "%SOME_VAR%",
+        "${var.some_token}",
+        "${{ secrets.SOME_TOKEN }}",
+    ] {
+        for key in ["token", "api_key", "client_secret", "PASSWORD"] {
+            assert_clear(&format!("{key}=\"{reference}\""));
+        }
+    }
+}
+
+/// the operand is a concrete literal the way a quoted bare value is, so the password branches that
+/// only a concrete literal reaches read it too.
+#[test]
+fn a_literal_password_operand_is_judged_as_a_quoted_password() {
+    const PASSWORD: &str = "generic-password-assignment";
+    let digits_between = "x7k2m9q4v1n8";
+    let four_classes = "xQ7rT2!mK9";
+    for value in [digits_between, four_classes] {
+        assert_eq!(
+            scanned_values(&format!("password=\"{value}\""), PASSWORD),
+            [value],
+            "bare {value}"
+        );
+        assert_eq!(
+            scanned_values(&format!("password=\"${{DB_PW:-{value}}}\""), PASSWORD),
+            [value],
+            "operand {value}"
+        );
+    }
+    // a word or a reference is no literal credential, whatever the branches would say.
+    assert_clear("password=\"${DB_PW:-defaultpass}\"");
+    assert_clear("password=\"${DB_PW:-$OTHER_PASSWORD}\"");
+}
+
+/// the steps that read a bare value read the operand, not the variable's name beside it.
+#[test]
+fn the_operand_is_judged_without_the_name_beside_it() {
+    let mut samples = 0;
+    for seed in 1..=200_u64 {
+        let run = opaque(
+            64,
+            seed.wrapping_mul(0x9E37_79B9),
+            b"abcdefghijklmnopqrstuvwxyz",
+        );
+        let value = format!("{}.{}", &run[..10], &run[10..20]);
+        if value.starts_with('.')
+            || value.ends_with('.')
+            || !scanned_values(&format!("token={value}"), TOKEN).contains(&value)
+        {
+            continue;
+        }
+        samples += 1;
+        for text in [
+            format!("token=${{SOME_VAR:-{value}}}"),
+            format!("token=\"${{SOME_VAR:-{value}}}\""),
+        ] {
+            assert_eq!(scanned_values(&text, TOKEN), [value.as_str()], "{text:?}");
+        }
+    }
+    assert!(samples > 20, "only {samples} samples are reported bare");
+
+    let chunks = opaque(32, 1601, b"abcdefghijklmnopqrstuvwxyz")
+        .as_bytes()
+        .chunks(4)
+        .map(|chunk| std::str::from_utf8(chunk).unwrap())
+        .collect::<Vec<_>>()
+        .join("-");
+    let path = format!("/tmp/{chunks}/state.lock");
+    assert_eq!(
+        scanned_values(&format!("token=\"${{SOME_VAR:-{path}}}\""), TOKEN),
+        [path.as_str()]
+    );
+}
+
+#[test]
+fn a_user_allowlist_judges_the_operand_of_an_expansion() {
+    let value = alnum(1501);
+    let toml = format!("[[allowlist.rules]]\nid = \"{TOKEN}\"\nregexes = [\"^{value}$\"]\n");
+    let config: ProjectConfig = toml::from_str(&toml).unwrap();
+    let rules = load_rules_with_config(&config).unwrap();
+    let scanner = compile_rules(&rules).unwrap();
+    let allowlist = build_allowlist(&config, &rules).unwrap();
+    let text = format!("token=${{SOME_VAR:-{value}}}");
+    assert!(scan_text(&text, &scanner, &allowlist).is_empty());
 }

@@ -91,6 +91,42 @@ fn is_source_expression_value(
         && !wordshape::is_chunked_with_digits(value, b"")
 }
 
+/// the shortest operand an entropy-gated rule reads as a credential: the api and token rules'
+/// value minimum. the entropy gate passes anything under `MIN_ENTROPY_LENGTH` bytes, so without a
+/// bound of its own every short default (`8080`, `1.2.3`) would be reported.
+const MIN_OPERAND_LENGTH: usize = 16;
+
+/// the operand of a whole `${NAME:-value}`, `:=`, `:+` or `:?` expansion when it is a literal that
+/// could be a credential, as a range of `value`. an empty or short operand, a phrase, a path and an
+/// operand that reads as code or words (`changeme`, `$OTHER`, `$(cat /run/secrets/key)`) leave the
+/// expansion a reference. the `?` operand is an error message, but an opaque one is still read as a
+/// credential.
+fn literal_shell_operand(value: &[u8], entropy_floor: Option<f64>) -> Option<Range<usize>> {
+    let leading = value.len() - value.trim_ascii_start().len();
+    let body = value.trim_ascii().strip_prefix(b"${")?.strip_suffix(b"}")?;
+    let name_end = body
+        .iter()
+        .position(|byte| !byte.is_ascii_alphanumeric() && *byte != b'_')?;
+    if !body[0].is_ascii_alphabetic() && body[0] != b'_' {
+        return None;
+    }
+    let [b':', b'-' | b'=' | b'+' | b'?', operand @ ..] = &body[name_end..] else {
+        return None;
+    };
+    if operand.is_empty()
+        || (entropy_floor.is_some() && operand.len() < MIN_OPERAND_LENGTH)
+        || operand.contains(&b'}')
+        || operand.iter().any(u8::is_ascii_whitespace)
+        || (entropy::is_path_shaped(operand)
+            && !crate::scanner::wordshape::is_chunked_with_digits(operand, b"/"))
+        || is_source_expression_value(operand, entropy_floor, false)
+    {
+        return None;
+    }
+    let start = leading + b"${".len() + name_end + b":-".len();
+    Some(start..start + operand.len())
+}
+
 /// how many `${A:-${B}}` defaults may nest in a value made of expansions alone.
 const MAX_EXPANSION_DEPTH: usize = 4;
 
@@ -366,12 +402,14 @@ pub struct Finding {
 ///      scan uses staged context; audit/check-file use their full file context;
 ///      history and other callers without context feed added lines only. unknown
 ///      lexical state or missing context lines always retain full posture.
-///      4b. entropy value shape gates, switchable exemptions and assignment hex bypass
-///      with a fixed 2.0-bit hex-symbol entropy floor
-///      4c. user entropy-key allowlist (independent of the exemption switch)
-///      4d. the unquoted `KEY=value` / `key: value` alternative of the named-key contextual
+///      4b. a literal operand of a whole `${NAME:-value}` expansion replaces the value
+///      (`literal_shell_operand`), so every later step judges and reports the operand alone
+///      4c. the unquoted `KEY=value` / `key: value` alternative of the named-key contextual
 ///      rules drops a word it read only in part and a path-shaped, reference-rooted, code or
 ///      word value (independent of the exemption switch)
+///      4d. entropy value shape gates, switchable exemptions and assignment hex bypass
+///      with a fixed 2.0-bit hex-symbol entropy floor
+///      4e. user entropy-key allowlist (independent of the exemption switch)
 ///   5. per-rule allowlist check (value regex + path match)
 ///   6. variable references (URL passwords skip pure references only, not defaults; named-key
 ///      values made of expansions and separators alone, `is_expansion_only`)
@@ -2471,6 +2509,17 @@ fn evaluate_candidate(
             return;
         }
     }
+    // a literal operand of `${NAME:-value}` is the value whenever the operator yields it, and the
+    // rest of the expansion is syntax: the operand alone is judged and reported from here on.
+    let literal_operand = rule.id != "password-in-url"
+        && match literal_shell_operand(secret, effective_threshold(ctx, rule)) {
+            Some(operand) => {
+                secret_range = secret_range.start + operand.start..secret_range.start + operand.end;
+                secret = &ctx.input[secret_range.clone()];
+                true
+            }
+            None => false,
+        };
     // the unquoted alternative of a named-key contextual rule reads a whole shell or yaml word,
     // which may be a filesystem path (`SECRET_KEY=/run/secrets/key`), a path rooted at a
     // variable reference or a source expression rather than a credential. a run that stops
@@ -2794,15 +2843,18 @@ fn evaluate_candidate(
     // only in a configuration file.
     if rule.id == "generic-password-assignment" {
         let key = captures.named(rule.capture_indices.password_key);
-        let concrete_literal =
-            is_concrete_password_literal(ctx.input, ctx.file_path, key, &secret_range)
-                || ctx
-                    .file_path
-                    .and_then(config_syntax)
-                    .zip(key)
-                    .is_some_and(|(syntax, key)| {
-                        is_config_value_literal(ctx.input, syntax, key.range(), &secret_range)
-                    });
+        // a literal operand follows the operator, not a quote or the key, and is concrete itself
+        // unless the shell would still expand it.
+        let concrete_literal = (literal_operand
+            && !secret.iter().any(|byte| matches!(byte, b'$' | b'`' | b'#')))
+            || is_concrete_password_literal(ctx.input, ctx.file_path, key, &secret_range)
+            || ctx
+                .file_path
+                .and_then(config_syntax)
+                .zip(key)
+                .is_some_and(|(syntax, key)| {
+                    is_config_value_literal(ctx.input, syntax, key.range(), &secret_range)
+                });
         if !password::is_strong_assignment_password(secret, concrete_literal) {
             return;
         }

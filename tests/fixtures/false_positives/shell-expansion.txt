@@ -3,6 +3,11 @@
 # special parameters. every name, pattern, replacement, default and literal piece reads as a word
 # or a short number, an operand is written in uniform case, and a run of 20 or more bytes reads as
 # words on its own, so an opaque operand, subscript or list item stays reported.
+API_KEY=${API_KEY:-changeme}
+token="${GITHUB_TOKEN:-}"
+SECRET_KEY=${SECRET_KEY:-dev-secret-key-change-me}
+client_secret="${CLIENT_SECRET:?client secret must be set}"
+ACCESS_TOKEN=${ACCESS_TOKEN:-$(cat /run/secrets/access_token)}
 display_path="${display_config/#$HOME/~}"
 clean_name="${bundle_display_name//[$'\n\r\t']/}"
 safe_name="${bundle_display_name//|/-}"

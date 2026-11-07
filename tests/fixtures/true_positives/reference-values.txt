@@ -2,6 +2,11 @@
 # module path, a scheme-less url or a dated file name. the syntax around it vouches for nothing,
 # so each value stays reported in every position the path recognizers read.
 # format: <rule id> TAB <line>.
+generic-token-assignment	token=${SOME_VAR:-{S32}}
+generic-token-assignment	GITHUB_TOKEN="${GITHUB_TOKEN:={S32}}"
+generic-api-key	API_KEY=${API_KEY:+{S32}}
+generic-secret-assignment	client_secret: ${CLIENT_SECRET:?{S32}}
+generic-password-assignment	PASSWORD="${DB_PASSWORD:-{S32}}"
 generic-high-entropy-value	cache_dir="${STATE_DIR:-{S32}}/settings.log"
 generic-high-entropy-value	${VAR:-{S32}}
 generic-high-entropy-value	${VAR:={B64_44}}
