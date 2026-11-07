@@ -20,6 +20,7 @@ src/
     codex.rs        - check-codex command, codex cli hook installation
     apply_patch.rs  - extraction of added lines from codex apply_patch payloads
     hooks_json.rs   - shared reader/writer for claude and codex hook json
+    redact.rs       - in-memory replacement of successful claude tool output
   audit/
     mod.rs          - working tree scanning
     history.rs      - git history scanning with branch resolution
@@ -34,20 +35,39 @@ src/
     mod.rs          - git diff retrieval
     parser.rs       - unified diff parser
   doctor/mod.rs     - diagnostic health checks
+  help/
+    mod.rs          - `help config` and `help rules` commands
+    config.md       - embedded configuration reference
   hook/mod.rs       - git pre-commit hook installation
   output/
     mod.rs          - finding reports
     masking.rs      - secret value masking
   scanner/
+    mod.rs          - scanner module root
     engine.rs       - main scanning pipeline
     rules.rs        - rule compilation
     entropy.rs      - shannon entropy calculation
     literals.rs     - per-language string-literal tracker (source posture)
+    source_literals.rs - complete-source parsers that report literal bodies (source posture)
+    calllit.rs      - call-argument literal collector
+    litshape.rs     - literal-shape recognition (symbol tables, format templates)
+    regexshape.rs   - regex-shape recognition
+    syntax.rs       - source-expression recognition
+    urlshape.rs     - url-shape recognition
+    wordshape.rs    - word-structure recognition
+    text.rs         - agent-surface scan of complete text
     hash_detect.rs  - hash detection (sha-1, sha-256, md5)
     password.rs     - password strength heuristics
     pubkey.rs       - public key block detection and tracking
 fuzz/fuzz_targets/
+  config_load.rs    - config parsing
+  diff_parser.rs    - unified diff parsing
+  hook_payload.rs   - claude and codex hook payload parsing
   literals.rs       - literal tracker against arbitrary bytes
+  predicates.rs     - exemption predicates
+  scan_line.rs      - diff-surface scanning
+  scan_text.rs      - agent-surface scanning
+  source_posture.rs - source-posture scanning
 ```
 
 ## Rule selection
