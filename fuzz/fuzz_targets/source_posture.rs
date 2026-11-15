@@ -88,10 +88,22 @@ fuzz_target!(|data: &[u8]| {
                 .any(|window| window == finding.matched_value)
         );
     }
-    let baseline = identities(&all);
-    let retained = identities(&narrowed);
-    for (identity, count) in &retained {
-        assert!(*count <= baseline.get(identity).copied().unwrap_or(0));
+    // the literal posture only narrows: the parser clip (adr 0003, amendment 2026-09-26) may
+    // report the in-body segments of a straddling tier-3 finding, so a retained value is a
+    // full-posture finding of that rule on that line or a contiguous part of one. one finding can
+    // yield several equal segments, so counts are not compared.
+    for finding in narrowed
+        .iter()
+        .filter(|finding| finding.rule_id == "generic-high-entropy-value")
+    {
+        assert!(all.iter().any(|base| {
+            base.rule_id == finding.rule_id
+                && base.line == finding.line
+                && base
+                    .matched_value
+                    .windows(finding.matched_value.len())
+                    .any(|window| window == finding.matched_value)
+        }));
     }
     let non_tier3 = |findings: &[Finding]| {
         identities(
