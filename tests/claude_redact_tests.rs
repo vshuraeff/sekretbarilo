@@ -1277,3 +1277,167 @@ fn wireguard_keys_holding_builtin_stopwords_are_still_masked() {
     }
     assert!(unmasked.is_empty(), "keys not masked: {unmasked:?}");
 }
+
+// any tool besides Bash, Read and Grep: a plain string or MCP content blocks.
+const OTHER_TOOLS: [&str; 3] = [
+    "mcp__example__search",
+    "mcp__plugin_example_db__query",
+    "ExampleTool",
+];
+
+fn assert_silent(output: &Output, label: &str) {
+    assert_eq!(output.status.code(), Some(0), "{label}");
+    assert!(
+        output.stdout.is_empty(),
+        "{label}: {:?}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    assert!(output.stderr.is_empty(), "{label}");
+}
+
+fn write_invalid_user_config(env: &IsolatedEnv) {
+    let dir = env.home().join(".config/sekretbarilo");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("sekretbarilo.toml"),
+        "[[rules]]\nid='bad'\ndescription='invalid regex'\nsecret_group=0\nregex='['\nkeywords=['bad']",
+    )
+    .unwrap();
+}
+
+#[test]
+fn any_tool_string_response_is_redacted_as_a_string() {
+    let env = IsolatedEnv::with_heuristic();
+    let original = format!("привет {SECRET}\r\nport = 5432\n{SECOND}\n");
+    for tool in OTHER_TOOLS {
+        let output = run(&env, tool, json!(original));
+        assert!(output.stderr.is_empty(), "{tool}");
+        let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert!(value.get("continue").is_none(), "{tool}");
+        assert_eq!(
+            replacement(&output),
+            json!("привет [REDACTED]\r\nport = 5432\n[REDACTED]\n"),
+            "{tool}"
+        );
+        assert_silent(&run(&env, tool, json!("host = localhost\n")), tool);
+    }
+}
+
+#[test]
+fn any_tool_content_blocks_keep_order_metadata_and_non_text_blocks() {
+    let env = IsolatedEnv::with_heuristic();
+    let response = json!([
+        {"type": "text", "text": format!("key {SECRET}\n"), "annotations": {"priority": 1}},
+        {"type": "image", "data": SECRET, "mimeType": "image/png"},
+        {"type": "text", "text": "clean line"},
+        {"type": "resource", "resource": {"uri": "file:///example", "text": "unchanged"}},
+        {"type": "text", "text": SECOND, "future": [true, 17]}
+    ]);
+    let mut expected = response.clone();
+    expected[0]["text"] = json!("key [REDACTED]\n");
+    expected[4]["text"] = json!("[REDACTED]");
+    for tool in OTHER_TOOLS {
+        let output = run(&env, tool, response.clone());
+        let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert!(value.get("continue").is_none(), "{tool}");
+        let updated = value["hookSpecificOutput"]["updatedToolOutput"].clone();
+        assert_eq!(updated, expected, "{tool}");
+        // a non-text block is outside the scanned shape and keeps its bytes.
+        assert_eq!(updated[1]["data"], SECRET, "{tool}");
+        assert_silent(
+            &run(
+                &env,
+                tool,
+                json!([{"type": "text", "text": "clean"}, {"type": "image", "data": "x"}]),
+            ),
+            tool,
+        );
+    }
+}
+
+#[test]
+fn any_tool_unknown_shapes_pass_untouched_before_config_work() {
+    let env = IsolatedEnv::with_heuristic();
+    // an invalid config would stop the turn if it were loaded.
+    write_invalid_user_config(&env);
+    for response in [
+        json!({"stdout": SECRET}),
+        json!({"content": [{"type": "text", "text": SECRET}]}),
+        json!(17),
+        json!(null),
+        json!(true),
+        json!([]),
+        json!([SECRET]),
+        json!([{"type": "text", "text": SECRET}, SECRET]),
+        json!([{"text": SECRET}]),
+        json!([{"type": "text"}]),
+        json!([{"type": "text", "text": {"nested": SECRET}}]),
+        json!([{"type": 7, "text": SECRET}]),
+    ] {
+        for tool in OTHER_TOOLS {
+            assert_silent(
+                &run(&env, tool, response.clone()),
+                &format!("{tool} {response}"),
+            );
+        }
+    }
+}
+
+#[test]
+fn any_tool_failure_erases_text_and_keeps_the_shape() {
+    let env = IsolatedEnv::with_heuristic();
+    write_invalid_user_config(&env);
+    for tool in OTHER_TOOLS {
+        let output = run(&env, tool, json!(format!("innocent\r\n{SECRET}")));
+        assert!(output.stderr.is_empty(), "{tool}");
+        let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(value["continue"], false, "{tool}");
+        assert_eq!(replacement(&output), json!("[REDACTED]\r\n"), "{tool}");
+
+        let blocks = json!([
+            {"type": "text", "text": format!("innocent\n{SECRET}")},
+            {"type": "image", "data": "kept"}
+        ]);
+        let output = run(&env, tool, blocks);
+        let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(value["continue"], false, "{tool}");
+        assert_eq!(
+            replacement(&output),
+            json!([{"type": "text", "text": "[REDACTED]\n"}, {"type": "image", "data": "kept"}]),
+            "{tool}"
+        );
+    }
+    // a wrong event stops before tool handling and still keeps the block shape.
+    let output = run_bytes(
+        &env,
+        &serde_json::to_vec(&json!({"hook_event_name": "PreToolUse",
+            "tool_name": "mcp__example__search",
+            "tool_response": [{"type": "text", "text": SECRET}]}))
+        .unwrap(),
+    );
+    assert_eq!(
+        replacement(&output),
+        json!([{"type": "text", "text": "[REDACTED]"}])
+    );
+}
+
+#[test]
+fn any_tool_with_an_invalid_cwd_stops_and_erases() {
+    let env = IsolatedEnv::with_heuristic();
+    for cwd in [json!(""), json!("relative/dir"), json!(5)] {
+        let output = run_bytes(
+            &env,
+            &serde_json::to_vec(&json!({"hook_event_name": "PostToolUse",
+                "tool_name": "mcp__example__search", "cwd": cwd,
+                "tool_response": [{"type": "text", "text": SECRET}]}))
+            .unwrap(),
+        );
+        let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(value["continue"], false, "{cwd}");
+        assert_eq!(
+            replacement(&output),
+            json!([{"type": "text", "text": "[REDACTED]"}]),
+            "{cwd}"
+        );
+    }
+}
