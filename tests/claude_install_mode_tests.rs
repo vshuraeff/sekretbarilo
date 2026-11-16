@@ -185,6 +185,9 @@ fn widened_redact_matchers_are_current_and_survive_reinstall() {
         Some("^(Bash|Read|Grep|mcp__.*)$"),
         Some("Bash|Read|Grep"),
         Some("^(Grep|Read|Bash)$"),
+        // exact-name lists, as claude code reads a matcher without regex characters
+        Some("Grep, Read, Bash"),
+        Some("Bash | Read | Grep | mcp__example__search"),
         None,
     ] {
         let fixture = Fixture::new();
@@ -231,6 +234,11 @@ fn noncovering_redact_matchers_are_outdated_and_repaired() {
         json!("mcp__.*"),
         json!("["),
         Value::Null,
+        // exact names that are only substrings of the tools: a regex would match,
+        // claude code never fires the hook for them
+        json!("Bas|Rea|Gre"),
+        json!("Bash|Read|Grepx"),
+        json!("Bash Read Grep"),
     ] {
         let fixture = Fixture::new();
         fixture.success(&["install", "agent-hook", "claude", "--mode", "redact"]);

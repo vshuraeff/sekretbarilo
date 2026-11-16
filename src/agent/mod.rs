@@ -367,18 +367,21 @@ mod tests {
         }
     }
 
-    fn compiled_binary() -> PathBuf {
+    /// the binary `cargo test` builds beside the unit-test executable. that
+    /// executable sits in `deps/` under the profile directory up to rust 1.99
+    /// and deeper, under `build/<package>/<hash>/`, from 1.100, so the profile
+    /// directory is the nearest ancestor that holds the binary.
+    pub(super) fn compiled_binary() -> PathBuf {
         if let Some(path) = option_env!("CARGO_BIN_EXE_sekretbarilo") {
             return PathBuf::from(path);
         }
-
-        let profile_dir = std::env::current_exe()
-            .unwrap()
-            .parent()
-            .and_then(Path::parent)
-            .unwrap()
-            .to_path_buf();
-        profile_dir.join(format!("sekretbarilo{}", std::env::consts::EXE_SUFFIX))
+        let name = format!("sekretbarilo{}", std::env::consts::EXE_SUFFIX);
+        let exe = std::env::current_exe().unwrap();
+        exe.ancestors()
+            .skip(1)
+            .map(|dir| dir.join(&name))
+            .find(|path| path.is_file())
+            .unwrap_or_else(|| exe.parent().and_then(Path::parent).unwrap().join(&name))
     }
 
     fn git_success(repo: &Path, args: &[&str]) {

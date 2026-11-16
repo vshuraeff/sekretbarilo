@@ -1299,20 +1299,6 @@ mod tests {
         serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap()
     }
 
-    fn compiled_binary() -> PathBuf {
-        if let Some(path) = option_env!("CARGO_BIN_EXE_sekretbarilo") {
-            return PathBuf::from(path);
-        }
-
-        let profile_dir = std::env::current_exe()
-            .unwrap()
-            .parent()
-            .and_then(Path::parent)
-            .unwrap()
-            .to_path_buf();
-        profile_dir.join(format!("sekretbarilo{}", std::env::consts::EXE_SUFFIX))
-    }
-
     fn git_success(repo: &Path, args: &[&str]) {
         let output = Command::new("git")
             .arg("-C")
@@ -1764,7 +1750,7 @@ mod tests {
         }))
         .unwrap();
 
-        let binary = compiled_binary();
+        let binary = super::super::tests::compiled_binary();
         assert!(
             binary.is_file(),
             "compiled binary missing at {}",

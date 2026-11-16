@@ -50,13 +50,20 @@ impl ClaudeHookMode {
         match self {
             Self::Block => matcher == self.matcher(),
             Self::Redact => {
-                matcher.is_empty()
-                    || matcher == "*"
-                    || regex::Regex::new(matcher).is_ok_and(|regex| {
-                        ["Bash", "Read", "Grep"]
-                            .iter()
-                            .all(|tool| regex.is_match(tool))
-                    })
+                const TOOLS: [&str; 3] = ["Bash", "Read", "Grep"];
+                if matcher.is_empty() || matcher == "*" {
+                    return true;
+                }
+                // claude code compares a matcher of only these characters as a
+                // list of exact tool names split on `|` or `,`, not as a regex.
+                if matcher.bytes().all(|byte| {
+                    byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b' ' | b',' | b'|')
+                }) {
+                    let names: Vec<&str> = matcher.split(['|', ',']).map(str::trim).collect();
+                    return TOOLS.iter().all(|tool| names.contains(tool));
+                }
+                regex::Regex::new(matcher)
+                    .is_ok_and(|regex| TOOLS.iter().all(|tool| regex.is_match(tool)))
             }
         }
     }
