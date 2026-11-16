@@ -61,7 +61,7 @@ jq '.hooks.PostToolUse[0]' .claude/settings.json
 }
 ```
 
-Notice the matcher. Redaction runs after `Bash`, `Read` and `Grep` return, not before them. The command is written as an absolute path, so it keeps working whatever `PATH` Claude Code is started with.
+Notice the matcher. Redaction runs after `Bash`, `Read` and `Grep` return, not before them. To mask MCP tool results too, change it to `^(Bash|Read|Grep|mcp__.*)$`; [Other tools]({{ '/agent-hooks/#other-tools-mcp-and-custom' | relative_url }}) covers the choices and their cost. The command is written as an absolute path, so it keeps working whatever `PATH` Claude Code is started with.
 
 ## Step 3: create a value worth hiding
 
@@ -110,7 +110,18 @@ jq -Rs '{hook_event_name:"PostToolUse",tool_name:"Bash",tool_response:{stdout:.,
 {"hookSpecificOutput":{"hookEventName":"PostToolUse","updatedToolOutput":{"interrupted":false,"stderr":"","stdout":"api_key = \"[REDACTED]\"\n"}}}
 ```
 
-That is the whole mechanism. The assignment survives, the quotes survive, the value is gone. Here the replacement is `[REDACTED]` rather than the masked shape of step 4: a finding is reported to you, so it keeps two characters at each end for recognition, while a redacted result is aimed at the model and keeps nothing.
+That is the whole mechanism. The assignment survives, the quotes survive, the value is gone. An MCP tool's result is an array of content blocks, and the hook answers with the same array:
+
+```sh
+jq -Rs '{hook_event_name:"PostToolUse",tool_name:"mcp__example__search",tool_response:[{type:"text",text:.}]}' config.txt \
+  | sekretbarilo redact-claude --stdin-json
+```
+
+```json
+{"hookSpecificOutput":{"hookEventName":"PostToolUse","updatedToolOutput":[{"text":"api_key = \"[REDACTED]\"\n","type":"text"}]}}
+```
+
+As before, the value is gone. Here the replacement is `[REDACTED]` rather than the masked shape of step 4: a finding is reported to you, so it keeps two characters at each end for recognition, while a redacted result is aimed at the model and keeps nothing.
 
 ## Step 6: see it in a Claude session
 
@@ -119,7 +130,7 @@ Start Claude Code in this directory and ask it to read `config.txt`. The tool ca
 Keep the value out of your prompt. If you paste it in, the model already has it and no hook can take it back.
 
 {: .warning }
-Redaction is not a guarantee. A hook that crashes, times out, or fails to deliver its answer leaves the original result exposed, and results from MCP tools, images, PDFs and notebooks are outside its scope.
+Redaction is not a guarantee. A hook that crashes, times out, or fails to deliver its answer leaves the original result exposed, and images, PDFs, notebooks, non-text content blocks and tools outside the matcher are outside its scope.
 
 ## Step 7: clean up
 

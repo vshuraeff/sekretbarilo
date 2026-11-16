@@ -151,7 +151,8 @@ installs the claude code hook in `block` or `redact` mode. `--mode block|redact`
 
 **redact behavior:**
 
-- runs the OS-reported absolute path of the binary that installed it with `redact-claude --stdin-json` after a successful `Bash`, `Read`, or `Grep` tool call when that path is available
+- runs the OS-reported absolute path of the binary that installed it with `redact-claude --stdin-json` after a successful `Bash`, `Read`, or `Grep` tool call when that path is available, and after any other tool you add to the group's matcher (for example `^(Bash|Read|Grep|mcp__.*)$` or `.*`)
+- keeps a matcher you widened: reinstalling leaves the group and its matcher in place while it still covers `Bash`, `Read` and `Grep`, and `doctor` reports it as current
 - replaces detected secret values in supported text with `[REDACTED]`, preserving response structure and source files
 - uses value exceptions and trusted rules; path exclusions and documentation relaxations do not apply
 - requires a known claude code version >= 2.1.121 before changing settings
@@ -272,6 +273,7 @@ edits supported claude tool output in memory. requires `--stdin-json` and a `Pos
 **behavior:**
 
 - scans `Bash` stdout/stderr and text blocks, text-file `Read` content, and `Grep` content/result lines and filename arrays; preserves Grep counters
+- for any other tool (MCP tools such as `mcp__example__search`, custom tools): scans a response that is a plain string, or the `text` of each text block in an array of typed content blocks; other blocks, keys and the block order are kept, and any other shape passes untouched without loading configuration
 - replaces whole captured secret values with `[REDACTED]`, merging overlapping ranges and masking repeated values
 - preserves JSON structure, unknown metadata, surrounding UTF-8 text, and line endings, including CRLF and line breaks inside multiline secrets
 - expands PEM/PGP findings through the matching end marker, or to the end of the text field if it is missing; applies the same policy to public keys when detection is enabled
@@ -286,7 +288,7 @@ edits supported claude tool output in memory. requires `--stdin-json` and a `Pos
 
 exit 2 does not remove a PostToolUse result. parsing, config, scanning, or size failures use the stop JSON instead. stdout/stderr writes are fallible and do not print original secrets. failed stdout delivery exits 1 and attempts a fixed safe stderr diagnostic; it cannot guarantee replacement.
 
-MCP, images/PDFs/notebooks, other tools, and a file-editing command are outside scope. `PostToolUseFailure` lacks the replacement contract. original telemetry, hook crashes/timeouts, failed output delivery, and competing replacements by another hook are not covered by a masking guarantee. entropy is used by existing detectors, not as an arbitrary random-string search. see [agent hooks]({{ '/agent-hooks/#redact-mode-output-editor' | relative_url }}) for the contract and a synthetic smoke-check procedure.
+images/PDFs/notebooks, non-text content blocks, other response shapes, tools that fire no `PostToolUse` hook (tools a plugin registers without an MCP server), and a file-editing command are outside scope. `PostToolUseFailure` lacks the replacement contract. original telemetry, hook crashes/timeouts, failed output delivery, and competing replacements by another hook are not covered by a masking guarantee. entropy is used by existing detectors, not as an arbitrary random-string search. see [agent hooks]({{ '/agent-hooks/#redact-mode-output-editor' | relative_url }}) for the contract and a synthetic smoke-check procedure.
 
 **example:**
 ```sh
