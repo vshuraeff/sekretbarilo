@@ -83,7 +83,9 @@ fn evaluate(payload: &mut Value) -> Result<bool, ()> {
         .and_then(Value::as_str)
         .ok_or(())?
         .to_owned();
-    if !matches!(tool.as_str(), "Bash" | "Read" | "Grep") {
+    // any other tool is scanned only in a recognised text shape; anything else
+    // passes untouched, before any config work.
+    if !is_builtin(&tool) && !payload.get("tool_response").is_some_and(is_text_shape) {
         return Ok(false);
     }
     let cwd = match payload.get("cwd") {
@@ -163,10 +165,12 @@ fn failure(payload: Option<&mut Value>) -> Vec<u8> {
             .unwrap_or("")
             .to_owned();
         if let Some(response) = payload.get_mut("tool_response") {
-            if matches!(tool.as_str(), "Bash" | "Read" | "Grep") {
+            if is_builtin(&tool) {
                 erase_supported(&tool, response);
+            } else if is_text_shape(response) {
+                transform_text_shape(response, &mut erase_text, &mut false);
             } else {
-                for known_tool in ["Bash", "Read", "Grep"] {
+                for known_tool in BUILTIN_TOOLS {
                     erase_supported(known_tool, response);
                 }
             }
@@ -188,6 +192,54 @@ fn erase_value(value: &mut Value) {
         Value::Array(values) => values.iter_mut().for_each(erase_value),
         Value::Object(object) => object.values_mut().for_each(erase_value),
         _ => {}
+    }
+}
+
+/// tools whose own response schemas this command knows; every other tool goes
+/// through the generic text shapes below.
+const BUILTIN_TOOLS: [&str; 3] = ["Bash", "Read", "Grep"];
+
+fn is_builtin(tool: &str) -> bool {
+    BUILTIN_TOOLS.contains(&tool)
+}
+
+/// a plain string, or a non-empty array of typed content blocks whose `text`
+/// blocks each carry a string `text` (the MCP tool result form).
+fn is_text_shape(response: &Value) -> bool {
+    match response {
+        Value::String(_) => true,
+        Value::Array(blocks) => {
+            !blocks.is_empty()
+                && blocks
+                    .iter()
+                    .all(|block| match block.get("type").and_then(Value::as_str) {
+                        Some("text") => block.get("text").is_some_and(Value::is_string),
+                        Some(_) => true,
+                        None => false,
+                    })
+        }
+        _ => false,
+    }
+}
+
+/// rewrite only the string or the `text` of `text` blocks; every other block,
+/// key and the block order stay as they are.
+fn transform_text_shape(
+    response: &mut Value,
+    transform: &mut impl FnMut(&str) -> String,
+    changed: &mut bool,
+) {
+    let texts: Vec<&mut Value> = match response {
+        Value::Array(blocks) => blocks
+            .iter_mut()
+            .filter(|block| block.get("type").and_then(Value::as_str) == Some("text"))
+            .filter_map(|block| block.get_mut("text"))
+            .collect(),
+        text => vec![text],
+    };
+    // is_text_shape admitted only strings here, so validity needs no tracking.
+    for value in texts {
+        transform_value(value, transform, changed, &mut true);
     }
 }
 
@@ -254,6 +306,11 @@ fn visit_text(
     transform: &mut impl FnMut(&str) -> String,
 ) -> Result<bool, ()> {
     let mut changed = false;
+    if !is_builtin(tool) {
+        // evaluate admits only a recognised text shape for any other tool.
+        transform_text_shape(response, transform, &mut changed);
+        return Ok(changed);
+    }
     let mut valid = true;
     let Some(object) = response.as_object_mut() else {
         transform_value(response, transform, &mut changed, &mut valid);
