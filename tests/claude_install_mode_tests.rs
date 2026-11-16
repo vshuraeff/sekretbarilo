@@ -177,6 +177,138 @@ fn install_switch_reinstall_and_install_all_preserve_mode() {
 }
 
 #[test]
+fn widened_redact_matchers_are_current_and_survive_reinstall() {
+    for matcher in [
+        Some(".*"),
+        Some(""),
+        Some("*"),
+        Some("^(Bash|Read|Grep|mcp__.*)$"),
+        Some("Bash|Read|Grep"),
+        Some("^(Grep|Read|Bash)$"),
+        None,
+    ] {
+        let fixture = Fixture::new();
+        fixture.success(&["install", "agent-hook", "claude", "--mode", "redact"]);
+        let mut settings = read_json(&fixture.local());
+        let group = settings["hooks"]["PostToolUse"][0].as_object_mut().unwrap();
+        if let Some(matcher) = matcher {
+            group.insert("matcher".into(), matcher.into());
+        } else {
+            group.remove("matcher");
+        }
+        std::fs::write(
+            fixture.local(),
+            serde_json::to_vec_pretty(&settings).unwrap(),
+        )
+        .unwrap();
+        let before = std::fs::read(fixture.local()).unwrap();
+        let doctor = fixture.run(&["doctor"]);
+        let stderr = String::from_utf8_lossy(&doctor.stderr);
+        assert!(
+            stderr.contains("local claude code hook installed (redact mode"),
+            "matcher {matcher:?}: {stderr}"
+        );
+        assert!(!stderr.contains("outdated sekretbarilo command or settings"));
+        assert_eq!(std::fs::read(fixture.local()).unwrap(), before);
+        for args in [
+            vec!["install", "agent-hook", "claude", "--mode", "redact"],
+            vec!["install", "agent-hook", "claude"],
+            vec!["install", "all"],
+        ] {
+            fixture.success(&args);
+            assert_eq!(std::fs::read(fixture.local()).unwrap(), before);
+        }
+    }
+}
+
+#[test]
+fn noncovering_redact_matchers_are_outdated_and_repaired() {
+    for matcher in [
+        json!("^Bash$"),
+        json!("^(Read|Grep)$"),
+        json!("^(Bash|Read)$"),
+        json!("^(Bash|Grep)$"),
+        json!("mcp__.*"),
+        json!("["),
+        Value::Null,
+    ] {
+        let fixture = Fixture::new();
+        fixture.success(&["install", "agent-hook", "claude", "--mode", "redact"]);
+        let mut settings = read_json(&fixture.local());
+        settings["hooks"]["PostToolUse"][0]["matcher"] = matcher.clone();
+        std::fs::write(
+            fixture.local(),
+            serde_json::to_vec_pretty(&settings).unwrap(),
+        )
+        .unwrap();
+        let doctor = fixture.run(&["doctor"]);
+        let stderr = String::from_utf8_lossy(&doctor.stderr);
+        assert!(
+            stderr.contains("local claude code hook has outdated sekretbarilo command or settings"),
+            "matcher {matcher}: {stderr}"
+        );
+        fixture.success(&["install", "agent-hook", "claude"]);
+        let repaired = read_json(&fixture.local());
+        assert_eq!(repaired["hooks"]["PostToolUse"][0]["matcher"], matcher);
+        assert_eq!(repaired["hooks"]["PostToolUse"][0]["hooks"], json!([]));
+        assert_eq!(repaired["hooks"]["PostToolUse"][1]["matcher"], MATCHER);
+        assert_eq!(owned_commands(&repaired).len(), 1);
+        let doctor = fixture.run(&["doctor"]);
+        assert!(
+            String::from_utf8_lossy(&doctor.stderr)
+                .contains("local claude code hook installed (redact mode")
+        );
+    }
+}
+
+#[test]
+fn widened_redact_group_keeps_its_position_metadata_and_foreign_handlers() {
+    let fixture = Fixture::new();
+    fixture.success(&["install", "agent-hook", "claude", "--mode", "redact"]);
+    let mut settings = read_json(&fixture.local());
+    let handler = settings["hooks"]["PostToolUse"][0]["hooks"][0].clone();
+    let foreign = json!({"type": "command", "command": "echo sekretbarilo", "custom": [1, 2]});
+    let unrelated = json!({"matcher": ".*", "hooks": [foreign.clone()], "custom": "untouched"});
+    let widened = json!({"matcher": ".*", "hooks": [foreign.clone(), handler.clone(), foreign.clone()], "custom": "retained"});
+    settings["hooks"]["PostToolUse"] = json!([
+        unrelated.clone(),
+        widened.clone(),
+        {"matcher": MATCHER, "hooks": [handler, foreign.clone()]}
+    ]);
+    std::fs::write(
+        fixture.local(),
+        serde_json::to_vec_pretty(&settings).unwrap(),
+    )
+    .unwrap();
+    fixture.success(&["install", "agent-hook", "claude", "--mode", "redact"]);
+    let repaired = read_json(&fixture.local());
+    assert_eq!(repaired["hooks"]["PostToolUse"][0], unrelated);
+    assert_eq!(repaired["hooks"]["PostToolUse"][1], widened);
+    assert_eq!(
+        repaired["hooks"]["PostToolUse"][2]["hooks"],
+        json!([foreign])
+    );
+    assert_eq!(owned_commands(&repaired).len(), 1);
+    let before = std::fs::read(fixture.local()).unwrap();
+    fixture.success(&["install", "all"]);
+    assert_eq!(std::fs::read(fixture.local()).unwrap(), before);
+    fixture.success(&["install", "agent-hook", "claude", "--mode", "block"]);
+    let block = read_json(&fixture.local());
+    assert_eq!(
+        owned_commands(&block),
+        [fixture.hook_command("check-file --stdin-json")]
+    );
+    assert_eq!(block["hooks"]["PostToolUse"][1]["matcher"], ".*");
+    assert_eq!(
+        block["hooks"]["PostToolUse"][1]["hooks"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+}
+
+#[test]
 fn reinstall_replaces_a_single_quoted_absolute_command_in_place() {
     let fixture = Fixture::new();
     std::fs::create_dir_all(fixture.local().parent().unwrap()).unwrap();

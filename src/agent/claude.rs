@@ -41,6 +41,26 @@ impl ClaudeHookMode {
         }
     }
 
+    fn accepts_matcher(self, matcher: Option<&serde_json::Value>) -> bool {
+        let matcher = match matcher {
+            None => return self == Self::Redact,
+            Some(serde_json::Value::String(matcher)) => matcher,
+            Some(_) => return false,
+        };
+        match self {
+            Self::Block => matcher == self.matcher(),
+            Self::Redact => {
+                matcher.is_empty()
+                    || matcher == "*"
+                    || regex::Regex::new(matcher).is_ok_and(|regex| {
+                        ["Bash", "Read", "Grep"]
+                            .iter()
+                            .all(|tool| regex.is_match(tool))
+                    })
+            }
+        }
+    }
+
     fn command(self) -> &'static str {
         match self {
             Self::Block => HOOK_COMMAND,
@@ -419,7 +439,7 @@ pub(crate) fn claude_hook_state(root: &serde_json::Value) -> Result<Vec<ClaudeHo
                     mode,
                     command: command.to_string(),
                     current: event == mode.event()
-                        && matcher == Some(mode.matcher())
+                        && mode.accepts_matcher(group.get("matcher"))
                         && parsed_command.current_args
                         && handler.get("type").and_then(serde_json::Value::as_str)
                             == Some("command")
@@ -499,9 +519,14 @@ fn install_claude_hook_to_path_with_mode(
     }
 
     let command = command_for_mode(mode);
-    let search = find_hook_for_event(&original, mode.event(), mode.matcher(), &command);
     let keep = installed.iter().find(|hook| {
-        hook.event == mode.event() && Some(hook.group_index) == search.matching_group_index
+        hook.mode == mode
+            && hook.event == mode.event()
+            && mode
+                .accepts_matcher(original["hooks"][mode.event()][hook.group_index].get("matcher"))
+    });
+    let matching_group_index = keep.map(|hook| hook.group_index).or_else(|| {
+        find_hook_for_event(&original, mode.event(), mode.matcher(), &command).matching_group_index
     });
     let mut root = original.clone();
     let hooks = root
@@ -530,7 +555,7 @@ fn install_claude_hook_to_path_with_mode(
         .or_insert_with(|| serde_json::json!([]))
         .as_array_mut()
         .ok_or("hook event is not an array")?;
-    let group_index = search.matching_group_index.unwrap_or_else(|| {
+    let group_index = matching_group_index.unwrap_or_else(|| {
         groups.push(serde_json::json!({"matcher": mode.matcher(), "hooks": []}));
         groups.len() - 1
     });
@@ -853,12 +878,11 @@ mod tests {
             serde_json::json!([foreign])
         );
         assert_eq!(redact["hooks"]["PostToolUse"][0]["unknownGroup"], 9);
-        assert!(
-            redact["hooks"]["PostToolUse"][1]["hooks"]
-                .as_array()
-                .unwrap()
-                .is_empty()
+        assert_eq!(
+            redact["hooks"]["PostToolUse"][0],
+            original["hooks"]["PostToolUse"][0]
         );
+        assert_eq!(owned[0].group_index, 1);
         let before = std::fs::read(&path).unwrap();
         assert_eq!(
             install_claude_hook_to_path_with_mode_for_test(&path, None, || Ok(())).unwrap(),
@@ -895,13 +919,14 @@ mod tests {
         let path = dir.path().join("settings.json");
         write_json(
             &path,
-            &serde_json::json!({"hooks": {"PostToolUse": [{"matcher": REDACT_HOOK_MATCHER, "hooks": [
+            &serde_json::json!({"hooks": {"PostToolUse": [{"matcher": ".*", "hooks": [
                 {"type": "command", "command": REDACT_HOOK_COMMAND, "async": true, "asyncRewake": true, "if": "tool_name == 'Read'", "args": ["--old"], "timeout": 1, "custom": "keep"},
                 {"type": "command", "command": REDACT_HOOK_COMMAND}
             ]}]}}),
         );
         install_claude_hook_to_path_with_mode_for_test(&path, None, || Ok(())).unwrap();
         let parsed = read_settings(&path).unwrap();
+        assert_eq!(parsed["hooks"]["PostToolUse"][0]["matcher"], ".*");
         let handlers = parsed["hooks"]["PostToolUse"][0]["hooks"]
             .as_array()
             .unwrap();
