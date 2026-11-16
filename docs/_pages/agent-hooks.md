@@ -11,7 +11,7 @@ Why the hooks are built this way, with illustrated sessions, is in [How the agen
 | Agent / mode | Coverage | Event / tools | Hook command |
 |--------------|----------|---------------|--------------|
 | Claude Code `block` | blocks file reads | `PreToolUse` / `Read` | `<absolute-path-to-running-sekretbarilo> check-file --stdin-json` |
-| Claude Code `redact` | masks successful text results | `PostToolUse` / `Bash`, `Read`, `Grep` | `<absolute-path-to-running-sekretbarilo> redact-claude --stdin-json` |
+| Claude Code `redact` | masks successful text results | `PostToolUse` / `Bash`, `Read`, `Grep`; any other tool [you add to the matcher](#other-tools-mcp-and-custom) | `<absolute-path-to-running-sekretbarilo> redact-claude --stdin-json` |
 | Codex CLI | blocks patches and shell commands | `PreToolUse` / `apply_patch`, `Bash` | `sekretbarilo check-codex --stdin-json` |
 | Codex CLI | withholds completed shell output that contains secrets | `PostToolUse` / `Bash` | `sekretbarilo check-codex --stdin-json` |
 
@@ -37,7 +37,7 @@ When Claude Code is about to read a file, it automatically calls sekretbarilo, s
 
 Install with `sekretbarilo install agent-hook claude --mode redact`. This mode requires Claude Code **2.1.121 or later**, which introduced replacement of built-in tool output through `hookSpecificOutput.updatedToolOutput`. The installer checks the installed version before modifying Claude settings; an unknown or unsupported version leaves the previous protection in place. See the [Claude hook contract](https://code.claude.com/docs/en/hooks#posttooluse-decision-control) and [2.1.121 release notes](https://github.com/anthropics/claude-code/blob/main/CHANGELOG.md#21121).
 
-The hook is synchronous, runs on successful `PostToolUse` events, matches `^(Bash|Read|Grep)$`, and has a 10-second timeout. **Editor** means editing the returned text in memory. The tool runs normally and source files are unchanged; this mode does not edit files on disk or prevent a Bash command's side effects.
+The hook is synchronous, runs on successful `PostToolUse` events, matches `^(Bash|Read|Grep)$` as installed, and has a 10-second timeout. Widen the matcher to cover MCP and other tools; see [Other tools](#other-tools-mcp-and-custom). **Editor** means editing the returned text in memory. The tool runs normally and source files are unchanged; this mode does not edit files on disk or prevent a Bash command's side effects.
 
 ```json
 {
@@ -65,6 +65,7 @@ The scanner processes supported text inside `tool_response`, using the [tool out
 | `Bash` | `stdout`, `stderr`, and text content blocks |
 | `Read` | Text-file content; images, PDFs, and notebooks are outside this version's scope |
 | `Grep` | Returned content, result lines, and filename arrays across `content`, `files_with_matches`, and `count` modes; counters are preserved |
+| any other tool | A response that is a plain string, or the `text` of each `{"type": "text", "text": ...}` block in an array of content blocks; see [Other tools](#other-tools-mcp-and-custom) |
 
 Only supported text fields change. The replacement preserves the original JSON structure, service fields, and unknown metadata, because Claude falls back to the original output when replacement validation fails. Unknown metadata is preserved, not scanned as arbitrary text.
 
@@ -89,6 +90,33 @@ The whole captured secret value becomes `[REDACTED]`; no prefix or suffix remain
 
 With the heuristic rule enabled, environment dumps and similar tool output also redact eligible high-entropy values regardless of the variable name. Some harmless high-entropy data, such as base64 blobs or checksums, may be redacted; use `[allowlist].stopwords` or a per-rule `[[allowlist.rules]]` `regexes` exception to suppress a specific case. An in-workspace `.sekretbarilo.toml` exception must be committed before hooks honor it; see [Config Inside the Repository Must Be Committed]({{ '/agent-hooks/#config-inside-the-repository-must-be-committed' | relative_url }}).
 
+#### Other Tools: MCP and Custom
+
+Since 0.14.0 `redact-claude` handles any tool, not only `Bash`, `Read` and `Grep`. Claude Code calls the hook only for the tools its `PostToolUse` matcher selects, so the matcher is where you choose them. Edit the `matcher` of the group that holds the sekretbarilo handler:
+
+| Matcher | Covers |
+|---------|--------|
+| `^(Bash\|Read\|Grep)$` | the built-in tools only (as installed) |
+| `^(Bash\|Read\|Grep\|mcp__.*)$` | the built-in tools and every MCP tool |
+| `.*` | every tool |
+
+For a tool other than `Bash`, `Read` and `Grep` the hook recognises two response shapes:
+
+- **A plain string.** The string is scanned and the replacement is a string.
+- **An array of content blocks**, the form MCP tools return: every element is an object with a string `type`, and every `text` block has a string `text`. Each text block's `text` is scanned. Every other block (`image`, `resource` and so on) and every other key stays as it was, and the blocks keep their order.
+
+Any other shape passes through untouched: the hook prints nothing and loads no configuration. An empty array, an object, or an array with a malformed element is such a shape. For example, a tool named `mcp__example__search` returning a text block with a token gets back the same array with the token replaced by `[REDACTED]`.
+
+**Cost.** Every call the matcher selects starts the sekretbarilo process. Measured on one development machine with `hyperfine`, a call whose response is a recognised text shape takes about 40 ms (configuration discovery, the trust check, rule compilation and the scan), and a call with any other shape about 4 ms. With `.*`, every `Edit`, `Write` and other tool call also pays a process start, about 4 ms on that machine; with `mcp__.*` only MCP calls are added.
+
+**Installer and doctor.** The installer writes `^(Bash|Read|Grep)$`. A matcher you widened is kept: `doctor` reports the hook as current, and running `install agent-hook claude` or `install all` again leaves the group and its matcher where they are, as long as the matcher still covers `Bash`, `Read` and `Grep`. That means an empty matcher, `*`, an omitted matcher, or a regular expression that matches all three names. sekretbarilo judges the expression with Rust's `regex` crate, which has no look-around or backreferences. A matcher that misses one of the three, or that the crate cannot compile, is reported as outdated, and a reinstall moves the handler back to a `^(Bash|Read|Grep)$` group.
+
+Limits for other tools:
+
+- **Tools a plugin registers without an MCP server** fire no `PostToolUse` hook at all in Claude Code 2.1.326, whatever the matcher, so their output is never seen by sekretbarilo. A plugin-bundled MCP server is an ordinary MCP server; its tools are named `mcp__plugin_<plugin>_<server>__<tool>` and `mcp__.*` covers them.
+- **Non-text blocks are not scanned**, including the `text` inside an embedded `resource` block and the data of an `image` block.
+- A response bigger than the 10 MiB input limit stops the turn whatever the tool, because the tool name cannot be read from a truncated payload. A wide matcher makes this reachable from tools such as `Write`.
+
 #### Output and Errors
 
 `sekretbarilo redact-claude --stdin-json` requires the flag and reads the hook payload from stdin. A clean result exits 0 with no stdout. A masked result exits 0 with replacement JSON on stdout.
@@ -101,8 +129,8 @@ A command can remove its own working directory, as `git worktree remove` does wh
 
 #### Limits of This Version
 
-- Only successful `PostToolUse` results from `Bash`, text `Read`, and `Grep` are supported. `PostToolUseFailure` does not offer this replacement contract.
-- MCP tools, images, PDFs, notebooks, and results delivered through other tools are outside scope. There is no separate command to edit source files.
+- Only successful `PostToolUse` results are supported: `Bash`, text `Read`, `Grep`, and the [text shapes of other tools](#other-tools-mcp-and-custom) the matcher selects. `PostToolUseFailure` does not offer this replacement contract.
+- Images, PDFs, notebooks, non-text content blocks, other response shapes, and tools that fire no `PostToolUse` hook are outside scope. There is no separate command to edit source files.
 - Redaction does not remove original data from tool-side telemetry or other storage outside the model-facing replacement.
 - A hook crash, timeout, failure to deliver output, or another hook replacing the same result can leave the original output exposed. These cases are outside the masking guarantee. Claude's fallback for an invalid replacement also matters; preserving response structure is required.
 - Detection is rule-based and uses configured value exceptions. A secret not detected by those rules is not masked.
@@ -811,7 +839,7 @@ For both local (`./.claude/settings.json`) and global (`~/.claude/settings.json`
 1. **File exists**: settings.json is present
 2. **Valid JSON**: file parses correctly
 3. **Mode and event**: finds sekretbarilo handlers across events, including `PreToolUse` and `PostToolUse`
-4. **Matcher and command**: checks `Read` / `check-file --stdin-json` for `block`, or `^(Bash|Read|Grep)$` / `redact-claude --stdin-json` for `redact`
+4. **Matcher and command**: checks `Read` / `check-file --stdin-json` for `block`, or `redact-claude --stdin-json` for `redact` under `^(Bash|Read|Grep)$` or any matcher that still covers those three tools (see [Other tools](#other-tools-mcp-and-custom))
 5. **Hook settings**: checks the mode's configuration, including synchronous redaction and timeout
 6. **Outdated command detection**: warns if an older sekretbarilo command is found
 7. **Stale duplicate detection**: warns if a second, older sekretbarilo handler is left behind at another position in the file

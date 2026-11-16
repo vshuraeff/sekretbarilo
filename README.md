@@ -17,7 +17,7 @@ High-performance secret scanner for git workflows and AI coding agents. Catches 
 - **Low false positives**: entropy analysis, stopword filtering, hash/variable detection, template-aware, public key suppression
 - **Pre-commit hook**: scans staged changes on every commit
 - **Working tree & history audit**: scan tracked files or full git history with deduplication and branch resolution
-- **Agent hooks**: blocks Claude Code file reads or masks secrets in `Bash`, `Read`, and `Grep` results; blocks Codex CLI from writing secrets via `apply_patch` or `Bash` and withholds completed `Bash` output that contains secrets
+- **Agent hooks**: blocks Claude Code file reads or masks secrets in `Bash`, `Read`, `Grep` and MCP or other tool results; blocks Codex CLI from writing secrets via `apply_patch` or `Bash` and withholds completed `Bash` output that contains secrets
 - **Health diagnostics**: `doctor` command checks hooks, config, and binary availability
 - **Hierarchical config**: `.sekretbarilo.toml` at system, user, and project levels
 - **Zero config needed**: works out of the box with sensible defaults
@@ -119,6 +119,19 @@ host = localhost
 password = [REDACTED]
 port = 5432
 ```
+
+#### Masking MCP and other tools
+
+The installer selects `Bash`, `Read` and `Grep`, but `redact-claude` handles any tool: a response that is a plain string is scanned as a string, and in an array of content blocks (the form MCP tools return) the `text` of each `{"type": "text"}` block is scanned while every other block, key and the block order stay as they are. Any other response shape passes through untouched. To connect more tools, edit the `matcher` of the `PostToolUse` group that holds the sekretbarilo handler in your Claude settings:
+
+```json
+{
+  "matcher": "^(Bash|Read|Grep|mcp__.*)$",
+  "hooks": [{"type": "command", "command": "/usr/local/bin/sekretbarilo redact-claude --stdin-json", "timeout": 10}]
+}
+```
+
+`^(Bash|Read|Grep|mcp__.*)$` adds every MCP tool, including those of plugin-bundled MCP servers (`mcp__plugin_<plugin>_<server>__<tool>`); `.*` selects every tool. Each selected call starts the sekretbarilo process: on one development machine a call with a text response took about 40 ms and a call with any other shape about 4 ms, so with `.*` every `Edit`, `Write` and other tool call also pays a process start, about 4 ms there. A widened matcher is kept by `install agent-hook claude` and reported as current by `doctor` as long as it still covers `Bash`, `Read` and `Grep`. Not covered: tools a plugin registers without an MCP server (Claude Code fires no `PostToolUse` hook for them), non-text content blocks such as images or embedded resources, and response shapes other than the two above. See [other tools](https://vshuraeff.github.io/sekretbarilo/agent-hooks/#other-tools-mcp-and-custom).
 
 `redact` uses the same trusted configuration, rules, entropy thresholds, password heuristics, and value exceptions. Path exclusions and documentation relaxations do not apply; `.env` output is scanned by content. Installation checks Claude Code >= 2.1.121 before changing protection, and installation/`doctor` warn about a blocking Read hook in another settings scope. See [redaction behavior and limits](https://vshuraeff.github.io/sekretbarilo/agent-hooks/#redact-mode-output-editor), including unsupported tools, hook failures, and telemetry.
 
