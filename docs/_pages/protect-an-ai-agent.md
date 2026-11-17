@@ -37,6 +37,7 @@ The command answers:
 
 ```
 [OK] created claude code hook configuration
+[INFO] claude code redact hook scope: Bash, Read, Grep, LSP and MCP tools and resources
 ```
 
 It wrote `.claude/settings.json` in this directory, which is one of the standard places Claude Code loads settings from. A fresh install without `--mode` would have selected `block`; we asked for `redact` explicitly.
@@ -57,11 +58,11 @@ jq '.hooks.PostToolUse[0]' .claude/settings.json
       "type": "command"
     }
   ],
-  "matcher": "^(Bash|Read|Grep)$"
+  "matcher": "^(Bash|Read|Grep|LSP|ReadMcpResourceTool|mcp__.*)$"
 }
 ```
 
-Notice the matcher. Redaction runs after `Bash`, `Read` and `Grep` return, not before them. To mask MCP tool results too, change it to `^(Bash|Read|Grep|mcp__.*)$`; [Other tools]({{ '/agent-hooks/#other-tools-mcp-and-custom' | relative_url }}) covers the choices and their cost. The command is written as an absolute path, so it keeps working whatever `PATH` Claude Code is started with.
+Notice the matcher. Redaction runs after `Bash`, `Read`, `Grep`, `LSP`, `ReadMcpResourceTool` and every MCP tool return, not before them. Adding `--no-mcp` to the install would have written `Bash|Read|Grep|LSP` instead, which leaves MCP results unmasked; [Other tools]({{ '/agent-hooks/#other-tools-mcp-and-custom' | relative_url }}) covers the choices and their cost. The command is written as an absolute path, so it keeps working whatever `PATH` Claude Code is started with.
 
 ## Step 3: create a value worth hiding
 

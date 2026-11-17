@@ -122,12 +122,12 @@ sekretbarilo install pre-commit --global
 
 #### `sekretbarilo install agent-hook claude`
 
-installs the claude code hook in `block` or `redact` mode. `--mode block|redact` selects the mode; omitted, it preserves the mode already installed in the selected settings file or chooses `block` for a new installation.
+installs the claude code hook in `block` or `redact` mode. `--mode block|redact` selects the mode; omitted, it preserves the mode already installed in the selected settings file or chooses `block` for a new installation. `--no-mcp` limits a redact hook to `Bash`, `Read`, `Grep` and `LSP`; it is an error, and nothing is written, when the mode is or resolves to `block`.
 
 **local mode (default):**
 - installs to `.claude/settings.json` in project root
 - uses git repository root if available, falls back to current directory
-- configures `PreToolUse` / `Read` for `block`, or synchronous `PostToolUse` / `^(Bash|Read|Grep)$` for `redact`, with a 10-second timeout
+- configures `PreToolUse` / `Read` for `block`, or synchronous `PostToolUse` / `^(Bash|Read|Grep|LSP|ReadMcpResourceTool|mcp__.*)$` for `redact` (`Bash|Read|Grep|LSP` with `--no-mcp`), with a 10-second timeout
 - preserves existing claude code settings and other hooks
 
 **global mode (`--global`):**
@@ -151,8 +151,10 @@ installs the claude code hook in `block` or `redact` mode. `--mode block|redact`
 
 **redact behavior:**
 
-- runs the OS-reported absolute path of the binary that installed it with `redact-claude --stdin-json` after a successful `Bash`, `Read`, or `Grep` tool call when that path is available, and after any other tool you add to the group's matcher (for example `^(Bash|Read|Grep|mcp__.*)$` or `.*`)
-- keeps a matcher you widened: reinstalling leaves the group and its matcher in place while it still covers `Bash`, `Read` and `Grep`, and `doctor` reports it as current
+- runs the OS-reported absolute path of the binary that installed it with `redact-claude --stdin-json` after a successful `Bash`, `Read`, `Grep`, `LSP`, `ReadMcpResourceTool` or MCP tool call when that path is available, and after any other tool you add to the group's matcher (for example `*`); `WebFetch` and `WebSearch` stay out because external pages hold many example keys
+- keeps a matcher you edited, including the `--no-mcp` one: reinstalling without `--no-mcp` leaves the group and its matcher in place while it still covers `Bash`, `Read` and `Grep`, and `doctor` reports it as current; an explicit `--no-mcp` moves the handler to a `Bash|Read|Grep|LSP` group
+- moves a handler under the exact pre-0.14.1 default `^(Bash|Read|Grep)$`, which `doctor` reports as outdated, to the default group; handlers of other tools stay in the old group
+- prints the scope after installing, in the words `doctor` uses: `all tools`, `Bash, Read, Grep, LSP and MCP tools and resources`, `Bash, Read, Grep, LSP only (--no-mcp)` or `custom matcher <m>`
 - replaces detected secret values in supported text with `[REDACTED]`, preserving response structure and source files
 - uses value exceptions and trusted rules; path exclusions and documentation relaxations do not apply
 - requires a known claude code version >= 2.1.121 before changing settings
@@ -169,6 +171,9 @@ sekretbarilo install agent-hook claude --global
 
 # switch this project to output redaction
 sekretbarilo install agent-hook claude --mode redact
+
+# redact only Bash, Read, Grep and LSP output, not MCP tools or resources
+sekretbarilo install agent-hook claude --mode redact --no-mcp
 
 # switch back to blocking file reads
 sekretbarilo install agent-hook claude --mode block
@@ -219,6 +224,8 @@ sekretbarilo install agent-hook codex --global
 installs all available hooks (pre-commit + claude code agent hook + codex cli agent hook), reporting each step. `--mode block|redact` selects the claude mode; omitted, it preserves the existing mode or chooses `block` for a new installation. `--mode` does not change codex behavior. in `block` mode, the claude settings file can be installed even when claude code is absent. redaction requires a known supported claude version. when `codex` is neither on `PATH` nor has a `$CODEX_HOME` directory (default `~/.codex`), its step prints `[SKIP] codex cli not detected on this machine` and continues.
 
 `--settings <path>` applies only to the claude step, installing into that exact file instead of the local/global default; the pre-commit and codex steps keep their normal local/global behavior. it is mutually exclusive with `--global`.
+
+`--no-mcp` applies only to the claude step; codex is unaffected. when the claude mode is or resolves to `block`, the command fails before the pre-commit step and writes nothing.
 
 **examples:**
 ```sh
@@ -528,6 +535,7 @@ these flags only apply to `install` subcommands:
 |------|------|-------------|
 | `--global` | boolean | install globally instead of locally. for pre-commit: uses `git config --global core.hooksPath`. for `agent-hook claude`: modifies `~/.claude/settings.json`, or `$CLAUDE_CONFIG_DIR/settings.json` when that variable is set and non-empty. for `agent-hook codex`: modifies `$CODEX_HOME/hooks.json` (default `~/.codex/hooks.json`). |
 | `--mode <block\|redact>` | choice | only for `install agent-hook claude` and `install all`. omitted: preserve the selected file's installed claude mode, defaulting to `block` for a new install. |
+| `--no-mcp` | boolean | only for `install agent-hook claude` and `install all` (claude step only), and only in redact mode: write the matcher `Bash\|Read\|Grep\|LSP` instead of `^(Bash\|Read\|Grep\|LSP\|ReadMcpResourceTool\|mcp__.*)$`, so MCP tools and resources are not masked. later installs without the flag keep it. an error, with nothing written, when the claude mode is or resolves to `block`. |
 | `--settings <path>` | string | for `install agent-hook claude`, `install all` (claude step only), and `doctor`: target this exact claude code settings file instead of the local/global default. mutually exclusive with `--global`. a relative path resolves against the current directory, not the repo root, and works outside a git repository. |
 
 ---
@@ -810,6 +818,7 @@ sekretbarilo validates flag combinations to prevent misuse:
 | `--stdin-json` | `check-file`; required for `check-codex`, `redact-claude` | `scan`, `audit`, `install`, `doctor`; also rejected alongside a positional path on `check-file` |
 | `--global` | `install` subcommands | `scan`, `audit`, `check-file`, `check-codex`, `redact-claude`, `doctor` |
 | `--mode` | `install agent-hook claude`, `install all` | other commands and install targets |
+| `--no-mcp` | `install agent-hook claude`, `install all` | other commands and install targets; rejected alongside `--mode block` |
 | `--settings` | `install agent-hook claude`, `install all`, `doctor` | other commands; rejected alongside `--global` |
 
 invalid flag combinations normally produce an error message and exit code 2. `redact-claude` instead emits fixed stop JSON with exit 0, without echoing arguments.

@@ -96,7 +96,7 @@ fn claude_redact_settings() -> Vec<u8> {
     serde_json::to_vec(&serde_json::json!({
         "hooks": {
             "PostToolUse": [{
-                "matcher": "^(Bash|Read|Grep)$",
+                "matcher": "^(Bash|Read|Grep|LSP|ReadMcpResourceTool|mcp__.*)$",
                 "hooks": [{
                     "type": "command",
                     "command": "sekretbarilo redact-claude --stdin-json",
@@ -131,7 +131,10 @@ fn write_codex_hook(repo: &std::path::Path, command: &str) {
 fn claude_hook_settings(command: String, mode: &str) -> Vec<u8> {
     let (event, matcher) = match mode {
         "block" => ("PreToolUse", "Read"),
-        "redact" => ("PostToolUse", "^(Bash|Read|Grep)$"),
+        "redact" => (
+            "PostToolUse",
+            "^(Bash|Read|Grep|LSP|ReadMcpResourceTool|mcp__.*)$",
+        ),
         _ => panic!("unsupported test mode"),
     };
     serde_json::to_vec(&serde_json::json!({

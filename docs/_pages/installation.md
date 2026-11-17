@@ -169,7 +169,7 @@ This applies the hook to all projects where Claude Code runs under your user acc
 # inspect the installed claude version
 claude --version
 
-# mask successful Bash, Read, and Grep text results in this project
+# mask successful Bash, Read, Grep, LSP and MCP text results in this project
 sekretbarilo install agent-hook claude --mode redact
 
 # or select redaction globally

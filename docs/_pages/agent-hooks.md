@@ -11,7 +11,7 @@ Why the hooks are built this way, with illustrated sessions, is in [How the agen
 | Agent / mode | Coverage | Event / tools | Hook command |
 |--------------|----------|---------------|--------------|
 | Claude Code `block` | blocks file reads | `PreToolUse` / `Read` | `<absolute-path-to-running-sekretbarilo> check-file --stdin-json` |
-| Claude Code `redact` | masks successful text results | `PostToolUse` / `Bash`, `Read`, `Grep`; any other tool [you add to the matcher](#other-tools-mcp-and-custom) | `<absolute-path-to-running-sekretbarilo> redact-claude --stdin-json` |
+| Claude Code `redact` | masks successful text results | `PostToolUse` / `Bash`, `Read`, `Grep`, `LSP`, `ReadMcpResourceTool`, MCP tools (`mcp__*`); `--no-mcp` keeps the first four; [other tools](#other-tools-mcp-and-custom) | `<absolute-path-to-running-sekretbarilo> redact-claude --stdin-json` |
 | Codex CLI | blocks patches and shell commands | `PreToolUse` / `apply_patch`, `Bash` | `sekretbarilo check-codex --stdin-json` |
 | Codex CLI | withholds completed shell output that contains secrets | `PostToolUse` / `Bash` | `sekretbarilo check-codex --stdin-json` |
 
@@ -37,14 +37,14 @@ When Claude Code is about to read a file, it automatically calls sekretbarilo, s
 
 Install with `sekretbarilo install agent-hook claude --mode redact`. This mode requires Claude Code **2.1.121 or later**, which introduced replacement of built-in tool output through `hookSpecificOutput.updatedToolOutput`. The installer checks the installed version before modifying Claude settings; an unknown or unsupported version leaves the previous protection in place. See the [Claude hook contract](https://code.claude.com/docs/en/hooks#posttooluse-decision-control) and [2.1.121 release notes](https://github.com/anthropics/claude-code/blob/main/CHANGELOG.md#21121).
 
-The hook is synchronous, runs on successful `PostToolUse` events, matches `^(Bash|Read|Grep)$` as installed, and has a 10-second timeout. Widen the matcher to cover MCP and other tools; see [Other tools](#other-tools-mcp-and-custom). **Editor** means editing the returned text in memory. The tool runs normally and source files are unchanged; this mode does not edit files on disk or prevent a Bash command's side effects.
+The hook is synchronous, runs on successful `PostToolUse` events, matches `^(Bash|Read|Grep|LSP|ReadMcpResourceTool|mcp__.*)$` as installed (`Bash|Read|Grep|LSP` with `--no-mcp`), and has a 10-second timeout. See [Other tools](#other-tools-mcp-and-custom) for what the matcher selects and why. **Editor** means editing the returned text in memory. The tool runs normally and source files are unchanged; this mode does not edit files on disk or prevent a Bash command's side effects.
 
 ```json
 {
   "hooks": {
     "PostToolUse": [
       {
-        "matcher": "^(Bash|Read|Grep)$",
+        "matcher": "^(Bash|Read|Grep|LSP|ReadMcpResourceTool|mcp__.*)$",
         "hooks": [
           {
             "type": "command",
@@ -92,24 +92,37 @@ With the heuristic rule enabled, environment dumps and similar tool output also 
 
 #### Other Tools: MCP and Custom
 
-Since 0.14.0 `redact-claude` handles any tool, not only `Bash`, `Read` and `Grep`. Claude Code calls the hook only for the tools its `PostToolUse` matcher selects, so the matcher is where you choose them. Edit the `matcher` of the group that holds the sekretbarilo handler:
+Since 0.14.0 `redact-claude` handles any tool, not only `Bash`, `Read` and `Grep`. Claude Code calls the hook only for the tools its `PostToolUse` matcher selects, so the matcher is where you choose them. Since 0.14.1 the installer writes an explicit list:
 
 | Matcher | Covers |
 |---------|--------|
-| `^(Bash\|Read\|Grep)$` | the built-in tools only (as installed) |
-| `^(Bash\|Read\|Grep\|mcp__.*)$` | the built-in tools and every MCP tool |
-| `.*` | every tool |
+| `^(Bash\|Read\|Grep\|LSP\|ReadMcpResourceTool\|mcp__.*)$` | the default: `Bash`, `Read`, `Grep`, `LSP`, MCP resources and every MCP tool |
+| `Bash\|Read\|Grep\|LSP` | written by `--no-mcp`: the built-in tools only |
+| `^(Bash\|Read\|Grep)$` | the installer default before 0.14.1; now reported as outdated |
+| `*`, empty or omitted | every tool; accepted and kept, but today adds only process cost |
 
-For a tool other than `Bash`, `Read` and `Grep` the hook recognises two response shapes:
+The default list holds the tools whose output carries command, file, code or MCP data:
+
+- **`LSP`** returns an object; the string `result` (hover text, definitions and similar code text) is scanned, and `operation`, `filePath` and every other key stay as they are.
+- **`ReadMcpResourceTool`** returns `{"contents": [...]}`; the string `text` of each entry is scanned, and `uri`, `mimeType`, `blob` entries and the entry order stay as they are. An entry without `text` passes only as a blob entry, holding a string `blob` and no keys besides `uri` and `mimeType`; any other entry stops the tool result with its contents erased. Its name has no `mcp__` prefix, so the list names it, and `--no-mcp` drops it with the MCP tools.
+- **MCP tools** (`mcp__.*`), including the tools of plugin-bundled MCP servers (`mcp__plugin_<plugin>_<server>__<tool>`).
+
+Left out on purpose: `WebFetch` and `WebSearch` return external pages, which are full of example keys, so masking them would mostly produce false positives. `Agent`, `Write`, `Edit` and `Glob` return objects that carry no new tool output, and the hook passes such objects through; this is why `*` adds nothing today.
+
+An `LSP` or `ReadMcpResourceTool` response without its expected field (`result`, or a `contents` array whose entries are objects with a string `text` when they have one) is schema drift: the turn stops and every text field the hook knows is erased, the same as for `Bash`, `Read` and `Grep`.
+
+For any other tool the hook recognises two response shapes:
 
 - **A plain string.** The string is scanned and the replacement is a string.
 - **An array of content blocks**, the form MCP tools return: every element is an object with a string `type`, and every `text` block has a string `text`. Each text block's `text` is scanned. Every other block (`image`, `resource` and so on) and every other key stays as it was, and the blocks keep their order.
 
 Any other shape passes through untouched: the hook prints nothing and loads no configuration. An empty array, an object, or an array with a malformed element is such a shape. For example, a tool named `mcp__example__search` returning a text block with a token gets back the same array with the token replaced by `[REDACTED]`.
 
-**Cost.** Every call the matcher selects starts the sekretbarilo process. Measured on one development machine with `hyperfine`, a call whose response is a recognised text shape takes about 40 ms (configuration discovery, the trust check, rule compilation and the scan), and a call with any other shape about 4 ms. With `.*`, every `Edit`, `Write` and other tool call also pays a process start, about 4 ms on that machine; with `mcp__.*` only MCP calls are added.
+**Cost.** Every call the matcher selects starts the sekretbarilo process. Measured on one development machine with `hyperfine`, a call whose response is scanned takes about 38 ms (configuration discovery, the trust check, rule compilation and the scan), and a call whose response passes through about 3.5 ms. With `*`, every `Edit`, `Write` and other tool call also pays that process start.
 
-**Installer and doctor.** The installer writes `^(Bash|Read|Grep)$`. A matcher you widened is kept: `doctor` reports the hook as current, and running `install agent-hook claude` or `install all` again leaves the group and its matcher where they are, as long as the matcher still covers `Bash`, `Read` and `Grep`. That means an empty matcher, `*`, an omitted matcher, a list of exact names that holds all three, or a regular expression that matches all three names. sekretbarilo reads a matcher the way Claude Code does: one made only of letters, digits, `_`, `-`, spaces, `,` and `|` is a list of exact tool names separated by `|` or `,` (`Bash, Read, Grep` covers them, `Bas|Rea|Gre` does not), and any other matcher is a regular expression, judged with Rust's `regex` crate, which has no look-around or backreferences. A matcher that misses one of the three, or that the crate cannot compile, is reported as outdated, and a reinstall moves the handler back to a `^(Bash|Read|Grep)$` group.
+**Installer and doctor.** The installer writes `^(Bash|Read|Grep|LSP|ReadMcpResourceTool|mcp__.*)$`, or `Bash|Read|Grep|LSP` with `--no-mcp`. An explicit `--no-mcp` moves the handler from any other matcher to a `Bash|Read|Grep|LSP` group. Without the flag, a matcher you edited, including the `--no-mcp` one, is kept: `doctor` reports the hook as current, and running `install agent-hook claude` or `install all` again leaves the group and its matcher where they are, as long as the matcher still covers `Bash`, `Read` and `Grep` and is not the pre-0.14.1 default. That means an empty matcher, `*`, an omitted matcher, a list of exact names that holds all three, or a regular expression that matches all three names. sekretbarilo reads a matcher the way Claude Code does: one made only of letters, digits, `_`, `-`, spaces, `,` and `|` is a list of exact tool names separated by `|` or `,` (`Bash, Read, Grep` covers them, `Bas|Rea|Gre` does not), and any other matcher is a regular expression, judged with Rust's `regex` crate, which has no look-around or backreferences. A matcher that misses one of the three, or that the crate cannot compile, is reported as outdated, and a reinstall moves the handler to a group with the default matcher. Handlers of other tools stay in the old group.
+
+**Upgrading from 0.14.0 or earlier.** The exact matcher `^(Bash|Read|Grep)$` that earlier installers wrote is reported by `doctor` as outdated: it is the pre-0.14.1 default that masks only `Bash`, `Read` and `Grep`. Run `install agent-hook claude` (or `install all`) to move the handler to the default group, or add `--no-mcp` to keep only the built-in tools. For a current hook `doctor` ends its line with the scope: `all tools`, `Bash, Read, Grep, LSP and MCP tools and resources`, `Bash, Read, Grep, LSP only (--no-mcp)`, or `custom matcher <m>`. The installer prints the same scope after a redact install.
 
 Limits for other tools:
 
@@ -129,7 +142,7 @@ A command can remove its own working directory, as `git worktree remove` does wh
 
 #### Limits of This Version
 
-- Only successful `PostToolUse` results are supported: `Bash`, text `Read`, `Grep`, and the [text shapes of other tools](#other-tools-mcp-and-custom) the matcher selects. `PostToolUseFailure` does not offer this replacement contract.
+- Only successful `PostToolUse` results are supported: `Bash`, text `Read`, `Grep`, `LSP`, `ReadMcpResourceTool`, and the [text shapes of other tools](#other-tools-mcp-and-custom) the matcher selects. `PostToolUseFailure` does not offer this replacement contract.
 - Images, PDFs, notebooks, non-text content blocks, other response shapes, and tools that fire no `PostToolUse` hook are outside scope. There is no separate command to edit source files.
 - Redaction does not remove original data from tool-side telemetry or other storage outside the model-facing replacement.
 - A hook crash, timeout, failure to deliver output, or another hook replacing the same result can leave the original output exposed. These cases are outside the masking guarantee. Claude's fallback for an invalid replacement also matters; preserving response structure is required.
@@ -839,14 +852,15 @@ For both local (`./.claude/settings.json`) and global (`~/.claude/settings.json`
 1. **File exists**: settings.json is present
 2. **Valid JSON**: file parses correctly
 3. **Mode and event**: finds sekretbarilo handlers across events, including `PreToolUse` and `PostToolUse`
-4. **Matcher and command**: checks `Read` / `check-file --stdin-json` for `block`, or `redact-claude --stdin-json` for `redact` under `^(Bash|Read|Grep)$` or any matcher that still covers those three tools (see [Other tools](#other-tools-mcp-and-custom))
-5. **Hook settings**: checks the mode's configuration, including synchronous redaction and timeout
-6. **Outdated command detection**: warns if an older sekretbarilo command is found
-7. **Stale duplicate detection**: warns if a second, older sekretbarilo handler is left behind at another position in the file
-8. **Scope conflict**: warns when a blocking Read hook in another scope can prevent a redaction hook from receiving the result
-9. **Explicit scope (`--settings <path>`)**: when given, inspects that file as an additional scope next to local and global, deduplicated when it is the same file; the same mode, Claude Code redact-version, and scope-conflict checks apply, doctor never creates or edits the file, and a missing or malformed file is reported as an issue
-10. **Bare hook binary command**: warns that Claude Code resolves the name under its own `PATH` and that reinstalling pins an absolute path; doctor does not resolve it under its own `PATH`
-11. **Absolute hook binary command**: checks the path's filesystem metadata and executable bit, then canonicalizes it only to compare its identity with the running binary; doctor never executes the configured path and never reports a version for it
+4. **Matcher and command**: checks `Read` / `check-file --stdin-json` for `block`, or `redact-claude --stdin-json` for `redact` under any matcher that covers `Bash`, `Read` and `Grep` except the exact pre-0.14.1 default `^(Bash|Read|Grep)$`, which is reported as outdated with both remedies (see [Other tools](#other-tools-mcp-and-custom))
+5. **Redact scope**: names what a current redact hook masks: `all tools`, `Bash, Read, Grep, LSP and MCP tools and resources`, `Bash, Read, Grep, LSP only (--no-mcp)`, or `custom matcher <m>`
+6. **Hook settings**: checks the mode's configuration, including synchronous redaction and timeout
+7. **Outdated command detection**: warns if an older sekretbarilo command is found
+8. **Stale duplicate detection**: warns if a second, older sekretbarilo handler is left behind at another position in the file
+9. **Scope conflict**: warns when a blocking Read hook in another scope can prevent a redaction hook from receiving the result
+10. **Explicit scope (`--settings <path>`)**: when given, inspects that file as an additional scope next to local and global, deduplicated when it is the same file; the same mode, Claude Code redact-version, and scope-conflict checks apply, doctor never creates or edits the file, and a missing or malformed file is reported as an issue
+11. **Bare hook binary command**: warns that Claude Code resolves the name under its own `PATH` and that reinstalling pins an absolute path; doctor does not resolve it under its own `PATH`
+12. **Absolute hook binary command**: checks the path's filesystem metadata and executable bit, then canonicalizes it only to compare its identity with the running binary; doctor never executes the configured path and never reports a version for it
 
 ### What Doctor Checks (Codex CLI Hook)
 

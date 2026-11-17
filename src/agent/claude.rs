@@ -1,11 +1,18 @@
 use std::path::{Path, PathBuf};
 
 use super::hooks_json::{HookInstallResult, find_hook_for_event, write_config};
+use crate::audit::history::sanitize_display;
 
 /// bare hook commands used only when the running executable path is unavailable
 pub const HOOK_COMMAND: &str = "sekretbarilo check-file --stdin-json";
 pub const REDACT_HOOK_COMMAND: &str = "sekretbarilo redact-claude --stdin-json";
-pub const REDACT_HOOK_MATCHER: &str = "^(Bash|Read|Grep)$";
+/// redact matcher a plain install writes: the built-ins that return file, command or
+/// code text, mcp resources and every mcp tool. web tools stay out on purpose.
+pub const REDACT_HOOK_MATCHER: &str = "^(Bash|Read|Grep|LSP|ReadMcpResourceTool|mcp__.*)$";
+/// redact matcher `--no-mcp` writes; claude code reads it as exact tool names.
+pub const REDACT_BUILTIN_MATCHER: &str = "Bash|Read|Grep|LSP";
+/// installer default before 0.14.1, kept only to recognise and replace it.
+pub const LEGACY_REDACT_HOOK_MATCHER: &str = "^(Bash|Read|Grep)$";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ClaudeHookMode {
@@ -34,13 +41,16 @@ impl ClaudeHookMode {
         }
     }
 
-    fn matcher(self) -> &'static str {
+    fn matcher(self, no_mcp: bool) -> &'static str {
         match self {
             Self::Block => "Read",
+            Self::Redact if no_mcp => REDACT_BUILTIN_MATCHER,
             Self::Redact => REDACT_HOOK_MATCHER,
         }
     }
 
+    /// a plain reinstall keeps exactly the groups this accepts, so doctor's
+    /// "current" and "reinstall is a no-op" stay the same judgement.
     fn accepts_matcher(self, matcher: Option<&serde_json::Value>) -> bool {
         let matcher = match matcher {
             None => return self == Self::Redact,
@@ -48,9 +58,12 @@ impl ClaudeHookMode {
             Some(_) => return false,
         };
         match self {
-            Self::Block => matcher == self.matcher(),
+            Self::Block => matcher == self.matcher(false),
             Self::Redact => {
                 const TOOLS: [&str; 3] = ["Bash", "Read", "Grep"];
+                if matcher == LEGACY_REDACT_HOOK_MATCHER {
+                    return false;
+                }
                 if matcher.is_empty() || matcher == "*" {
                     return true;
                 }
@@ -83,30 +96,60 @@ impl ClaudeHookMode {
     }
 }
 
-/// install claude code hook into settings.json.
-/// global: true = ~/.claude/settings.json, false = .claude/settings.json (project root)
-pub fn install_claude_hook(global: bool) -> Result<HookInstallResult, String> {
-    install_claude_hook_with_mode(global, None)
+/// the tools a redact group's matcher selects, worded for doctor and the installer.
+/// `None` is an omitted matcher; a current redact group never holds a non-string one.
+pub(crate) fn redact_scope(matcher: Option<&str>) -> String {
+    match matcher.unwrap_or("") {
+        "" | "*" => "all tools".to_string(),
+        REDACT_HOOK_MATCHER => "Bash, Read, Grep, LSP and MCP tools and resources".to_string(),
+        REDACT_BUILTIN_MATCHER => "Bash, Read, Grep, LSP only (--no-mcp)".to_string(),
+        matcher => format!("custom matcher {}", sanitize_display(matcher)),
+    }
 }
 
-/// omitted mode preserves the mode in the selected settings file.
-pub fn install_claude_hook_with_mode(
-    global: bool,
-    mode: Option<ClaudeHookMode>,
-) -> Result<HookInstallResult, String> {
-    let target = if global {
-        ClaudeSettingsTarget::Global
-    } else {
-        ClaudeSettingsTarget::Local
-    };
-    install_claude_hook_to_target(target, mode)
-}
-
+/// install the claude code hook. omitted mode preserves the mode in the selected
+/// settings file; `no_mcp` narrows a redact hook to the built-in tools. returns the
+/// redact scope wording for a redact install.
 pub fn install_claude_hook_to_target(
     target: ClaudeSettingsTarget,
     mode: Option<ClaudeHookMode>,
-) -> Result<HookInstallResult, String> {
-    let warn_on_cwd_fallback = matches!(&target, ClaudeSettingsTarget::Local);
+    no_mcp: bool,
+) -> Result<(HookInstallResult, Option<String>), String> {
+    let (config_path, paths) = claude_target_paths(target, true)?;
+    let result = install_claude_hook_to_path_with_mode(
+        &config_path,
+        mode,
+        no_mcp,
+        ensure_redact_version,
+        command_for_running_binary,
+    )?;
+    for warning in claude_scope_conflicts(&paths) {
+        eprintln!("[WARN] {warning}");
+    }
+    Ok(result)
+}
+
+/// resolves the mode an install would use without writing, so `install all` can
+/// reject `--no-mcp` on a block hook before its first step changes anything.
+pub fn check_claude_no_mcp(
+    target: ClaudeSettingsTarget,
+    mode: Option<ClaudeHookMode>,
+) -> Result<(), String> {
+    let (config_path, _) = claude_target_paths(target, false)?;
+    let installed = claude_hook_state(&read_settings(&config_path)?)?;
+    resolve_install_mode(&installed, mode, true).map(|_| ())
+}
+
+/// every claude settings scope, labelled, as `claude_settings_paths` lists them
+type ScopePaths = Vec<(&'static str, PathBuf)>;
+
+/// the settings file an install targets, plus every scope it checks for conflicts.
+fn claude_target_paths(
+    target: ClaudeSettingsTarget,
+    warn_on_cwd_fallback: bool,
+) -> Result<(PathBuf, ScopePaths), String> {
+    let warn_on_cwd_fallback =
+        warn_on_cwd_fallback && matches!(&target, ClaudeSettingsTarget::Local);
     let base = match resolve_project_root() {
         Some(root) => root,
         None => {
@@ -142,16 +185,7 @@ pub fn install_claude_hook_to_target(
             path
         }
     };
-    let result = install_claude_hook_to_path_with_mode(
-        &config_path,
-        mode,
-        ensure_redact_version,
-        command_for_running_binary,
-    )?;
-    for warning in claude_scope_conflicts(&paths) {
-        eprintln!("[WARN] {warning}");
-    }
-    Ok(result)
+    Ok((config_path, paths))
 }
 
 pub(crate) fn claude_settings_paths(
@@ -242,6 +276,8 @@ pub(crate) struct ClaudeHook {
     pub(crate) event: String,
     pub(crate) group_index: usize,
     pub(crate) hook_index: usize,
+    /// the group's `matcher` as written; `None` when omitted
+    pub(crate) matcher: Option<serde_json::Value>,
     pub(crate) mode: ClaudeHookMode,
     pub(crate) command: String,
     pub(crate) current: bool,
@@ -443,6 +479,7 @@ pub(crate) fn claude_hook_state(root: &serde_json::Value) -> Result<Vec<ClaudeHo
                     event: event.clone(),
                     group_index,
                     hook_index,
+                    matcher: group.get("matcher").cloned(),
                     mode,
                     command: command.to_string(),
                     current: event == mode.event()
@@ -494,14 +531,12 @@ pub(crate) fn claude_scope_conflicts(paths: &[(&str, PathBuf)]) -> Vec<String> {
     warnings
 }
 
-fn install_claude_hook_to_path_with_mode(
-    config_path: &Path,
+/// omitted mode keeps the installed mode, block when none is installed.
+fn resolve_install_mode(
+    installed: &[ClaudeHook],
     requested_mode: Option<ClaudeHookMode>,
-    check_version: impl FnOnce() -> Result<(), String>,
-    command_for_mode: impl FnOnce(ClaudeHookMode) -> String,
-) -> Result<HookInstallResult, String> {
-    let original = read_settings(config_path)?;
-    let installed = claude_hook_state(&original)?;
+    no_mcp: bool,
+) -> Result<ClaudeHookMode, String> {
     let mode = match requested_mode {
         Some(mode) => mode,
         None => {
@@ -521,19 +556,44 @@ fn install_claude_hook_to_path_with_mode(
             }
         }
     };
+    if no_mcp && mode == ClaudeHookMode::Block {
+        return Err(
+            "--no-mcp applies only to redact mode, and this Claude install resolves to block mode; add --mode redact"
+                .to_string(),
+        );
+    }
+    Ok(mode)
+}
+
+fn install_claude_hook_to_path_with_mode(
+    config_path: &Path,
+    requested_mode: Option<ClaudeHookMode>,
+    no_mcp: bool,
+    check_version: impl FnOnce() -> Result<(), String>,
+    command_for_mode: impl FnOnce(ClaudeHookMode) -> String,
+) -> Result<(HookInstallResult, Option<String>), String> {
+    let original = read_settings(config_path)?;
+    let installed = claude_hook_state(&original)?;
+    let mode = resolve_install_mode(&installed, requested_mode, no_mcp)?;
     if mode == ClaudeHookMode::Redact {
         check_version()?;
     }
 
     let command = command_for_mode(mode);
+    let target_matcher = mode.matcher(no_mcp);
+    // an explicit --no-mcp wins over any wider matcher; a plain install keeps
+    // every matcher doctor accepts, so an earlier --no-mcp stays in place.
     let keep = installed.iter().find(|hook| {
         hook.mode == mode
             && hook.event == mode.event()
-            && mode
-                .accepts_matcher(original["hooks"][mode.event()][hook.group_index].get("matcher"))
+            && if no_mcp {
+                hook.matcher.as_ref().and_then(serde_json::Value::as_str) == Some(target_matcher)
+            } else {
+                mode.accepts_matcher(hook.matcher.as_ref())
+            }
     });
     let matching_group_index = keep.map(|hook| hook.group_index).or_else(|| {
-        find_hook_for_event(&original, mode.event(), mode.matcher(), &command).matching_group_index
+        find_hook_for_event(&original, mode.event(), target_matcher, &command).matching_group_index
     });
     let mut root = original.clone();
     let hooks = root
@@ -563,13 +623,15 @@ fn install_claude_hook_to_path_with_mode(
         .as_array_mut()
         .ok_or("hook event is not an array")?;
     let group_index = matching_group_index.unwrap_or_else(|| {
-        groups.push(serde_json::json!({"matcher": mode.matcher(), "hooks": []}));
+        groups.push(serde_json::json!({"matcher": target_matcher, "hooks": []}));
         groups.len() - 1
     });
     let group = groups
         .get_mut(group_index)
         .and_then(serde_json::Value::as_object_mut)
         .ok_or("hook group is not an object")?;
+    let scope = (mode == ClaudeHookMode::Redact)
+        .then(|| redact_scope(group.get("matcher").and_then(serde_json::Value::as_str)));
     let handlers = group
         .entry("hooks")
         .or_insert_with(|| serde_json::json!([]))
@@ -610,7 +672,7 @@ fn install_claude_hook_to_path_with_mode(
         handlers.push(handler);
     }
     if root == original {
-        return Ok(HookInstallResult::AlreadyInstalled);
+        return Ok((HookInstallResult::AlreadyInstalled, scope));
     }
     if let Some(parent) = config_path.parent() {
         std::fs::create_dir_all(parent)
@@ -618,11 +680,12 @@ fn install_claude_hook_to_path_with_mode(
     }
 
     write_config(config_path, &root)?;
-    Ok(if installed.is_empty() {
+    let result = if installed.is_empty() {
         HookInstallResult::Created
     } else {
         HookInstallResult::Updated
-    })
+    };
+    Ok((result, scope))
 }
 
 /// resolve the project root directory via git rev-parse
@@ -659,9 +722,99 @@ mod tests {
         requested_mode: Option<ClaudeHookMode>,
         check_version: impl FnOnce() -> Result<(), String>,
     ) -> Result<HookInstallResult, String> {
-        install_claude_hook_to_path_with_mode(config_path, requested_mode, check_version, |mode| {
-            test_hook_command(config_path, mode)
-        })
+        install_for_test(config_path, requested_mode, false, check_version)
+            .map(|(result, _)| result)
+    }
+
+    fn install_for_test(
+        config_path: &Path,
+        requested_mode: Option<ClaudeHookMode>,
+        no_mcp: bool,
+        check_version: impl FnOnce() -> Result<(), String>,
+    ) -> Result<(HookInstallResult, Option<String>), String> {
+        install_claude_hook_to_path_with_mode(
+            config_path,
+            requested_mode,
+            no_mcp,
+            check_version,
+            |mode| test_hook_command(config_path, mode),
+        )
+    }
+
+    #[test]
+    fn redact_matcher_reading_rejects_the_legacy_default_and_names_the_scope() {
+        let redact = ClaudeHookMode::Redact;
+        let legacy = serde_json::json!(LEGACY_REDACT_HOOK_MATCHER);
+        assert!(!redact.accepts_matcher(Some(&legacy)));
+        for accepted in ["*", "", REDACT_BUILTIN_MATCHER, REDACT_HOOK_MATCHER] {
+            assert!(
+                redact.accepts_matcher(Some(&serde_json::json!(accepted))),
+                "{accepted}"
+            );
+        }
+        assert!(redact.accepts_matcher(None));
+        for (matcher, scope) in [
+            (Some("*"), "all tools"),
+            (Some(""), "all tools"),
+            (None, "all tools"),
+            (
+                Some(REDACT_HOOK_MATCHER),
+                "Bash, Read, Grep, LSP and MCP tools and resources",
+            ),
+            (
+                Some(REDACT_BUILTIN_MATCHER),
+                "Bash, Read, Grep, LSP only (--no-mcp)",
+            ),
+            (Some(".*"), "custom matcher .*"),
+            (
+                Some("Bash|Read|Grep|mcp__example__search\u{1b}[2K"),
+                "custom matcher Bash|Read|Grep|mcp__example__search[2K",
+            ),
+        ] {
+            assert_eq!(redact_scope(matcher), scope);
+        }
+    }
+
+    #[test]
+    fn no_mcp_narrows_to_the_builtin_group_and_rejects_block() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let (_, scope) =
+            install_for_test(&path, Some(ClaudeHookMode::Redact), false, || Ok(())).unwrap();
+        assert_eq!(
+            scope.as_deref(),
+            Some("Bash, Read, Grep, LSP and MCP tools and resources")
+        );
+        let (result, scope) = install_for_test(&path, None, true, || Ok(())).unwrap();
+        assert_eq!(result, HookInstallResult::Updated);
+        assert_eq!(
+            scope.as_deref(),
+            Some("Bash, Read, Grep, LSP only (--no-mcp)")
+        );
+        let parsed = read_settings(&path).unwrap();
+        assert_eq!(
+            parsed["hooks"]["PostToolUse"][0]["hooks"],
+            serde_json::json!([])
+        );
+        assert_eq!(
+            parsed["hooks"]["PostToolUse"][1]["matcher"],
+            REDACT_BUILTIN_MATCHER
+        );
+        let owned = claude_hook_state(&parsed).unwrap();
+        assert_eq!(owned.len(), 1);
+        assert!(owned[0].current);
+
+        let block = dir.path().join("block.json");
+        install_claude_hook_to_path(&block).unwrap();
+        let before = std::fs::read(&block).unwrap();
+        for mode in [None, Some(ClaudeHookMode::Block)] {
+            let error = install_for_test(&block, mode, true, || Ok(())).unwrap_err();
+            assert!(
+                error.contains("--no-mcp applies only to redact mode"),
+                "{error}"
+            );
+            assert_eq!(std::fs::read(&block).unwrap(), before);
+        }
     }
 
     #[test]
@@ -713,6 +866,7 @@ mod tests {
         install_claude_hook_to_path_with_mode(
             &path,
             None,
+            false,
             ensure_redact_version,
             command_for_running_binary,
         )

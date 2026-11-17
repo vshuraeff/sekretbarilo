@@ -196,11 +196,23 @@ fn erase_value(value: &mut Value) {
 }
 
 /// tools whose own response schemas this command knows; every other tool goes
-/// through the generic text shapes below.
-const BUILTIN_TOOLS: [&str; 3] = ["Bash", "Read", "Grep"];
+/// through the generic text shapes below. LSP and ReadMcpResourceTool return
+/// objects, so the generic path would pass their text through.
+const BUILTIN_TOOLS: [&str; 5] = ["Bash", "Read", "Grep", "LSP", "ReadMcpResourceTool"];
 
 fn is_builtin(tool: &str) -> bool {
     BUILTIN_TOOLS.contains(&tool)
+}
+
+/// an MCP blob resource entry: a string `blob` and nothing besides `uri` and
+/// `mimeType`, so no text can hide under another key.
+fn is_blob_entry(entry: &Value) -> bool {
+    entry.as_object().is_some_and(|fields| {
+        fields.get("blob").is_some_and(Value::is_string)
+            && fields
+                .keys()
+                .all(|key| matches!(key.as_str(), "uri" | "mimeType" | "blob"))
+    })
 }
 
 /// a plain string, or a non-empty array of typed content blocks whose `text`
@@ -294,6 +306,29 @@ fn erase_supported(tool: &str, response: &mut Value) {
                 }
             }
         }
+        "LSP" => {
+            if let Some(result) = object.get_mut("result") {
+                erase_value(result);
+            }
+        }
+        "ReadMcpResourceTool" => {
+            if let Some(contents) = object.get_mut("contents") {
+                match contents.as_array_mut() {
+                    // a blob entry carries no text to erase; any other entry
+                    // without `text` is erased whole.
+                    Some(entries) => {
+                        for entry in entries {
+                            if let Some(text) = entry.get_mut("text") {
+                                erase_value(text);
+                            } else if !is_blob_entry(entry) {
+                                erase_value(entry);
+                            }
+                        }
+                    }
+                    None => erase_value(contents),
+                }
+            }
+        }
         _ => {}
     }
 }
@@ -359,6 +394,30 @@ fn visit_text(
                 }
             }
         }
+        "LSP" => match object.get_mut("result") {
+            Some(result) => {
+                valid &= result.is_string();
+                transform_value(result, transform, &mut changed, &mut valid);
+            }
+            None => valid = false,
+        },
+        "ReadMcpResourceTool" => match object.get_mut("contents").and_then(Value::as_array_mut) {
+            Some(entries) => {
+                for entry in entries {
+                    match entry.get_mut("text") {
+                        Some(text) => {
+                            valid &= text.is_string();
+                            transform_value(text, transform, &mut changed, &mut valid);
+                        }
+                        // a blob entry has no text; uri, mimeType and order stay.
+                        // any other entry without text may hide text under
+                        // another key, so it fails closed.
+                        None => valid &= is_blob_entry(entry),
+                    }
+                }
+            }
+            None => valid = false,
+        },
         _ => valid = false,
     }
     if valid { Ok(changed) } else { Err(()) }

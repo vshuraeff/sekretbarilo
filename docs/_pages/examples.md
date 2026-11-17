@@ -350,7 +350,7 @@ Three things to know:
 
 ## Setting Up Claude Code Protection
 
-The following examples use `block` mode, which prevents Claude Code from reading files that contain secrets. For output masking, use `sekretbarilo install agent-hook claude --mode redact` (Claude Code >= 2.1.121): successful `Bash`, text `Read`, and `Grep` results, and the text of any other tool the hook's matcher selects, replace detected values with `[REDACTED]` while leaving files unchanged. See [redaction behavior and a synthetic smoke check]({{ '/agent-hooks/#redact-mode-output-editor' | relative_url }}).
+The following examples use `block` mode, which prevents Claude Code from reading files that contain secrets. For output masking, use `sekretbarilo install agent-hook claude --mode redact` (Claude Code >= 2.1.121): successful `Bash`, text `Read`, `Grep` and `LSP` results, MCP resources and the text of every MCP tool (the installed matcher is `^(Bash|Read|Grep|LSP|ReadMcpResourceTool|mcp__.*)$`; `--no-mcp` writes `Bash|Read|Grep|LSP`) replace detected values with `[REDACTED]` while leaving files unchanged. See [redaction behavior and a synthetic smoke check]({{ '/agent-hooks/#redact-mode-output-editor' | relative_url }}).
 
 Without `--mode`, an install preserves the mode already configured in the selected settings file; a new installation uses `block`. Use `--mode block` explicitly when following these blocking examples after enabling redaction.
 

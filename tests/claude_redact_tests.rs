@@ -1441,3 +1441,158 @@ fn any_tool_with_an_invalid_cwd_stops_and_erases() {
         );
     }
 }
+
+// LSP and ReadMcpResourceTool return objects, so they have their own known shapes.
+fn lsp_response(result: Value) -> Value {
+    json!({"operation": "hover", "result": result, "filePath": "src/example.rs", "future": [1, true]})
+}
+
+fn resource_response(text: Value) -> Value {
+    json!({"contents": [
+        {"uri": "example://notes", "mimeType": "text/plain", "text": text},
+        {"uri": "example://logo", "mimeType": "image/png", "blob": "aGVsbG8="},
+        {"uri": "example://clean", "text": "port = 5432\n"}
+    ], "future": "kept"})
+}
+
+#[test]
+fn lsp_and_mcp_resource_text_is_masked_with_metadata_kept() {
+    let env = IsolatedEnv::with_heuristic();
+    let output = run(
+        &env,
+        "LSP",
+        lsp_response(json!(format!("key {SECRET}\n{SECOND}"))),
+    );
+    let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(value.get("continue").is_none());
+    assert_eq!(
+        replacement(&output),
+        lsp_response(json!("key [REDACTED]\n[REDACTED]"))
+    );
+    assert_silent(&run(&env, "LSP", lsp_response(json!("fn main()"))), "LSP");
+
+    let output = run(
+        &env,
+        "ReadMcpResourceTool",
+        resource_response(json!(format!("token {SECRET}\n"))),
+    );
+    let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(value.get("continue").is_none());
+    assert_eq!(
+        replacement(&output),
+        resource_response(json!("token [REDACTED]\n"))
+    );
+    assert_silent(
+        &run(
+            &env,
+            "ReadMcpResourceTool",
+            resource_response(json!("clean")),
+        ),
+        "ReadMcpResourceTool",
+    );
+    assert_silent(
+        &run(&env, "ReadMcpResourceTool", json!({"contents": []})),
+        "ReadMcpResourceTool empty",
+    );
+}
+
+#[test]
+fn lsp_and_mcp_resource_drift_stops_like_other_known_tools() {
+    let env = IsolatedEnv::with_heuristic();
+    for (tool, response, erased) in [
+        (
+            "LSP",
+            json!({"operation": "hover", "filePath": "src/example.rs"}),
+            json!({"operation": "hover", "filePath": "src/example.rs"}),
+        ),
+        (
+            "LSP",
+            lsp_response(json!({"nested": SECRET})),
+            lsp_response(json!({"nested": "[REDACTED]"})),
+        ),
+        ("LSP", json!(SECRET), json!("[REDACTED]")),
+        ("ReadMcpResourceTool", json!({}), json!({})),
+        (
+            "ReadMcpResourceTool",
+            json!({"contents": {"text": SECRET}}),
+            json!({"contents": {"text": "[REDACTED]"}}),
+        ),
+        (
+            "ReadMcpResourceTool",
+            json!({"contents": [SECRET]}),
+            json!({"contents": ["[REDACTED]"]}),
+        ),
+        (
+            "ReadMcpResourceTool",
+            resource_response(json!({"future": SECRET})),
+            {
+                let mut erased = resource_response(json!({"future": "[REDACTED]"}));
+                erased["contents"][2]["text"] = json!("[REDACTED]\n");
+                erased
+            },
+        ),
+    ] {
+        let output = run(&env, tool, response.clone());
+        let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(value["continue"], false, "{tool} {response}");
+        assert_eq!(replacement(&output), erased, "{tool} {response}");
+    }
+}
+
+#[test]
+fn mcp_resource_entry_without_text_passes_only_as_a_blob() {
+    let env = IsolatedEnv::with_heuristic();
+    assert_silent(
+        &run(
+            &env,
+            "ReadMcpResourceTool",
+            json!({"contents": [{"uri": "example://logo", "mimeType": "image/png", "blob": "aGVsbG8="}]}),
+        ),
+        "ReadMcpResourceTool blob",
+    );
+    // text under a renamed key, nested one level, or beside a blob must never
+    // pass unscanned: the turn stops and the value is erased.
+    for entry in [
+        json!({"uri": "u", "mimeType": "text/plain", "content": SECRET}),
+        json!({"resource": {"text": SECRET}}),
+        json!({"uri": "u", "blob": "aGVsbG8=", "note": SECRET}),
+        json!({"uri": "u", "blob": {"text": SECRET}}),
+    ] {
+        let output = run(
+            &env,
+            "ReadMcpResourceTool",
+            json!({"contents": [entry.clone()]}),
+        );
+        let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(value["continue"], false, "{entry}");
+        let replaced = replacement(&output);
+        assert!(!replaced.to_string().contains(SECRET), "{entry}");
+        assert!(replaced["contents"][0].is_object(), "{entry}");
+    }
+}
+
+#[test]
+fn lsp_and_mcp_resource_failure_erases_text_and_keeps_the_shape() {
+    let env = IsolatedEnv::with_heuristic();
+    write_invalid_user_config(&env);
+    let output = run(
+        &env,
+        "LSP",
+        lsp_response(json!(format!("innocent\n{SECRET}"))),
+    );
+    let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(value["continue"], false);
+    assert!(output.stderr.is_empty());
+    assert_eq!(replacement(&output), lsp_response(json!("[REDACTED]\n")));
+
+    let output = run(
+        &env,
+        "ReadMcpResourceTool",
+        resource_response(json!(format!("innocent\n{SECRET}"))),
+    );
+    let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(value["continue"], false);
+    let mut erased = resource_response(json!("[REDACTED]\n"));
+    erased["contents"][2]["text"] = json!("[REDACTED]\n");
+    assert_eq!(replacement(&output), erased);
+}

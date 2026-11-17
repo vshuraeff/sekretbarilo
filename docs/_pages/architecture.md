@@ -589,7 +589,7 @@ sekretbarilo install agent-hook claude
 sekretbarilo install agent-hook claude --global
 ```
 
-`--mode block|redact` selects the Claude mode. Omitting it preserves the selected file's installed mode, defaulting to `block` for a new installation. Redaction requires Claude Code >= 2.1.121 before any change to Claude settings; it installs synchronous `PostToolUse` / `^(Bash|Read|Grep)$` with a 10-second timeout, and keeps an existing redact group whose matcher the user widened while that matcher still covers `Bash`, `Read` and `Grep` (`ClaudeHookMode::accepts_matcher`, shared with `doctor` through `claude_hook_state`).
+`--mode block|redact` selects the Claude mode. Omitting it preserves the selected file's installed mode, defaulting to `block` for a new installation. Redaction requires Claude Code >= 2.1.121 before any change to Claude settings; it installs synchronous `PostToolUse` / `^(Bash|Read|Grep|LSP|ReadMcpResourceTool|mcp__.*)$` (`Bash|Read|Grep|LSP` with `--no-mcp`) with a 10-second timeout. Without `--no-mcp` it keeps an existing redact group whose matcher still covers `Bash`, `Read` and `Grep` and is not the pre-0.14.1 default `^(Bash|Read|Grep)$` (`ClaudeHookMode::accepts_matcher`, shared with `doctor` through `claude_hook_state`); with `--no-mcp` it keeps only a `Bash|Read|Grep|LSP` group. `--no-mcp` is rejected when the mode is or resolves to `block`, and `install all` checks that before its first step.
 
 The installer records the absolute path reported by the OS for the running executable and quotes shell-sensitive paths; it warns and uses the bare `sekretbarilo` name only when the path lookup fails or is not valid UTF-8. On macOS, an invocation through a symlink such as Homebrew's `/usr/local/bin/sekretbarilo` keeps that path. On Linux, `current_exe` reports the resolved target, so Homebrew-on-Linux records a Cellar path; when `brew upgrade` removes that target, the hook remains broken until installation is rerun from the new binary, and doctor reports the old path as missing. Doctor checks an absolute configured path's filesystem metadata, executable bit, and canonical identity relative to the running binary. It never executes a binary selected by Claude settings and does not report a version for it; a bare name receives a warning because Claude Code resolves it under its own `PATH`.
 
@@ -887,7 +887,7 @@ they mutate global git state.
 
 - an AI agent writing a secret into the working tree, before the write lands (`check-codex`)
 - an AI agent reading a file that already contains one (`check-file`)
-- detected secrets in successful Claude Bash/Read/Grep text results (`redact-claude`)
+- detected secrets in successful Claude Bash/Read/Grep/LSP text results, MCP resources and MCP tool text (`redact-claude`)
 
 **out-of-scope**:
 - intentional malicious commits (insider threat)

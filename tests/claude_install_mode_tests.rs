@@ -9,7 +9,9 @@ use serde_json::{Value, json};
 mod common;
 use common::IsolatedEnv;
 
-const MATCHER: &str = "^(Bash|Read|Grep)$";
+const MATCHER: &str = "^(Bash|Read|Grep|LSP|ReadMcpResourceTool|mcp__.*)$";
+const NO_MCP_MATCHER: &str = "Bash|Read|Grep|LSP";
+const LEGACY_MATCHER: &str = "^(Bash|Read|Grep)$";
 
 struct Fixture {
     env: IsolatedEnv,
@@ -151,7 +153,10 @@ fn install_switch_reinstall_and_install_all_preserve_mode() {
         owned_commands(&read_json(&fixture.local())),
         [fixture.hook_command("check-file --stdin-json")]
     );
-    fixture.success(&["install", "agent-hook", "claude", "--mode", "redact"]);
+    let output = fixture.success(&["install", "agent-hook", "claude", "--mode", "redact"]);
+    assert!(String::from_utf8_lossy(&output.stderr).contains(
+        "[INFO] claude code redact hook scope: Bash, Read, Grep, LSP and MCP tools and resources"
+    ));
     let redact = read_json(&fixture.local());
     assert_eq!(
         owned_commands(&redact),
@@ -267,6 +272,206 @@ fn noncovering_redact_matchers_are_outdated_and_repaired() {
                 .contains("local claude code hook installed (redact mode")
         );
     }
+}
+
+fn write_redact_group(fixture: &Fixture, matcher: &str) {
+    let mut settings = read_json(&fixture.local());
+    settings["hooks"]["PostToolUse"][0]["matcher"] = matcher.into();
+    std::fs::write(
+        fixture.local(),
+        serde_json::to_vec_pretty(&settings).unwrap(),
+    )
+    .unwrap();
+}
+
+fn doctor_stderr(fixture: &Fixture) -> String {
+    String::from_utf8_lossy(&fixture.run(&["doctor"]).stderr).into_owned()
+}
+
+#[test]
+fn legacy_matcher_is_outdated_and_moves_to_the_default_group() {
+    let fixture = Fixture::new();
+    fixture.success(&["install", "agent-hook", "claude", "--mode", "redact"]);
+    let mut settings = read_json(&fixture.local());
+    let handler = settings["hooks"]["PostToolUse"][0]["hooks"][0].clone();
+    let foreign = json!({"type": "command", "command": "echo foreign", "custom": true});
+    settings["hooks"]["PostToolUse"] = json!([
+        {"matcher": LEGACY_MATCHER, "hooks": [foreign.clone(), handler], "custom": "kept"}
+    ]);
+    std::fs::write(
+        fixture.local(),
+        serde_json::to_vec_pretty(&settings).unwrap(),
+    )
+    .unwrap();
+    let stderr = doctor_stderr(&fixture);
+    assert!(
+        stderr.contains("local claude code redact hook is outdated"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("pre-0.14.1 default"), "{stderr}");
+    assert!(
+        stderr.contains("masks only Bash, Read and Grep"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("--no-mcp"), "{stderr}");
+    assert!(
+        !stderr.contains("local claude code hook installed"),
+        "{stderr}"
+    );
+
+    fixture.success(&["install", "agent-hook", "claude"]);
+    let repaired = read_json(&fixture.local());
+    assert_eq!(
+        repaired["hooks"]["PostToolUse"][0],
+        json!({"matcher": LEGACY_MATCHER, "hooks": [foreign], "custom": "kept"})
+    );
+    assert_eq!(repaired["hooks"]["PostToolUse"][1]["matcher"], MATCHER);
+    assert_eq!(owned_commands(&repaired).len(), 1);
+    let stderr = doctor_stderr(&fixture);
+    assert!(
+        stderr.contains("; scope: Bash, Read, Grep, LSP and MCP tools and resources"),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn no_mcp_writes_the_builtin_matcher_and_stays_on_plain_reinstall() {
+    let fixture = Fixture::new();
+    let output = fixture.success(&[
+        "install",
+        "agent-hook",
+        "claude",
+        "--mode",
+        "redact",
+        "--no-mcp",
+    ]);
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains(
+            "[INFO] claude code redact hook scope: Bash, Read, Grep, LSP only (--no-mcp)"
+        )
+    );
+    let settings = read_json(&fixture.local());
+    assert_eq!(
+        settings["hooks"]["PostToolUse"][0]["matcher"],
+        NO_MCP_MATCHER
+    );
+    assert_eq!(owned_commands(&settings).len(), 1);
+    let stderr = doctor_stderr(&fixture);
+    assert!(
+        stderr.contains("local claude code hook installed (redact mode"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("; scope: Bash, Read, Grep, LSP only (--no-mcp)"),
+        "{stderr}"
+    );
+    let before = std::fs::read(fixture.local()).unwrap();
+    for args in [
+        vec!["install", "agent-hook", "claude"],
+        vec!["install", "agent-hook", "claude", "--mode", "redact"],
+        vec!["install", "agent-hook", "claude", "--no-mcp"],
+        vec!["install", "all"],
+        vec!["install", "all", "--no-mcp"],
+    ] {
+        fixture.success(&args);
+        assert_eq!(std::fs::read(fixture.local()).unwrap(), before, "{args:?}");
+    }
+}
+
+#[test]
+fn no_mcp_narrows_wider_matchers() {
+    for matcher in [
+        MATCHER,
+        "*",
+        "^(Bash|Read|Grep|mcp__example__search)$",
+        "Bash|Read|Grep",
+    ] {
+        let fixture = Fixture::new();
+        fixture.success(&["install", "agent-hook", "claude", "--mode", "redact"]);
+        write_redact_group(&fixture, matcher);
+        let output = fixture.success(&["install", "agent-hook", "claude", "--no-mcp"]);
+        assert!(
+            String::from_utf8_lossy(&output.stderr)
+                .contains("Bash, Read, Grep, LSP only (--no-mcp)")
+        );
+        let narrowed = read_json(&fixture.local());
+        assert_eq!(narrowed["hooks"]["PostToolUse"][0]["matcher"], matcher);
+        assert_eq!(narrowed["hooks"]["PostToolUse"][0]["hooks"], json!([]));
+        assert_eq!(
+            narrowed["hooks"]["PostToolUse"][1]["matcher"],
+            NO_MCP_MATCHER
+        );
+        assert_eq!(owned_commands(&narrowed).len(), 1);
+    }
+}
+
+#[test]
+fn no_mcp_on_block_mode_errors_without_writing() {
+    let fixture = Fixture::new();
+    fixture.success(&["install", "agent-hook", "claude"]);
+    let block = std::fs::read(fixture.local()).unwrap();
+    for args in [
+        vec!["install", "agent-hook", "claude", "--no-mcp"],
+        vec![
+            "install",
+            "agent-hook",
+            "claude",
+            "--mode",
+            "block",
+            "--no-mcp",
+        ],
+        vec!["install", "all", "--no-mcp"],
+        vec!["install", "all", "--mode", "block", "--no-mcp"],
+    ] {
+        let output = fixture.run(&args);
+        assert_eq!(output.status.code(), Some(2), "{args:?}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("--no-mcp applies only to redact mode"),
+            "{stderr}"
+        );
+        assert_eq!(std::fs::read(fixture.local()).unwrap(), block, "{args:?}");
+        assert!(
+            !fixture.repo.join(".git/hooks/pre-commit").exists(),
+            "{args:?}"
+        );
+    }
+
+    // a new install resolves to block as well
+    let fresh = Fixture::new();
+    for args in [
+        vec!["install", "agent-hook", "claude", "--no-mcp"],
+        vec!["install", "all", "--no-mcp"],
+    ] {
+        let output = fresh.run(&args);
+        assert_eq!(output.status.code(), Some(2), "{args:?}");
+        assert!(!fresh.local().exists(), "{args:?}");
+        assert!(
+            !fresh.repo.join(".git/hooks/pre-commit").exists(),
+            "{args:?}"
+        );
+    }
+}
+
+#[test]
+fn no_mcp_on_other_subcommands_is_a_usage_error() {
+    let fixture = Fixture::new();
+    for args in [
+        vec!["install", "pre-commit", "--no-mcp"],
+        vec!["install", "agent-hook", "codex", "--no-mcp"],
+        vec!["doctor", "--no-mcp"],
+        vec!["scan", "--no-mcp"],
+    ] {
+        let output = fixture.run(&args);
+        assert_eq!(output.status.code(), Some(2), "{args:?}");
+        assert!(
+            String::from_utf8_lossy(&output.stderr)
+                .contains("--no-mcp is only valid with install agent-hook claude or install all"),
+            "{args:?}"
+        );
+    }
+    assert!(!fixture.repo.join(".git/hooks/pre-commit").exists());
+    assert!(!fixture.local().exists());
 }
 
 #[test]

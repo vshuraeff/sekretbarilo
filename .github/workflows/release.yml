@@ -298,6 +298,24 @@ jobs:
               bin.install "sekretbarilo"
             end
 
+            def caveats
+              <<~EOS
+                Homebrew installs only the sekretbarilo binary; it sets up no git
+                or agent hooks. To install the pre-commit hook and the Claude Code
+                and Codex hooks for your user, run:
+
+                  sekretbarilo install all --global --mode redact
+
+                The Claude Code redact hook masks secrets in the output of Bash,
+                Read, Grep, LSP and every MCP tool and resource. Add --no-mcp to
+                limit it to Bash, Read, Grep and LSP. Check the result with:
+
+                  sekretbarilo doctor
+
+                Docs: https://vshuraeff.github.io/sekretbarilo/agent-hooks/
+              EOS
+            end
+
             test do
               assert_match "sekretbarilo #{version}", shell_output("#{bin}/sekretbarilo --version 2>&1")
             end

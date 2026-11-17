@@ -17,7 +17,7 @@ High-performance secret scanner for git workflows and AI coding agents. Catches 
 - **Low false positives**: entropy analysis, stopword filtering, hash/variable detection, template-aware, public key suppression
 - **Pre-commit hook**: scans staged changes on every commit
 - **Working tree & history audit**: scan tracked files or full git history with deduplication and branch resolution
-- **Agent hooks**: blocks Claude Code file reads or masks secrets in `Bash`, `Read`, `Grep` and MCP or other tool results; blocks Codex CLI from writing secrets via `apply_patch` or `Bash` and withholds completed `Bash` output that contains secrets
+- **Agent hooks**: blocks Claude Code file reads or masks secrets in `Bash`, `Read`, `Grep`, `LSP`, MCP resource and MCP tool results (or only the built-in tools with `--no-mcp`); blocks Codex CLI from writing secrets via `apply_patch` or `Bash` and withholds completed `Bash` output that contains secrets
 - **Health diagnostics**: `doctor` command checks hooks, config, and binary availability
 - **Hierarchical config**: `.sekretbarilo.toml` at system, user, and project levels
 - **Zero config needed**: works out of the box with sensible defaults
@@ -98,6 +98,9 @@ sekretbarilo install agent-hook claude --global
 # mask tool results instead of blocking file reads (Claude Code >= 2.1.121)
 sekretbarilo install agent-hook claude --mode redact
 
+# mask only Bash, Read, Grep and LSP results, not MCP tools or resources
+sekretbarilo install agent-hook claude --mode redact --no-mcp
+
 # switch back to blocking reads
 sekretbarilo install agent-hook claude --mode block
 
@@ -112,7 +115,7 @@ sekretbarilo install all --global
 
 The default for a new installation is `block`: a `PreToolUse` hook scans files before `Read` and blocks secrets or `.env` files. Binary files, vendor directories, and lock files are fast-path skipped. Omitting `--mode` preserves the mode already installed in the selected settings file, including when running `install all`.
 
-`redact` installs a synchronous `PostToolUse` hook for `Bash`, `Read`, and `Grep`. Tools execute normally; detected secret values in supported text results become `[REDACTED]` before the result reaches the model. This is an **in-memory output editor**: source files are unchanged. In 0.9.0, keywordless high-entropy detection is off by default: prefix-less random tokens in output such as `printenv` are not masked unless another enabled rule matches them. A value under a credential-named variable such as `API_KEY=`, `HF_TOKEN=` or `DJANGO_SECRET_KEY=`, in an `env` dump or inside a command such as `docker run -e API_KEY=… img`, is such a match: the contextual rules still mask it. Opt in with `[settings.rules]` and `"generic-high-entropy-value" = true`; that rule can also mask harmless base64 blobs or checksums. Response structure, metadata, surrounding text, UTF-8, and line endings are preserved. For example, `cat config.txt` can return:
+`redact` installs a synchronous `PostToolUse` hook for `Bash`, `Read`, `Grep`, `LSP`, `ReadMcpResourceTool` and every MCP tool (see [Masking MCP and other tools](#masking-mcp-and-other-tools)). Tools execute normally; detected secret values in supported text results become `[REDACTED]` before the result reaches the model. This is an **in-memory output editor**: source files are unchanged. In 0.9.0, keywordless high-entropy detection is off by default: prefix-less random tokens in output such as `printenv` are not masked unless another enabled rule matches them. A value under a credential-named variable such as `API_KEY=`, `HF_TOKEN=` or `DJANGO_SECRET_KEY=`, in an `env` dump or inside a command such as `docker run -e API_KEY=… img`, is such a match: the contextual rules still mask it. Opt in with `[settings.rules]` and `"generic-high-entropy-value" = true`; that rule can also mask harmless base64 blobs or checksums. Response structure, metadata, surrounding text, UTF-8, and line endings are preserved. For example, `cat config.txt` can return:
 
 ```text
 host = localhost
@@ -122,16 +125,22 @@ port = 5432
 
 #### Masking MCP and other tools
 
-The installer selects `Bash`, `Read` and `Grep`, but `redact-claude` handles any tool: a response that is a plain string is scanned as a string, and in an array of content blocks (the form MCP tools return) the `text` of each `{"type": "text"}` block is scanned while every other block, key and the block order stay as they are. Any other response shape passes through untouched. To connect more tools, edit the `matcher` of the `PostToolUse` group that holds the sekretbarilo handler in your Claude settings:
+Since 0.14.1 the installer writes this `PostToolUse` matcher:
 
 ```json
 {
-  "matcher": "^(Bash|Read|Grep|mcp__.*)$",
+  "matcher": "^(Bash|Read|Grep|LSP|ReadMcpResourceTool|mcp__.*)$",
   "hooks": [{"type": "command", "command": "/usr/local/bin/sekretbarilo redact-claude --stdin-json", "timeout": 10}]
 }
 ```
 
-`^(Bash|Read|Grep|mcp__.*)$` adds every MCP tool, including those of plugin-bundled MCP servers (`mcp__plugin_<plugin>_<server>__<tool>`); `.*` selects every tool. Each selected call starts the sekretbarilo process: on one development machine a call with a text response took about 40 ms and a call with any other shape about 4 ms, so with `.*` every `Edit`, `Write` and other tool call also pays a process start, about 4 ms there. A widened matcher is kept by `install agent-hook claude` and reported as current by `doctor` as long as it still covers `Bash`, `Read` and `Grep`. Not covered: tools a plugin registers without an MCP server (Claude Code fires no `PostToolUse` hook for them), non-text content blocks such as images or embedded resources, and response shapes other than the two above. See [other tools](https://vshuraeff.github.io/sekretbarilo/agent-hooks/#other-tools-mcp-and-custom).
+It selects the built-in tools that return command, file or code text (`Bash`, `Read`, `Grep`, the `result` of `LSP`), the `text` of each MCP resource that `ReadMcpResourceTool` returns, and every MCP tool, including those of plugin-bundled MCP servers (`mcp__plugin_<plugin>_<server>__<tool>`). For an MCP tool, and any other tool you add, a response that is a plain string is scanned as a string, and in an array of content blocks the `text` of each `{"type": "text"}` block is scanned while every other block, key and the block order stay as they are. Any other response shape passes through untouched.
+
+Left out on purpose: `WebFetch` and `WebSearch` return external pages, which are full of example keys, so masking them would mostly produce false positives. `Agent`, `Write`, `Edit` and `Glob` return objects that carry no new tool output, so the hook would pass them through anyway.
+
+`--no-mcp` narrows the matcher to `Bash|Read|Grep|LSP`, a list of exact names, so MCP tools and resources reach the model unmasked. A later `install agent-hook claude` or `install all` without the flag keeps that choice. Each selected call starts the sekretbarilo process: measured on one development machine, about 38 ms for a call whose response is scanned and about 3.5 ms for one that passes through. A wider matcher such as `*` is accepted and kept, but today it adds only that process cost, because the other tools return shapes that pass through.
+
+A matcher you edited is kept by `install agent-hook claude` and reported as current by `doctor` as long as it still covers `Bash`, `Read` and `Grep`; `doctor` names the scope (`all tools`, `Bash, Read, Grep, LSP and MCP tools and resources`, `Bash, Read, Grep, LSP only (--no-mcp)` or `custom matcher <m>`). The exact matcher `^(Bash|Read|Grep)$` that installers before 0.14.1 wrote is reported as outdated, and a plain reinstall moves the handler to the new default group; add `--no-mcp` instead to keep only the built-in tools. Not covered: tools a plugin registers without an MCP server (Claude Code fires no `PostToolUse` hook for them), non-text content blocks such as images or embedded resources, resource blobs, and response shapes other than those above. See [other tools](https://vshuraeff.github.io/sekretbarilo/agent-hooks/#other-tools-mcp-and-custom).
 
 `redact` uses the same trusted configuration, rules, entropy thresholds, password heuristics, and value exceptions. Path exclusions and documentation relaxations do not apply; `.env` output is scanned by content. Installation checks Claude Code >= 2.1.121 before changing protection, and installation/`doctor` warn about a blocking Read hook in another settings scope. See [redaction behavior and limits](https://vshuraeff.github.io/sekretbarilo/agent-hooks/#redact-mode-output-editor), including unsupported tools, hook failures, and telemetry.
 
@@ -166,7 +175,7 @@ Verified on codex-cli `0.145.0` (`PreToolUse`) and `0.159.3` (`PostToolUse`). Li
 
 The `Bash` checks are text scans, a guardrail against accidental leakage rather than a sandbox. See the [agent hooks docs](https://vshuraeff.github.io/sekretbarilo/agent-hooks/) for details.
 
-`sekretbarilo install all` sets up the pre-commit hook plus every agent hook at once. `--mode block|redact` selects the Claude mode; omitted, it preserves the installed mode or chooses `block` for a new installation. Selecting `redact` requires a supported Claude version. `--settings <path>` applies only to the Claude step; the pre-commit and Codex steps keep their normal local/global behavior. The Codex step is skipped when `codex` is neither on `PATH` nor has a `$CODEX_HOME` directory.
+`sekretbarilo install all` sets up the pre-commit hook plus every agent hook at once. `--mode block|redact` selects the Claude mode; omitted, it preserves the installed mode or chooses `block` for a new installation. Selecting `redact` requires a supported Claude version. `--no-mcp` applies to the Claude step only and is an error, before any step writes, when the Claude mode is or resolves to `block`. `--settings <path>` applies only to the Claude step; the pre-commit and Codex steps keep their normal local/global behavior. The Codex step is skipped when `codex` is neither on `PATH` nor has a `$CODEX_HOME` directory.
 
 ### Diagnostics
 
@@ -217,6 +226,7 @@ Checks pre-commit hooks (local/global), Claude Code hooks, Codex CLI hooks, conf
 | `--stdin-json` | Read the hook payload from stdin JSON (`check-file`; required for `check-codex` and `redact-claude`) |
 | `--global` | Install globally (install). For the Claude step, honours `CLAUDE_CONFIG_DIR` when set, writing `$CLAUDE_CONFIG_DIR/settings.json` instead of `~/.claude/settings.json` |
 | `--mode block\|redact` | Select Claude hook mode (`install agent-hook claude`, `install all`) |
+| `--no-mcp` | Limit the Claude redact hook to `Bash`, `Read`, `Grep` and `LSP` (`install agent-hook claude`, `install all`; redact mode only) |
 | `--settings <path>` | Target an explicit Claude Code settings file (`install agent-hook claude`, `install all`, `doctor`); mutually exclusive with `--global` |
 
 ## Exit codes

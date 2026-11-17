@@ -343,7 +343,7 @@ on connection errors and 5xx responses up to three times.
 
 Agent hooks provide a critical security layer for AI-assisted development:
 
-- **Claude modes**: Block file reads or mask detected secrets in successful Bash/Read/Grep text results, and in the text results of MCP or other tools you [add to the hook's matcher]({{ '/agent-hooks/#other-tools-mcp-and-custom' | relative_url }})
+- **Claude modes**: Block file reads or mask detected secrets in successful Bash/Read/Grep/LSP text results, MCP resources and MCP tool results (unless installed with `--no-mcp`), and in the text results of other tools you [add to the hook's matcher]({{ '/agent-hooks/#other-tools-mcp-and-custom' | relative_url }})
 - **Prevent secret injection**: Block patches and shell commands that would write secrets through Codex CLI
 - **File scanning fast paths**: Skip configured binary, dependency, and lock-file paths in `block` mode
 - **Shared detectors**: Rules and value exceptions apply to all hook modes; redaction ignores path exclusions and documentation relaxations

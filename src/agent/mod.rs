@@ -13,8 +13,8 @@ use std::path::{Path, PathBuf};
 
 #[allow(unused_imports)]
 pub use claude::{
-    ClaudeHookMode, ClaudeSettingsTarget, HOOK_COMMAND, install_claude_hook,
-    install_claude_hook_to_target, install_claude_hook_with_mode, is_sekretbarilo_hook_command,
+    ClaudeHookMode, ClaudeSettingsTarget, HOOK_COMMAND, check_claude_no_mcp,
+    install_claude_hook_to_target, is_sekretbarilo_hook_command,
 };
 #[allow(unused_imports)]
 pub(crate) use codex::resolve_codex_home;

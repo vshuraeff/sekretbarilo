@@ -5,10 +5,10 @@ use std::path::{Path, PathBuf};
 #[cfg(test)]
 use crate::agent::HOOK_COMMAND;
 use crate::agent::claude::{
-    ClaudeHookMode, claude_hook_state, claude_scope_conflicts, claude_settings_paths,
-    claude_settings_paths_with_explicit, command_for_binary_path_with_args, ensure_redact_version,
-    same_resolved_path, sekretbarilo_command_parts, sekretbarilo_hook_executable,
-    sekretbarilo_subcommand_executable,
+    ClaudeHookMode, LEGACY_REDACT_HOOK_MATCHER, claude_hook_state, claude_scope_conflicts,
+    claude_settings_paths, claude_settings_paths_with_explicit, command_for_binary_path_with_args,
+    ensure_redact_version, redact_scope, same_resolved_path, sekretbarilo_command_parts,
+    sekretbarilo_hook_executable, sekretbarilo_subcommand_executable,
 };
 use crate::agent::{
     CODEX_HOOK_COMMAND, CODEX_HOOK_MATCHER, CODEX_POST_HOOK_MATCHER, CODEX_POST_TOOL_USE,
@@ -351,14 +351,31 @@ fn check_claude_hook_at(
     };
     let active = hooks.iter().find(|hook| hook.current);
     let mut results = if let Some(active) = active {
+        let redact_scope = if active.mode == ClaudeHookMode::Redact {
+            format!(
+                "; scope: {}",
+                redact_scope(active.matcher.as_ref().and_then(serde_json::Value::as_str))
+            )
+        } else {
+            String::new()
+        };
         vec![CheckResult::ok(format!(
-            "{} claude code hook installed ({} mode, {})",
+            "{} claude code hook installed ({} mode, {}){}",
             scope,
             active.mode.name(),
-            config_path.display()
+            config_path.display(),
+            redact_scope
         ))]
     } else {
-        if !hooks.is_empty() {
+        if hooks.iter().any(|hook| {
+            hook.mode == ClaudeHookMode::Redact
+                && hook.matcher.as_ref().and_then(serde_json::Value::as_str)
+                    == Some(LEGACY_REDACT_HOOK_MATCHER)
+        }) {
+            vec![CheckResult::warn(format!(
+                "{scope} claude code redact hook is outdated: its matcher {LEGACY_REDACT_HOOK_MATCHER} is the pre-0.14.1 default that masks only Bash, Read and Grep; re-run install agent-hook claude to also mask LSP and MCP tools and resources, or add --no-mcp to keep only the built-in tools"
+            ))]
+        } else if !hooks.is_empty() {
             vec![CheckResult::warn(format!(
                 "{scope} claude code hook has outdated sekretbarilo command or settings; re-run install with --mode block or --mode redact"
             ))]
@@ -1631,6 +1648,65 @@ mod tests {
         assert!(results[0].message.contains("redact mode"));
         assert_eq!(results[1].status, Status::Warn);
         assert!(results[1].message.contains("handler 1 (PostToolUse)"));
+    }
+
+    #[test]
+    fn claude_redact_scope_and_legacy_matcher_wording() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let handler = serde_json::json!({"type": "command", "command": crate::agent::claude::REDACT_HOOK_COMMAND, "timeout": 10});
+        for (matcher, expected) in [
+            (
+                Some(crate::agent::claude::REDACT_HOOK_MATCHER),
+                "; scope: Bash, Read, Grep, LSP and MCP tools and resources",
+            ),
+            (Some("*"), "; scope: all tools"),
+            (None, "; scope: all tools"),
+            (
+                Some(crate::agent::claude::REDACT_BUILTIN_MATCHER),
+                "; scope: Bash, Read, Grep, LSP only (--no-mcp)",
+            ),
+            (
+                Some("^(Bash|Read|Grep|mcp__example__search)$"),
+                "; scope: custom matcher ^(Bash|Read|Grep|mcp__example__search)$",
+            ),
+        ] {
+            let mut group = serde_json::json!({"hooks": [handler.clone()]});
+            if let Some(matcher) = matcher {
+                group["matcher"] = matcher.into();
+            }
+            std::fs::write(
+                &path,
+                serde_json::to_vec(&serde_json::json!({"hooks": {"PostToolUse": [group]}}))
+                    .unwrap(),
+            )
+            .unwrap();
+            let results = check_claude_hook_at(&path, "test");
+            assert_eq!(results[0].status, Status::Ok, "{matcher:?}");
+            assert!(results[0].message.contains("redact mode"));
+            assert!(
+                results[0].message.ends_with(expected),
+                "{}",
+                results[0].message
+            );
+        }
+        std::fs::write(
+            &path,
+            serde_json::to_vec(&serde_json::json!({"hooks": {"PostToolUse": [
+                {"matcher": LEGACY_REDACT_HOOK_MATCHER, "hooks": [handler]}
+            ]}}))
+            .unwrap(),
+        )
+        .unwrap();
+        let results = check_claude_hook_at(&path, "test");
+        assert_eq!(results[0].status, Status::Warn);
+        for part in [
+            "pre-0.14.1 default",
+            "masks only Bash, Read and Grep",
+            "--no-mcp",
+        ] {
+            assert!(results[0].message.contains(part), "{}", results[0].message);
+        }
     }
 
     #[test]

@@ -24,7 +24,7 @@ sekretbarilo check-file path/to/file.py
 # install hooks for claude code (ai agent protection)
 sekretbarilo install agent-hook claude
 
-# mask claude Bash/Read/Grep results (requires claude >= 2.1.121)
+# mask claude Bash/Read/Grep/LSP and MCP results (requires claude >= 2.1.121); add --no-mcp to skip MCP
 sekretbarilo install agent-hook claude --mode redact
 
 # install all hooks at once

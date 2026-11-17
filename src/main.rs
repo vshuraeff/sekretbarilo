@@ -55,6 +55,7 @@ struct InstallFlags {
     global: bool,
     mode: Option<agent::ClaudeHookMode>,
     settings: Option<PathBuf>,
+    no_mcp: bool,
 }
 
 /// check-file specific flags parsed from cli
@@ -246,6 +247,7 @@ fn parse_cli(
                     _ => return Err("--mode must be block or redact".to_string()),
                 });
             }
+            Arg::Long("no-mcp") => install_flags.no_mcp = true,
             Arg::Long("settings") => {
                 if install_flags.settings.is_some() {
                     return Err("--settings may only be given once".to_string());
@@ -327,6 +329,22 @@ fn parse_cli(
     {
         return Err(
             "--mode is only valid with install agent-hook claude or install all".to_string(),
+        );
+    }
+    if install_flags.no_mcp
+        && !matches!(
+            command,
+            Command::InstallAgentHook(AgentTarget::Claude) | Command::InstallAll
+        )
+    {
+        return Err(
+            "--no-mcp is only valid with install agent-hook claude or install all".to_string(),
+        );
+    }
+    if install_flags.no_mcp && install_flags.mode == Some(agent::ClaudeHookMode::Block) {
+        return Err(
+            "--no-mcp applies only to redact mode; it cannot be combined with --mode block"
+                .to_string(),
         );
     }
     if install_flags.settings.is_some()
@@ -494,11 +512,13 @@ fn run() -> i32 {
             install_flags.global,
             install_flags.mode,
             install_flags.settings,
+            install_flags.no_mcp,
         ),
         Command::InstallAll => run_install_all(
             install_flags.global,
             install_flags.mode,
             install_flags.settings,
+            install_flags.no_mcp,
         ),
         Command::InstallHelp => {
             print_install_usage();
@@ -646,6 +666,7 @@ fn print_usage() {
     eprintln!("install flags:");
     eprintln!("  --global                  install globally instead of locally");
     eprintln!("  --mode block|redact       select Claude hook mode");
+    eprintln!("  --no-mcp                  redact only Bash, Read, Grep and LSP output, not MCP");
     eprintln!("  --settings <path>         target one Claude settings JSON file");
     eprintln!();
     eprintln!("examples:");
@@ -682,6 +703,14 @@ fn print_install_usage() {
     eprintln!(
         "  --mode block|redact   Claude mode; preserve installed mode, default block on new install"
     );
+    eprintln!(
+        "              redact masks Bash, Read, Grep, LSP, MCP resources and MCP tool output"
+    );
+    eprintln!("              (matcher ^(Bash|Read|Grep|LSP|ReadMcpResourceTool|mcp__.*)$)");
+    eprintln!(
+        "  --no-mcp    Claude redact only: mask Bash, Read, Grep and LSP alone (matcher Bash|Read|Grep|LSP)"
+    );
+    eprintln!("              kept by later reinstalls without the flag; not valid with block mode");
     eprintln!("  --global    install globally instead of locally");
     eprintln!("              pre-commit: uses git config --global core.hooksPath directory");
     eprintln!(
@@ -701,6 +730,7 @@ fn print_install_usage() {
     eprintln!("  sekretbarilo install agent-hook claude        install local claude code hook");
     eprintln!("  sekretbarilo install agent-hook claude --global");
     eprintln!("  sekretbarilo install agent-hook claude --mode redact");
+    eprintln!("  sekretbarilo install agent-hook claude --mode redact --no-mcp");
     eprintln!("  sekretbarilo install agent-hook claude --settings .claude/settings.local.json");
     eprintln!("  sekretbarilo install agent-hook codex --global");
     eprintln!("  sekretbarilo install all                      install all hooks locally");
@@ -859,20 +889,20 @@ fn run_install_agent_hook(
     global: bool,
     mode: Option<agent::ClaudeHookMode>,
     settings: Option<PathBuf>,
+    no_mcp: bool,
 ) -> i32 {
     match target {
         AgentTarget::Claude => {
-            let result = match settings {
-                Some(path) => agent::install_claude_hook_to_target(
-                    agent::ClaudeSettingsTarget::Explicit(path),
-                    mode,
-                ),
-                None if mode.is_none() => agent::install_claude_hook(global),
-                None => agent::install_claude_hook_with_mode(global, mode),
-            };
-            match result {
-                Ok(result) => {
+            match agent::install_claude_hook_to_target(
+                claude_settings_target(global, settings),
+                mode,
+                no_mcp,
+            ) {
+                Ok((result, scope)) => {
                     eprintln!("[OK] {}", result.describe("claude code"));
+                    if let Some(scope) = scope {
+                        eprintln!("[INFO] claude code redact hook scope: {scope}");
+                    }
                     0
                 }
                 Err(e) => {
@@ -891,12 +921,30 @@ fn run_install_agent_hook(
     }
 }
 
+fn claude_settings_target(global: bool, settings: Option<PathBuf>) -> agent::ClaudeSettingsTarget {
+    match settings {
+        Some(path) => agent::ClaudeSettingsTarget::Explicit(path),
+        None if global => agent::ClaudeSettingsTarget::Global,
+        None => agent::ClaudeSettingsTarget::Local,
+    }
+}
+
 fn run_install_all(
     global: bool,
     mode: Option<agent::ClaudeHookMode>,
     settings: Option<PathBuf>,
+    no_mcp: bool,
 ) -> i32 {
     let mut failed = false;
+
+    // a --no-mcp that the claude step would reject must stop before any step writes
+    if no_mcp
+        && let Err(error) =
+            agent::check_claude_no_mcp(claude_settings_target(global, settings.clone()), mode)
+    {
+        eprintln!("[ERROR] {error}");
+        return 2;
+    }
 
     // install pre-commit hook
     eprintln!("installing pre-commit hook...");
@@ -906,13 +954,13 @@ fn run_install_all(
 
     // install claude code agent hook
     eprintln!("installing claude code agent hook...");
-    if run_install_agent_hook(AgentTarget::Claude, global, mode, settings) != 0 {
+    if run_install_agent_hook(AgentTarget::Claude, global, mode, settings, no_mcp) != 0 {
         failed = true;
     }
 
     eprintln!("installing codex cli agent hook...");
     if codex_cli_present() {
-        if run_install_agent_hook(AgentTarget::Codex, global, None, None) != 0 {
+        if run_install_agent_hook(AgentTarget::Codex, global, None, None, false) != 0 {
             failed = true;
         }
     } else {
@@ -1058,6 +1106,37 @@ mod tests {
             "install all --mode unknown",
         ] {
             assert!(parse_cli(&args(invalid)).is_err());
+        }
+    }
+
+    #[test]
+    fn no_mcp_is_scoped_to_claude_redact_installs() {
+        for target in ["install agent-hook claude", "install all"] {
+            let (_, _, _, _, flags) = parse_cli(&args(target)).unwrap();
+            assert!(!flags.no_mcp);
+            for valid in [
+                format!("{target} --no-mcp"),
+                format!("{target} --mode redact --no-mcp"),
+            ] {
+                let (_, _, _, _, flags) = parse_cli(&args(&valid)).unwrap();
+                assert!(flags.no_mcp, "{valid}");
+            }
+            let error = parse_cli(&args(&format!("{target} --no-mcp --mode block"))).unwrap_err();
+            assert!(error.contains("only to redact mode"), "{error}");
+        }
+        for invalid in [
+            "scan --no-mcp",
+            "audit --no-mcp",
+            "doctor --no-mcp",
+            "check-file --no-mcp",
+            "install pre-commit --no-mcp",
+            "install agent-hook codex --no-mcp",
+        ] {
+            let error = parse_cli(&args(invalid)).unwrap_err();
+            assert!(
+                error.contains("--no-mcp is only valid with"),
+                "{invalid}: {error}"
+            );
         }
     }
 
